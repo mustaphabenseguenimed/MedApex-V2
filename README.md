@@ -1,26 +1,31 @@
-# HTML Converter Magic
+# MedApex
 
-turn this into an html file
+MedApex is a medical question bank and exam-prep platform built for students following the Algerian medical curriculum (Externat Alger, P1–P6 rotations, Rattrapage, Résidanat). It provides structured QCM (multiple-choice question) content across rotations — cardiology, pulmonology, pharmacology, neurology, and more — with detailed French-language explanations for each answer.
 
-This project was built with [Lovable](https://lovable.dev).
+## Features
 
-**Live app**: https://medapex.lovable.app
+- Rotation- and year-based question banks (QCMs) with detailed explanations
+- Structured content covering major medical specialties
+- Exam-style practice aligned with the Algerian medical curriculum
 
-## Build with Lovable
+## Tech Stack
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/10e9e8e7-1c1a-4f59-a3ec-d00294b40003).
+- **Frontend**: Vite + React (TanStack Start)
+- **Backend**: Supabase (database, auth)
+- **Deployment**: Vercel
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
+## Getting Started
+
+```bash
+npm install
+npm run dev
+```
+
+Create a `.env` file with the required Supabase environment variables (see `.env.example` if present, or check `src/integrations/supabase/client.ts` for the expected variable names).
 
 ## Development
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
-
-```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
+```bash
+npm run build   # production build
+npm run dev     # local dev server
 ```
