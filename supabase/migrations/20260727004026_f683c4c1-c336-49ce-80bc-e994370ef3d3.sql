@@ -1,0 +1,1 @@
+DROP POLICY IF EXISTS "students read within year access" ON public.questions;
