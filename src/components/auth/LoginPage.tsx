@@ -44,7 +44,7 @@ export function LoginPage() {
           <Eyebrow />
           <h1 className="flex items-center justify-center text-5xl font-bold tracking-tight text-gradient">
             Med{" "}
-            <img src="/logo-mark.svg" alt="A" className="h-[0.85em] w-[0.85em] translate-y-[0.05em]" />
+            <img src="/logo-mark.svg" alt="A" className="h-[1.3em] w-[1.3em] translate-y-[0.08em]" />
             pex
           </h1>
           <Tagline />
