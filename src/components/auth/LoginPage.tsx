@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { Toaster } from "sonner";
 import { useI18n, LanguageSwitcher } from "@/lib/i18n";
+import { getSiteUrl } from "@/lib/site-url";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -99,7 +100,7 @@ function SignInForm() {
     if (!email) { toast.error(tr("Entrez votre email d'abord")); return; }
     setLoading(true);
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo: `${getSiteUrl()}/reset-password`,
     });
     setLoading(false);
     if (error) toast.error(error.message);
@@ -143,7 +144,7 @@ function SignUpForm() {
       email,
       password,
       options: {
-        emailRedirectTo: window.location.origin,
+        emailRedirectTo: getSiteUrl(),
         data: { display_name: name },
       },
     });
