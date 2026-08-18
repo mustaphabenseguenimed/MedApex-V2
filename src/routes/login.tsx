@@ -141,6 +141,7 @@ function SignInForm() {
 
 function SignUpForm() {
   const { t, tr } = useI18n();
+  const navigate = useNavigate();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -149,7 +150,7 @@ function SignUpForm() {
     e.preventDefault();
     if (password.length < 6) { toast.error(tr("Mot de passe: 6 caractères minimum")); return; }
     setLoading(true);
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
@@ -158,8 +159,13 @@ function SignUpForm() {
       },
     });
     setLoading(false);
-    if (error) toast.error(error.message);
-    else toast.success(tr("Compte créé — vous pouvez vous connecter."));
+    if (error) { toast.error(error.message); return; }
+    if (data.session) {
+      toast.success(tr("Compte créé — bienvenue !"));
+      navigate({ to: "/dashboard", replace: true });
+    } else {
+      toast.success(tr("Compte créé — vous pouvez vous connecter."));
+    }
   };
   return (
     <form onSubmit={onSubmit} className="space-y-3 pt-4">
