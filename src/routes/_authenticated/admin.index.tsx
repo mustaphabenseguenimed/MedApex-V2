@@ -2508,6 +2508,7 @@ function ModuleEditor({ module: m, contents, onModuleChanged, onModuleDeleted, o
             {contents.length === 0 && <p className="text-sm text-muted-foreground">Aucun contenu.</p>}
             {contents.map((c) => {
               const canDelete = isSuper || (uid !== null && c.created_by === uid);
+              const canEditContent = isSuper || has("manage_content");
               const removeContent = async () => {
                 if (c.file_path) await supabase.storage.from("module-files").remove([c.file_path]);
                 const { error } = await supabase.from("module_contents").delete().eq("id", c.id);
@@ -2522,6 +2523,10 @@ function ModuleEditor({ module: m, contents, onModuleChanged, onModuleDeleted, o
                     {c.folder_id && <Badge variant="secondary" className="text-[10px]">{folders.find(f => f.id === c.folder_id)?.name ?? "Dossier"}</Badge>}
                   </div>
                 </div>
+                <div className="flex items-center gap-1">
+                {canEditContent && c.kind === "html" && c.file_path && (
+                  <EditHtmlContentDialog content={c} onSaved={onContentsChanged} />
+                )}
                 {canDelete && (
                   isSuper ? (
                     <AlertDialog>
@@ -2548,6 +2553,7 @@ function ModuleEditor({ module: m, contents, onModuleChanged, onModuleDeleted, o
                     }}><Trash2 className="h-4 w-4" /></Button>
                   )
                 )}
+                </div>
               </div>
               );
             })}
@@ -2559,6 +2565,73 @@ function ModuleEditor({ module: m, contents, onModuleChanged, onModuleDeleted, o
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function EditHtmlContentDialog({ content, onSaved }: { content: Content; onSaved: () => void }) {
+  const { tr } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [text, setText] = useState("");
+
+  const load = async () => {
+    if (!content.file_path) return;
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.storage.from("module-files").download(content.file_path);
+      if (error) throw error;
+      setText(await data.text());
+    } catch (e: any) {
+      toast.error(e.message ?? tr("Erreur"));
+      setOpen(false);
+    } finally { setLoading(false); }
+  };
+
+  const save = async () => {
+    if (!content.file_path) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase.storage.from("module-files").upload(
+        content.file_path,
+        new Blob([text], { type: "text/html" }),
+        { upsert: true, contentType: "text/html" },
+      );
+      if (error) throw error;
+      toast.success(tr("Fichier enregistré"));
+      setOpen(false);
+      onSaved();
+    } catch (e: any) {
+      toast.error(e.message ?? tr("Erreur"));
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (v) load(); }}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm"><Pencil className="h-4 w-4" /></Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>{tr("Modifier")} — {content.title}</DialogTitle>
+        </DialogHeader>
+        {loading ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">…</p>
+        ) : (
+          <Textarea
+            rows={20}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            className="font-mono text-xs"
+            spellCheck={false}
+          />
+        )}
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)} disabled={saving}>{tr("Annuler")}</Button>
+          <Button onClick={save} disabled={saving || loading}>{saving ? tr("Enregistrement...") : tr("Enregistrer")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
