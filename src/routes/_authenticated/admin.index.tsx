@@ -2573,6 +2573,8 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
   const [genPerYear, setGenPerYear] = useState<string>("4");
   const [genIncludeRattrapage, setGenIncludeRattrapage] = useState(false);
   const [genBusy, setGenBusy] = useState(false);
+  const [rattrapageYears, setRattrapageYears] = useState<string>("");
+  const [rattrapageBusy, setRattrapageBusy] = useState(false);
   const add = async () => {
     const v = label.trim();
     if (!v) return;
@@ -2608,6 +2610,31 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
     const { error } = await supabase.from("module_rotations").insert(rows);
     setGenBusy(false);
     if (error) toast.error(error.message); else { toast.success(`${rows.length} rotation(s) créée(s)`); onChanged(); }
+  };
+  const generateRattrapage = async () => {
+    const years = Array.from(new Set(
+      rattrapageYears
+        .split(/[,\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => parseInt(s, 10))
+        .filter((n) => Number.isFinite(n)),
+    )).sort((a, b) => a - b);
+    if (years.length === 0) { toast.error("Indiquez au moins une année (ex: 2023, 2024)"); return; }
+    const existing = new Set(rotations.map(r => r.label.toLowerCase()));
+    const rows: { module_id: string; label: string; sort_order: number }[] = [];
+    let next = (rotations[rotations.length - 1]?.sort_order ?? 0) + 1;
+    for (const y of years) {
+      const lbl = `Rattrapage ${y}`;
+      if (existing.has(lbl.toLowerCase())) continue;
+      rows.push({ module_id: moduleId, label: lbl, sort_order: next++ });
+    }
+    if (rows.length === 0) { toast.info("Toutes les rotations existent déjà"); return; }
+    if (!confirm(`Générer ${rows.length} rotation(s) rattrapage ?`)) return;
+    setRattrapageBusy(true);
+    const { error } = await supabase.from("module_rotations").insert(rows);
+    setRattrapageBusy(false);
+    if (error) toast.error(error.message); else { toast.success(`${rows.length} rotation(s) créée(s)`); setRattrapageYears(""); onChanged(); }
   };
   const rename = async (r: Rotation) => {
     const v = prompt("Nouveau nom", r.label)?.trim();
@@ -2672,6 +2699,17 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
                   Inclure rattrapage
                 </label>
                 <Button size="sm" onClick={autoGenerate} disabled={genBusy}><Sparkles className="mr-1.5 h-4 w-4" />{genBusy ? "…" : "Générer"}</Button>
+              </div>
+            </div>
+            <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+              <div className="flex items-center gap-2 text-sm font-medium"><Sparkles className="h-4 w-4 text-primary" />Générer rattrapage par années</div>
+              <p className="text-xs text-muted-foreground">Crée « Rattrapage &lt;année&gt; » pour chaque année indiquée (séparées par virgule ou espace).</p>
+              <div className="flex flex-wrap items-end gap-2">
+                <div>
+                  <Label className="text-xs">Années</Label>
+                  <Input value={rattrapageYears} onChange={(e) => setRattrapageYears(e.target.value)} placeholder="ex: 2023, 2024, 2025" className="w-56" />
+                </div>
+                <Button size="sm" onClick={generateRattrapage} disabled={rattrapageBusy}><Sparkles className="mr-1.5 h-4 w-4" />{rattrapageBusy ? "…" : "Générer"}</Button>
               </div>
             </div>
           </>
