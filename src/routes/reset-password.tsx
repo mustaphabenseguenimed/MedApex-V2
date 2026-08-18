@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast, Toaster } from "sonner";
@@ -69,11 +69,11 @@ function ResetPassword() {
               <form onSubmit={onSubmit} className="space-y-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="rp-pw">{tr("Nouveau mot de passe")}</Label>
-                  <Input id="rp-pw" type="password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} />
+                  <PasswordInput id="rp-pw" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="rp-pw2">{tr("Confirmer")}</Label>
-                  <Input id="rp-pw2" type="password" required minLength={6} value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+                  <PasswordInput id="rp-pw2" required minLength={6} value={confirm} onChange={(e) => setConfirm(e.target.value)} />
                 </div>
                 <Button type="submit" className="w-full" disabled={loading}>
                   {loading ? tr("Mise à jour...") : tr("Mettre à jour")}

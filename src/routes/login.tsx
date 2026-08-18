@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -124,7 +125,7 @@ function SignInForm() {
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="si-pw">{t("password")}</Label>
-        <Input id="si-pw" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+        <PasswordInput id="si-pw" required value={password} onChange={(e) => setPassword(e.target.value)} />
       </div>
       <Button type="submit" className="w-full" disabled={loading}>
         {loading ? t("signing_in") : t("sign_in")}
@@ -179,7 +180,7 @@ function SignUpForm() {
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="su-pw">{t("password")}</Label>
-        <Input id="su-pw" type="password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} />
+        <PasswordInput id="su-pw" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} />
       </div>
       <Button type="submit" className="w-full" disabled={loading}>
         {loading ? t("creating") : t("create_account")}

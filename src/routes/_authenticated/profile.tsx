@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
@@ -88,11 +89,11 @@ function ProfilePage() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="new-pw">{tr("Nouveau mot de passe")}</Label>
-              <Input id="new-pw" type="password" minLength={6} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" />
+              <PasswordInput id="new-pw" minLength={6} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" />
             </div>
             <div className="space-y-2">
               <Label htmlFor="confirm-pw">{tr("Confirmer le mot de passe")}</Label>
-              <Input id="confirm-pw" type="password" minLength={6} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" />
+              <PasswordInput id="confirm-pw" minLength={6} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" />
             </div>
             <Button onClick={changePassword} disabled={changingPw || !newPassword || !confirmPassword}>
               {changingPw ? tr("Mise à jour...") : tr("Mettre à jour le mot de passe")}
