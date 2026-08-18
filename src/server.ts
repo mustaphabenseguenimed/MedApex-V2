@@ -44,12 +44,25 @@ function isH3SwallowedErrorBody(body: string): boolean {
   }
 }
 
+// Everything that reaches this handler is dynamically routed (static /assets/*
+// files are served directly by Vercel's CDN and never hit this code). Some
+// intermediate caches (regional ISP proxies observed in practice) cache these
+// responses by URL even without explicit caching hints, serving stale HTML/JS
+// references long after a new deploy. Force revalidation unless a route (e.g.
+// the signed module-file proxy) has deliberately set its own Cache-Control.
+function withNoStoreDefault(response: Response): Response {
+  if (response.headers.has("cache-control")) return response;
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", "no-store, must-revalidate");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
-      return await normalizeCatastrophicSsrResponse(response);
+      return withNoStoreDefault(await normalizeCatastrophicSsrResponse(response));
     } catch (error) {
       console.error(error);
       return new Response(renderErrorPage(), {
