@@ -2571,6 +2571,7 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
   const [genFromYear, setGenFromYear] = useState<string>(String(currentYear - 2));
   const [genToYear, setGenToYear] = useState<string>(String(currentYear));
   const [genPerYear, setGenPerYear] = useState<string>("4");
+  const [genIncludeRattrapage, setGenIncludeRattrapage] = useState(false);
   const [genBusy, setGenBusy] = useState(false);
   const add = async () => {
     const v = label.trim();
@@ -2595,6 +2596,10 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
         const lbl = `P${p} ${y}`;
         if (existing.has(lbl.toLowerCase())) continue;
         rows.push({ module_id: moduleId, label: lbl, sort_order: next++ });
+      }
+      if (genIncludeRattrapage) {
+        const lbl = `Rattrapage ${y}`;
+        if (!existing.has(lbl.toLowerCase())) rows.push({ module_id: moduleId, label: lbl, sort_order: next++ });
       }
     }
     if (rows.length === 0) { toast.info("Toutes les rotations existent déjà"); return; }
@@ -2648,7 +2653,7 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
             </div>
             <div className="rounded-md border bg-muted/30 p-3 space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium"><Sparkles className="h-4 w-4 text-primary" />Générer automatiquement</div>
-              <p className="text-xs text-muted-foreground">Crée « P1 &lt;année&gt; », « P2 &lt;année&gt; », … pour chaque année de la plage.</p>
+              <p className="text-xs text-muted-foreground">Crée « P1 &lt;année&gt; », « P2 &lt;année&gt; », … pour chaque année de la plage, avec en option « Rattrapage &lt;année&gt; ».</p>
               <div className="flex flex-wrap items-end gap-2">
                 <div>
                   <Label className="text-xs">De l'année</Label>
@@ -2662,6 +2667,10 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
                   <Label className="text-xs">P par année</Label>
                   <Input type="number" min={1} max={20} value={genPerYear} onChange={(e) => setGenPerYear(e.target.value)} className="w-24" />
                 </div>
+                <label className="flex items-center gap-1.5 pb-2 text-xs">
+                  <Checkbox checked={genIncludeRattrapage} onCheckedChange={(v) => setGenIncludeRattrapage(!!v)} />
+                  Inclure rattrapage
+                </label>
                 <Button size="sm" onClick={autoGenerate} disabled={genBusy}><Sparkles className="mr-1.5 h-4 w-4" />{genBusy ? "…" : "Générer"}</Button>
               </div>
             </div>
