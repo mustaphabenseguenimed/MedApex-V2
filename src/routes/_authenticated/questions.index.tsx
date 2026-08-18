@@ -6,7 +6,7 @@ import { getStats } from "@/lib/sessions.functions";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowLeft, BookOpen, Flame, History, Layers, Plus, RefreshCw, Target } from "lucide-react";
+import { ArrowLeft, BookOpen, Flame, History, Layers, Plus, Target } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { AnyScopeGate } from "@/lib/scopes";
 
@@ -68,14 +68,7 @@ function QuestionsHub() {
           <Link to="/questions/new"><Plus className="mr-2 h-4 w-4" />{tr("Nouvelle session")}</Link>
         </Button>
 
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><RefreshCw className="h-4 w-4 text-primary" />{t("to_review")}</CardTitle></CardHeader>
-            <CardContent>
-              <div className="text-3xl font-semibold">{stats?.dueToday ?? "—"}</div>
-              <p className="text-xs text-muted-foreground">{t("due_today_q")}</p>
-            </CardContent>
-          </Card>
+        <div className="grid gap-4 sm:grid-cols-2">
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Layers className="h-4 w-4 text-primary" />{t("flashcards")}</CardTitle></CardHeader>
             <CardContent>
