@@ -79,6 +79,10 @@ export function CaseRunner({
     setOpen(subs.map((s) => s.id));
   };
 
+  const revealOne = (q: CaseQuestion) => {
+    onRevealAll([q.id]);
+  };
+
   return (
     <div className="space-y-3 pb-24">
       {/* Énoncé */}
@@ -223,6 +227,13 @@ export function CaseRunner({
                   </div>
                 )}
 
+                {!isExam && !show && (
+                  <Button size="sm" variant="outline" onClick={() => revealOne(q)}>
+                    <Eye className="mr-1.5 h-3.5 w-3.5" />
+                    {tr("Voir la réponse")}
+                  </Button>
+                )}
+
                 {show && (q.explanation || q.model_answer) && (
                   <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
@@ -257,9 +268,9 @@ export function CaseRunner({
             <span className="text-xs text-muted-foreground">
               {answeredCount} / {subs.length} {tr("répondues")}
             </span>
-            <Button onClick={reveal} disabled={done} className="rounded-xl font-bold">
+            <Button onClick={reveal} disabled={done} variant="outline" className="rounded-xl font-bold">
               <Eye className="mr-2 h-4 w-4" />
-              {done ? tr("Répondu") : tr("Voir les réponses")}
+              {done ? tr("Répondu") : tr("Tout révéler")}
             </Button>
           </div>
         </div>
