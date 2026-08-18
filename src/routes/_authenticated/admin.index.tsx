@@ -2524,6 +2524,11 @@ function ModuleEditor({ module: m, contents, onModuleChanged, onModuleDeleted, o
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
+                <Button asChild variant="ghost" size="sm">
+                  <Link to="/modules/$moduleId/$contentId" params={{ moduleId: m.id, contentId: c.id }} target="_blank">
+                    <Eye className="h-4 w-4" />
+                  </Link>
+                </Button>
                 {canEditContent && c.kind === "html" && c.file_path && (
                   <EditHtmlContentDialog content={c} onSaved={onContentsChanged} />
                 )}
