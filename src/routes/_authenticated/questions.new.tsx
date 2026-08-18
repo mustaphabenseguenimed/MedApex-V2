@@ -13,7 +13,6 @@ import { AnyScopeGate } from "@/lib/scopes";
 import {
   LaunchBar,
   ModeCard,
-  QuickModeCard,
   SessionPill,
   SessionSection,
   SessionTopBar,
@@ -222,14 +221,6 @@ function NewSessionPage() {
       />
 
       <main className="mx-auto max-w-5xl space-y-6 px-4 py-6 pb-32">
-        {/* Quick modes */}
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <QuickModeCard tone="due" kicker={tr("À réviser")} label={tr("Répétition espacée")} active={due} onClick={() => setDue((v) => !v)} />
-          <QuickModeCard tone="warn" kicker={tr("Erreurs")} label={tr("Refaire les ratées")} active={wrong} onClick={() => setWrong((v) => !v)} />
-          <QuickModeCard tone="info" kicker={tr("Favoris")} label={tr("Questions marquées")} active={flagged} onClick={() => setFlagged((v) => !v)} />
-          <QuickModeCard tone="new" kicker={tr("Nouveau")} label={tr("Jamais vues")} active={unseen} onClick={() => setUnseen((v) => !v)} />
-        </div>
-
         {/* 1. Année d'étude */}
         <SessionSection
           step={1}

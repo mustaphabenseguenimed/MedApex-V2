@@ -14,7 +14,6 @@ import { ModuleScopeGate } from "@/lib/scopes";
 import {
   LaunchBar,
   ModeCard,
-  QuickModeCard,
   SessionPill,
   SessionSection,
   SessionTopBar,
@@ -171,13 +170,6 @@ function QcmBuilder() {
       />
 
       <main className="mx-auto max-w-4xl space-y-6 px-4 py-6 pb-32">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <QuickModeCard tone="due" kicker={t("to_review")} label={t("spaced_repetition")} active={source === "due"} onClick={() => setSource(source === "due" ? "all" : "due")} />
-          <QuickModeCard tone="warn" kicker={t("missed")} label={t("redo_mistakes")} active={source === "wrong"} onClick={() => setSource(source === "wrong" ? "all" : "wrong")} />
-          <QuickModeCard tone="info" kicker={t("flagged")} label={t("bookmarks")} active={source === "flagged"} onClick={() => setSource(source === "flagged" ? "all" : "flagged")} />
-          <QuickModeCard tone="new" kicker={t("new_q")} label={t("never_seen")} active={source === "new"} onClick={() => setSource(source === "new" ? "all" : "new")} />
-        </div>
-
         {/* 1. Cours */}
         <SessionSection
           step={1}

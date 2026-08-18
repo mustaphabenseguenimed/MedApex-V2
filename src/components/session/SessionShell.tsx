@@ -58,43 +58,6 @@ export function SessionPill({ children, pulse }: { children: ReactNode; pulse?: 
   );
 }
 
-const TONES = {
-  due: "hover:border-chip-due [--tone:var(--chip-due)]",
-  warn: "hover:border-chip-warn [--tone:var(--chip-warn)]",
-  info: "hover:border-chip-info [--tone:var(--chip-info)]",
-  new: "hover:border-chip-new [--tone:var(--chip-new)]",
-} as const;
-
-export function QuickModeCard({
-  tone,
-  kicker,
-  label,
-  active,
-  onClick,
-}: {
-  tone: keyof typeof TONES;
-  kicker: string;
-  label: string;
-  active?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={cn(
-        "rounded-xl border bg-muted/40 p-3 text-left transition",
-        TONES[tone],
-        active ? "border-[color:var(--tone)] bg-[color:var(--tone)]/10" : "border-border/60",
-      )}
-    >
-      <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-[color:var(--tone)]">{kicker}</div>
-      <div className="text-sm font-bold">{label}</div>
-    </button>
-  );
-}
-
 export function SessionSection({
   step,
   title,
