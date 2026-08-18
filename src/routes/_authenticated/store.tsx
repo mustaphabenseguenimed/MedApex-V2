@@ -21,41 +21,41 @@ export const Route = createFileRoute("/_authenticated/store")({
 
 type YearPrice = {
   year: number;
-  price_dzd: number; sale_price_dzd: number | null; on_sale: boolean;
-  lessons_price_dzd: number; lessons_sale_price_dzd: number | null; lessons_on_sale: boolean;
-  sessions_price_dzd: number; sessions_sale_price_dzd: number | null; sessions_on_sale: boolean;
+  price_dzd: number; sale_price_dzd: number | null; on_sale: boolean; free: boolean;
+  lessons_price_dzd: number; lessons_sale_price_dzd: number | null; lessons_on_sale: boolean; lessons_free: boolean;
+  sessions_price_dzd: number; sessions_sale_price_dzd: number | null; sessions_on_sale: boolean; sessions_free: boolean;
 };
 type Config = {
-  bundle_price_dzd: number; bundle_sale_price_dzd: number | null; bundle_on_sale: boolean; currency: string;
-  bundle_lessons_price_dzd: number; bundle_lessons_sale_price_dzd: number | null; bundle_lessons_on_sale: boolean;
-  bundle_sessions_price_dzd: number; bundle_sessions_sale_price_dzd: number | null; bundle_sessions_on_sale: boolean;
+  bundle_price_dzd: number; bundle_sale_price_dzd: number | null; bundle_on_sale: boolean; bundle_free: boolean; currency: string;
+  bundle_lessons_price_dzd: number; bundle_lessons_sale_price_dzd: number | null; bundle_lessons_on_sale: boolean; bundle_lessons_free: boolean;
+  bundle_sessions_price_dzd: number; bundle_sessions_sale_price_dzd: number | null; bundle_sessions_on_sale: boolean; bundle_sessions_free: boolean;
 };
 type Entitlement = { year: number | null; is_bundle: boolean; scope: AccessScope };
 type PaymentMethod = { id: string; kind: string; label: string; account_holder: string; account_number: string; extra: string | null; instructions: string | null; is_active: boolean; sort_order: number };
 type PaymentRequest = { id: string; is_bundle: boolean; year: number | null; scope: AccessScope; amount_dzd: number; status: string; created_at: string; reject_reason: string | null; transaction_ref: string | null; proof_path: string | null; method_kind: string | null };
 type Target = { is_bundle: boolean; year: number | null; scope: AccessScope; amount: number; label: string };
 
-type Offer = { scope: AccessScope; price: number; base: number; onSale: boolean };
+type Offer = { scope: AccessScope; price: number; base: number; onSale: boolean; free: boolean };
 
 function yearOffers(p: YearPrice): Offer[] {
   return [
-    { scope: "lessons" as const, base: p.lessons_price_dzd, sale: p.lessons_sale_price_dzd, on: p.lessons_on_sale },
-    { scope: "sessions" as const, base: p.sessions_price_dzd, sale: p.sessions_sale_price_dzd, on: p.sessions_on_sale },
-    { scope: "both" as const, base: p.price_dzd, sale: p.sale_price_dzd, on: p.on_sale },
+    { scope: "lessons" as const, base: p.lessons_price_dzd, sale: p.lessons_sale_price_dzd, on: p.lessons_on_sale, free: p.lessons_free },
+    { scope: "sessions" as const, base: p.sessions_price_dzd, sale: p.sessions_sale_price_dzd, on: p.sessions_on_sale, free: p.sessions_free },
+    { scope: "both" as const, base: p.price_dzd, sale: p.sale_price_dzd, on: p.on_sale, free: p.free },
   ].map((o) => {
     const active = o.on && o.sale != null;
-    return { scope: o.scope, base: o.base, onSale: active, price: active ? o.sale! : o.base };
+    return { scope: o.scope, base: o.base, onSale: active, free: o.free, price: active ? o.sale! : o.base };
   });
 }
 
 function bundleOffers(c: Config): Offer[] {
   return [
-    { scope: "lessons" as const, base: c.bundle_lessons_price_dzd, sale: c.bundle_lessons_sale_price_dzd, on: c.bundle_lessons_on_sale },
-    { scope: "sessions" as const, base: c.bundle_sessions_price_dzd, sale: c.bundle_sessions_sale_price_dzd, on: c.bundle_sessions_on_sale },
-    { scope: "both" as const, base: c.bundle_price_dzd, sale: c.bundle_sale_price_dzd, on: c.bundle_on_sale },
+    { scope: "lessons" as const, base: c.bundle_lessons_price_dzd, sale: c.bundle_lessons_sale_price_dzd, on: c.bundle_lessons_on_sale, free: c.bundle_lessons_free },
+    { scope: "sessions" as const, base: c.bundle_sessions_price_dzd, sale: c.bundle_sessions_sale_price_dzd, on: c.bundle_sessions_on_sale, free: c.bundle_sessions_free },
+    { scope: "both" as const, base: c.bundle_price_dzd, sale: c.bundle_sale_price_dzd, on: c.bundle_on_sale, free: c.bundle_free },
   ].map((o) => {
     const active = o.on && o.sale != null;
-    return { scope: o.scope, base: o.base, onSale: active, price: active ? o.sale! : o.base };
+    return { scope: o.scope, base: o.base, onSale: active, free: o.free, price: active ? o.sale! : o.base };
   });
 }
 
@@ -71,6 +71,7 @@ function StorePage() {
   const [requests, setRequests] = useState<PaymentRequest[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
   const [buyTarget, setBuyTarget] = useState<Target | null>(null);
+  const [claiming, setClaiming] = useState<string | null>(null);
 
   const load = async () => {
     const [{ data: p }, { data: c }, { data: u }, { data: m }] = await Promise.all([
@@ -79,8 +80,8 @@ function StorePage() {
       supabase.auth.getUser(),
       supabase.rpc("list_active_payment_methods"),
     ]);
-    setPrices((p as YearPrice[]) ?? []);
-    setConfig((c as Config) ?? null);
+    setPrices((p as unknown as YearPrice[]) ?? []);
+    setConfig((c as unknown as Config) ?? null);
     setMethods((m as PaymentMethod[]) ?? []);
     if (u.user) {
       setUserId(u.user.id);
@@ -108,6 +109,19 @@ function StorePage() {
     window.open(data.signedUrl, "_blank");
   };
 
+  const claimFree = async (isBundle: boolean, year: number | null, scope: AccessScope) => {
+    const key = `${isBundle ? "bundle" : year}-${scope}`;
+    setClaiming(key);
+    try {
+      const { error } = await (supabase as any).rpc("claim_free_offer", { _is_bundle: isBundle, _year: year, _scope: scope });
+      if (error) throw error;
+      toast.success(t("free_offer_claimed"));
+      await load();
+    } catch (e: any) {
+      toast.error(e.message ?? t("error"));
+    } finally { setClaiming(null); }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b"><div className="mx-auto max-w-6xl px-6 py-4 flex items-center justify-between">
@@ -130,22 +144,38 @@ function StorePage() {
                   const owned = owns(true, null, o.scope);
                   const pending = pendingFor(true, null, o.scope);
                   const closed = isSalesClosed(true);
+                  const isClaiming = claiming === `bundle-${o.scope}`;
                   return (
                     <div key={o.scope} className="rounded-lg border bg-background/60 p-4 space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-sm font-medium">{scopeLabel(o.scope, lang)}</span>
-                        {o.onSale && !owned && <Badge>{t("promo")}</Badge>}
+                        {o.free && !owned && <Badge className="bg-emerald-600 hover:bg-emerald-600">{t("free")}</Badge>}
+                        {!o.free && o.onSale && !owned && <Badge>{t("promo")}</Badge>}
                         {owned && <Badge variant="secondary"><Check className="h-3 w-3 mr-1" />{t("possessed")}</Badge>}
                       </div>
                       <div>
-                        {o.onSale && !owned && <div className="text-xs text-muted-foreground line-through">{fmt(o.base, currency, locale)}</div>}
-                        <div className="text-xl font-bold">{fmt(o.price, currency, locale)}</div>
+                        {o.free ? (
+                          <div className="text-xl font-bold text-emerald-600">{t("free")}</div>
+                        ) : (
+                          <>
+                            {o.onSale && !owned && <div className="text-xs text-muted-foreground line-through">{fmt(o.base, currency, locale)}</div>}
+                            <div className="text-xl font-bold">{fmt(o.price, currency, locale)}</div>
+                          </>
+                        )}
                       </div>
-                      <Button className="w-full" disabled={owned || !!pending || closed}
-                        variant={o.scope === "both" ? "default" : "outline"}
-                        onClick={() => setBuyTarget({ is_bundle: true, year: null, scope: o.scope, amount: o.price, label: `${t("bundle_title")} — ${scopeLabel(o.scope, lang)}` })}>
-                        {owned ? t("owned") : pending ? t("pending_request") : closed ? t("offer_closed") : t("buy_pack")}
-                      </Button>
+                      {o.free ? (
+                        <Button className="w-full" disabled={owned || isClaiming}
+                          variant={o.scope === "both" ? "default" : "outline"}
+                          onClick={() => claimFree(true, null, o.scope)}>
+                          {owned ? t("owned") : isClaiming ? t("sending") : t("claim_free")}
+                        </Button>
+                      ) : (
+                        <Button className="w-full" disabled={owned || !!pending || closed}
+                          variant={o.scope === "both" ? "default" : "outline"}
+                          onClick={() => setBuyTarget({ is_bundle: true, year: null, scope: o.scope, amount: o.price, label: `${t("bundle_title")} — ${scopeLabel(o.scope, lang)}` })}>
+                          {owned ? t("owned") : pending ? t("pending_request") : closed ? t("offer_closed") : t("buy_pack")}
+                        </Button>
+                      )}
                     </div>
                   );
                 })}
@@ -176,20 +206,35 @@ function StorePage() {
                     {offers.map((o) => {
                       const owned = owns(false, p.year, o.scope);
                       const pending = pendingFor(false, p.year, o.scope);
+                      const isClaiming = claiming === `${p.year}-${o.scope}`;
                       return (
                         <div key={o.scope} className="rounded-md border px-3 py-2 space-y-2">
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-sm font-medium">{scopeLabel(o.scope, lang)}</span>
                             <div className="text-right">
-                              {o.onSale && !owned && <div className="text-[11px] text-muted-foreground line-through">{fmt(o.base, currency, locale)}</div>}
-                              <div className="text-sm font-bold">{fmt(o.price, currency, locale)}</div>
+                              {o.free ? (
+                                <div className="text-sm font-bold text-emerald-600">{t("free")}</div>
+                              ) : (
+                                <>
+                                  {o.onSale && !owned && <div className="text-[11px] text-muted-foreground line-through">{fmt(o.base, currency, locale)}</div>}
+                                  <div className="text-sm font-bold">{fmt(o.price, currency, locale)}</div>
+                                </>
+                              )}
                             </div>
                           </div>
-                          <Button size="sm" className="w-full" variant={o.scope === "both" ? "default" : "outline"}
-                            disabled={owned || !!pending || closed}
-                            onClick={() => setBuyTarget({ is_bundle: false, year: p.year, scope: o.scope, amount: o.price, label: `${t("year")} ${p.year} — ${scopeLabel(o.scope, lang)}` })}>
-                            {owned ? t("unlocked") : pending ? t("pending_validation") : closed ? t("offer_closed") : t("buy")}
-                          </Button>
+                          {o.free ? (
+                            <Button size="sm" className="w-full" variant={o.scope === "both" ? "default" : "outline"}
+                              disabled={owned || isClaiming}
+                              onClick={() => claimFree(false, p.year, o.scope)}>
+                              {owned ? t("unlocked") : isClaiming ? t("sending") : t("claim_free")}
+                            </Button>
+                          ) : (
+                            <Button size="sm" className="w-full" variant={o.scope === "both" ? "default" : "outline"}
+                              disabled={owned || !!pending || closed}
+                              onClick={() => setBuyTarget({ is_bundle: false, year: p.year, scope: o.scope, amount: o.price, label: `${t("year")} ${p.year} — ${scopeLabel(o.scope, lang)}` })}>
+                              {owned ? t("unlocked") : pending ? t("pending_validation") : closed ? t("offer_closed") : t("buy")}
+                            </Button>
+                          )}
                         </div>
                       );
                     })}
