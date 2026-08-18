@@ -88,6 +88,7 @@ function SignInForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -96,16 +97,11 @@ function SignInForm() {
     if (error) toast.error(error.message);
     else toast.success(t("sign_in"));
   };
-  const onForgot = async () => {
-    if (!email) { toast.error(tr("Entrez votre email d'abord")); return; }
-    setLoading(true);
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${getSiteUrl()}/reset-password`,
-    });
-    setLoading(false);
-    if (error) toast.error(error.message);
-    else toast.success(tr("Email de réinitialisation envoyé"));
-  };
+
+  if (forgotOpen) {
+    return <ForgotPasswordFlow initialEmail={email} onDone={() => setForgotOpen(false)} />;
+  }
+
   return (
     <form onSubmit={onSubmit} className="space-y-3 pt-4">
       <div className="space-y-1.5">
@@ -120,12 +116,94 @@ function SignInForm() {
         {loading ? t("signing_in") : t("sign_in")}
       </Button>
       <div className="text-right">
-        <button type="button" onClick={onForgot} disabled={loading}
+        <button type="button" onClick={() => setForgotOpen(true)} disabled={loading}
           className="text-xs text-muted-foreground underline-offset-2 hover:underline">
           {tr("Mot de passe oublié ?")}
         </button>
       </div>
     </form>
+  );
+}
+
+function ForgotPasswordFlow({ initialEmail, onDone }: { initialEmail: string; onDone: () => void }) {
+  const { tr } = useI18n();
+  const [step, setStep] = useState<"email" | "code">("email");
+  const [email, setEmail] = useState(initialEmail);
+  const [code, setCode] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const sendCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email) { toast.error(tr("Entrez votre email d'abord")); return; }
+    setLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${getSiteUrl()}/reset-password`,
+    });
+    setLoading(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success(tr("Code envoyé par email"));
+    setStep("code");
+  };
+
+  const confirmReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword.length < 6) { toast.error(tr("Mot de passe: 6 caractères minimum")); return; }
+    if (newPassword !== confirmPassword) { toast.error(tr("Les mots de passe ne correspondent pas")); return; }
+    setLoading(true);
+    const { error: otpError } = await supabase.auth.verifyOtp({ email, token: code, type: "recovery" });
+    if (otpError) { setLoading(false); toast.error(otpError.message); return; }
+    const { error: pwError } = await supabase.auth.updateUser({ password: newPassword });
+    await supabase.auth.signOut();
+    setLoading(false);
+    if (pwError) { toast.error(pwError.message); return; }
+    toast.success(tr("Mot de passe mis à jour — connectez-vous"));
+    onDone();
+  };
+
+  return (
+    <div className="pt-4">
+      {step === "email" ? (
+        <form onSubmit={sendCode} className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="fp-email">{tr("Email")}</Label>
+            <Input id="fp-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          </div>
+          <Button type="submit" className="w-full" disabled={loading}>
+            {loading ? tr("Envoi...") : tr("Envoyer le code")}
+          </Button>
+          <button type="button" onClick={onDone}
+            className="w-full text-center text-xs text-muted-foreground underline-offset-2 hover:underline">
+            {tr("Retour")}
+          </button>
+        </form>
+      ) : (
+        <form onSubmit={confirmReset} className="space-y-3">
+          <p className="text-xs text-muted-foreground">{tr("Entrez le code reçu à")} {email}</p>
+          <div className="space-y-1.5">
+            <Label htmlFor="fp-code">{tr("Code")}</Label>
+            <Input id="fp-code" inputMode="numeric" autoComplete="one-time-code" required
+              value={code} onChange={(e) => setCode(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="fp-pw">{tr("Nouveau mot de passe")}</Label>
+            <PasswordInput id="fp-pw" required minLength={6} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="fp-pw2">{tr("Confirmer")}</Label>
+            <PasswordInput id="fp-pw2" required minLength={6} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+          </div>
+          <Button type="submit" className="w-full" disabled={loading}>
+            {loading ? tr("Mise à jour...") : tr("Réinitialiser le mot de passe")}
+          </Button>
+          <button type="button" onClick={() => setStep("email")}
+            className="w-full text-center text-xs text-muted-foreground underline-offset-2 hover:underline">
+            {tr("Renvoyer / changer d'email")}
+          </button>
+        </form>
+      )}
+    </div>
   );
 }
 
