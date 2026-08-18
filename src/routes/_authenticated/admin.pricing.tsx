@@ -93,7 +93,6 @@ function PricingAdmin() {
       return;
     }
     toast.success(`${tr("Année")} ${yp.year} ${tr("enregistrée")}`);
-    await load();
   };
 
   const saveConfig = async () => {
@@ -115,7 +114,6 @@ function PricingAdmin() {
       return;
     }
     toast.success(tr("Pack enregistré"));
-    await load();
   };
 
   return (
