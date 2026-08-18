@@ -2573,7 +2573,8 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
   const [genPerYear, setGenPerYear] = useState<string>("4");
   const [genIncludeRattrapage, setGenIncludeRattrapage] = useState(false);
   const [genBusy, setGenBusy] = useState(false);
-  const [rattrapageYears, setRattrapageYears] = useState<string>("");
+  const [rattrapageFromYear, setRattrapageFromYear] = useState<string>(String(currentYear - 2));
+  const [rattrapageToYear, setRattrapageToYear] = useState<string>(String(currentYear));
   const [rattrapageBusy, setRattrapageBusy] = useState(false);
   const add = async () => {
     const v = label.trim();
@@ -2612,19 +2613,15 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
     if (error) toast.error(error.message); else { toast.success(`${rows.length} rotation(s) créée(s)`); onChanged(); }
   };
   const generateRattrapage = async () => {
-    const years = Array.from(new Set(
-      rattrapageYears
-        .split(/[,\s]+/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((s) => parseInt(s, 10))
-        .filter((n) => Number.isFinite(n)),
-    )).sort((a, b) => a - b);
-    if (years.length === 0) { toast.error("Indiquez au moins une année (ex: 2023, 2024)"); return; }
+    const fromY = parseInt(rattrapageFromYear, 10);
+    const toY = parseInt(rattrapageToYear, 10);
+    if (!Number.isFinite(fromY) || !Number.isFinite(toY)) { toast.error("Valeurs invalides"); return; }
+    if (fromY > toY) { toast.error("Année de début > année de fin"); return; }
+    if (toY - fromY > 30) { toast.error("Plage d'années trop large"); return; }
     const existing = new Set(rotations.map(r => r.label.toLowerCase()));
     const rows: { module_id: string; label: string; sort_order: number }[] = [];
     let next = (rotations[rotations.length - 1]?.sort_order ?? 0) + 1;
-    for (const y of years) {
+    for (let y = fromY; y <= toY; y++) {
       const lbl = `Rattrapage ${y}`;
       if (existing.has(lbl.toLowerCase())) continue;
       rows.push({ module_id: moduleId, label: lbl, sort_order: next++ });
@@ -2634,7 +2631,7 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
     setRattrapageBusy(true);
     const { error } = await supabase.from("module_rotations").insert(rows);
     setRattrapageBusy(false);
-    if (error) toast.error(error.message); else { toast.success(`${rows.length} rotation(s) créée(s)`); setRattrapageYears(""); onChanged(); }
+    if (error) toast.error(error.message); else { toast.success(`${rows.length} rotation(s) créée(s)`); onChanged(); }
   };
   const rename = async (r: Rotation) => {
     const v = prompt("Nouveau nom", r.label)?.trim();
@@ -2703,11 +2700,15 @@ function RotationsPanel({ moduleId, rotations, canManage, isSuper, uid, onChange
             </div>
             <div className="rounded-md border bg-muted/30 p-3 space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium"><Sparkles className="h-4 w-4 text-primary" />Générer rattrapage par années</div>
-              <p className="text-xs text-muted-foreground">Crée « Rattrapage &lt;année&gt; » pour chaque année indiquée (séparées par virgule ou espace).</p>
+              <p className="text-xs text-muted-foreground">Crée « Rattrapage &lt;année&gt; » pour chaque année de la plage.</p>
               <div className="flex flex-wrap items-end gap-2">
                 <div>
-                  <Label className="text-xs">Années</Label>
-                  <Input value={rattrapageYears} onChange={(e) => setRattrapageYears(e.target.value)} placeholder="ex: 2023, 2024, 2025" className="w-56" />
+                  <Label className="text-xs">De l'année</Label>
+                  <Input type="number" value={rattrapageFromYear} onChange={(e) => setRattrapageFromYear(e.target.value)} className="w-24" />
+                </div>
+                <div>
+                  <Label className="text-xs">À l'année</Label>
+                  <Input type="number" value={rattrapageToYear} onChange={(e) => setRattrapageToYear(e.target.value)} className="w-24" />
                 </div>
                 <Button size="sm" onClick={generateRattrapage} disabled={rattrapageBusy}><Sparkles className="mr-1.5 h-4 w-4" />{rattrapageBusy ? "…" : "Générer"}</Button>
               </div>
