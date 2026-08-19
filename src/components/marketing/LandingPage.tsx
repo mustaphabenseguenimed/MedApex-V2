@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -23,25 +23,40 @@ import {
 } from "lucide-react";
 
 export function LandingPage() {
-  const [signedIn, setSignedIn] = useState(false);
+  const navigate = useNavigate();
+  const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSignedIn(!!data.session));
-  }, []);
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) {
+        navigate({ to: "/dashboard", replace: true });
+      } else {
+        setChecking(false);
+      }
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_IN" && session) navigate({ to: "/dashboard", replace: true });
+    });
+    return () => sub.subscription.unsubscribe();
+  }, [navigate]);
+
+  if (checking) {
+    return <div className="min-h-screen bg-background" />;
+  }
 
   return (
     <div className="min-h-screen bg-background">
-      <SiteHeader signedIn={signedIn} />
-      <Hero signedIn={signedIn} />
+      <SiteHeader />
+      <Hero />
       <ValueProps />
       <Examples />
-      <ClosingCta signedIn={signedIn} />
+      <ClosingCta />
       <SiteFooter />
     </div>
   );
 }
 
-function SiteHeader({ signedIn }: { signedIn: boolean }) {
+function SiteHeader() {
   const { tr } = useI18n();
   return (
     <header className="sticky top-0 z-20 border-b border-border/60 bg-background/80 backdrop-blur">
@@ -54,9 +69,7 @@ function SiteHeader({ signedIn }: { signedIn: boolean }) {
         <div className="flex items-center gap-2">
           <LanguageSwitcher />
           <Button asChild size="sm">
-            <Link to={signedIn ? "/dashboard" : "/login"}>
-              {signedIn ? tr("Tableau de bord") : tr("Se connecter")}
-            </Link>
+            <Link to="/login">{tr("Se connecter")}</Link>
           </Button>
         </div>
       </div>
@@ -64,7 +77,7 @@ function SiteHeader({ signedIn }: { signedIn: boolean }) {
   );
 }
 
-function Hero({ signedIn }: { signedIn: boolean }) {
+function Hero() {
   const { tr } = useI18n();
   return (
     <section className="mx-auto max-w-4xl px-6 pb-14 pt-16 text-center sm:pt-24">
@@ -80,8 +93,8 @@ function Hero({ signedIn }: { signedIn: boolean }) {
       </p>
       <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
         <Button asChild size="lg" className="btn-glow">
-          <Link to={signedIn ? "/dashboard" : "/login"}>
-            {signedIn ? tr("Continuer") : tr("Commencer gratuitement")}
+          <Link to="/login">
+            {tr("Commencer gratuitement")}
             <ChevronRight className="ml-1 h-4 w-4" />
           </Link>
         </Button>
@@ -413,9 +426,8 @@ function ExampleResume({ title, badge, html }: { title: string; badge: string; h
   );
 }
 
-function ClosingCta({ signedIn }: { signedIn: boolean }) {
+function ClosingCta() {
   const { tr } = useI18n();
-  if (signedIn) return null;
   return (
     <section className="border-t border-border/60 bg-muted/20 py-16">
       <div className="mx-auto max-w-2xl px-6 text-center">
