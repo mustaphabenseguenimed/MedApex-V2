@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { Toaster } from "sonner";
 import { useI18n, LanguageSwitcher } from "@/lib/i18n";
+import { getSiteUrl } from "@/lib/site-url";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -65,10 +66,16 @@ function Tagline() {
 }
 
 function AuthCard() {
-  const { t } = useI18n();
+  const { t, tr } = useI18n();
   return (
     <Card className="surface-card border-0 shadow-none">
       <CardContent className="pt-6">
+        <GoogleButton />
+        <div className="my-4 flex items-center gap-3">
+          <div className="h-px flex-1 bg-border" />
+          <span className="text-xs text-muted-foreground">{tr("ou")}</span>
+          <div className="h-px flex-1 bg-border" />
+        </div>
         <Tabs defaultValue="signin">
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="signin">{t("tab_signin")}</TabsTrigger>
@@ -79,6 +86,30 @@ function AuthCard() {
         </Tabs>
       </CardContent>
     </Card>
+  );
+}
+
+function GoogleButton() {
+  const { tr } = useI18n();
+  const [loading, setLoading] = useState(false);
+  const onClick = async () => {
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: getSiteUrl() },
+    });
+    if (error) { setLoading(false); toast.error(error.message); }
+  };
+  return (
+    <Button type="button" variant="outline" className="w-full" onClick={onClick} disabled={loading}>
+      <svg viewBox="0 0 48 48" className="mr-2 h-4 w-4" aria-hidden="true">
+        <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 8 3l5.7-5.7C34.5 6 29.5 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z"/>
+        <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.9 18.9 13 24 13c3.1 0 5.8 1.1 8 3l5.7-5.7C34.5 6 29.5 4 24 4c-7.6 0-14.1 4.3-17.7 10.7z"/>
+        <path fill="#4CAF50" d="M24 44c5.4 0 10.3-1.9 14-5.3l-6.5-5.4c-2 1.5-4.7 2.4-7.5 2.4-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.8 39.7 16.4 44 24 44z"/>
+        <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.3-4.1 5.7l6.5 5.4C40.5 36.5 44 30.9 44 24c0-1.3-.1-2.7-.4-3.5z"/>
+      </svg>
+      {loading ? tr("Redirection...") : tr("Continuer avec Google")}
+    </Button>
   );
 }
 
@@ -99,7 +130,7 @@ function SignInForm() {
     if (!email) { toast.error(tr("Entrez votre email d'abord")); return; }
     setLoading(true);
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo: `${getSiteUrl()}/reset-password`,
     });
     setLoading(false);
     if (error) toast.error(error.message);
@@ -143,7 +174,7 @@ function SignUpForm() {
       email,
       password,
       options: {
-        emailRedirectTo: window.location.origin,
+        emailRedirectTo: getSiteUrl(),
         data: { display_name: name },
       },
     });
