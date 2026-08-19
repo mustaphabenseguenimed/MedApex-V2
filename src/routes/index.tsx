@@ -8,7 +8,7 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Med Apex regroupe des QCM, des cas cliniques et des résumés de cours pour l'externat, la rattrapage et le résidanat, avec des explications détaillées en français.",
+          "Med Apex regroupe des QCM, des cas cliniques et des résumés de cours pour l'externat, le rattrapage et le résidanat, avec des explications détaillées en français.",
       },
     ],
   }),
