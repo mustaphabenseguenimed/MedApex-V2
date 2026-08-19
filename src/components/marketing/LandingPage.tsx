@@ -75,7 +75,7 @@ function Hero({ signedIn }: { signedIn: boolean }) {
       </h1>
       <p className="mx-auto mt-5 max-w-2xl text-balance text-base text-muted-foreground sm:text-lg">
         {tr(
-          "Med Apex regroupe des QCM, des cas cliniques et des résumés de cours pour l'externat (P1–P6), la rattrapage et le résidanat — avec des explications détaillées en français pour chaque réponse.",
+          "Med Apex regroupe des QCM, des cas cliniques et des résumés de cours pour l'externat (P1–P6), le rattrapage et le résidanat — avec des explications détaillées en français pour chaque réponse.",
         )}
       </p>
       <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
