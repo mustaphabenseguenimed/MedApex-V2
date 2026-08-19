@@ -502,7 +502,7 @@ export const extractQuestionsFromDocx = createServerFn({ method: "POST" })
     } catch (e: any) {
       throw new Error("Lecture du document Word impossible: " + (e?.message ?? "erreur"));
     }
-    if (!html) return { questions: [] as ExtractedQ[], engine: "lovable" as ExtractEngine };
+    if (!html) return { questions: [] as ExtractedQ[], engine: "local" as ExtractEngine };
 
     // Split into per-question chunks and run in parallel.
     const chunks = prepareChunks(html, 8, (c) => filterColorHint(colorXmlHint, c));
@@ -527,7 +527,7 @@ export const extractQuestionsFromDocx = createServerFn({ method: "POST" })
     );
     return {
       questions: results.flatMap((r: ExtractResult) => r.questions),
-      engine: (results[0]?.engine ?? "lovable") as ExtractEngine,
+      engine: (results[0]?.engine ?? "local") as ExtractEngine,
     };
   });
 
