@@ -1,12 +1,16 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { LoginPage } from "@/components/auth/LoginPage";
+import { LandingPage } from "@/components/marketing/LandingPage";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Med Apex — Connexion" },
-      { name: "description", content: "Connectez-vous à Med Apex, the ultimate medical source." },
+      { title: "Med Apex — QCM, cas cliniques et résumés pour l'externat" },
+      {
+        name: "description",
+        content:
+          "Med Apex regroupe des QCM, des cas cliniques et des résumés de cours pour l'externat, la rattrapage et le résidanat, avec des explications détaillées en français.",
+      },
     ],
   }),
-  component: LoginPage,
+  component: LandingPage,
 });

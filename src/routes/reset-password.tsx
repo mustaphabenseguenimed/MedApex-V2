@@ -48,7 +48,7 @@ function ResetPassword() {
     if (error) { toast.error(error.message); return; }
     toast.success(tr("Mot de passe mis à jour"));
     await supabase.auth.signOut();
-    navigate({ to: "/", replace: true });
+    navigate({ to: "/login", replace: true });
   };
 
   return (

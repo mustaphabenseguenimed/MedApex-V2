@@ -62,7 +62,7 @@ function Dashboard() {
     })();
   }, [year, unlockedYears]);
 
-  const signOut = async () => { await supabase.auth.signOut(); navigate({ to: "/", replace: true }); };
+  const signOut = async () => { await supabase.auth.signOut(); navigate({ to: "/login", replace: true }); };
   const name = profile?.display_name ?? email.split("@")[0] ?? "Étudiant";
 
   const openProof = async (path: string) => {
