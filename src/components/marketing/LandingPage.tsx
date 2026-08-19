@@ -276,40 +276,110 @@ function ExampleCasClinique() {
   );
 }
 
+/** Colors lifted from an actual uploaded résumé file (Dermatologie module). */
+const RESUME_COLORS = {
+  burgundy: "#8f1d3d",
+  navy: "#1f4e6b",
+  pinkBorder: "#f2c7d2",
+  amber: "#fff4cc",
+  amberBorder: "#e8c343",
+  amberLabel: "#7a5c00",
+  ink: "#232323",
+};
+
 function ExampleResume() {
   const { tr } = useI18n();
   return (
     <div>
-      <ExampleLabel icon={FileText} label={tr("Exemple de résumé de cours")} />
+      <ExampleLabel icon={FileText} label={tr("Exemple de résumé de cours (extrait réel)")} />
       <Card className="surface-card border-0 shadow-none">
         <CardContent className="pt-6">
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <Badge variant="secondary">{tr("Endocrinologie")}</Badge>
+            <Badge variant="secondary">{tr("Dermatologie")}</Badge>
             <Badge variant="outline">{tr("Résumé")}</Badge>
           </div>
-          <div className="space-y-3 text-sm leading-relaxed">
-            <h3 className="text-base font-semibold">{tr("Diabète de type 2 — points clés")}</h3>
-            <p>
-              {tr("Le diabète de type 2 associe une ")}
-              <strong>{tr("insulinorésistance")}</strong>
-              {tr(" et un déficit progressif de l'insulinosécrétion. Il représente ")}
-              <mark className="rounded bg-amber-200/60 px-1 dark:bg-amber-400/20">
-                {tr("environ 90% des cas de diabète")}
-              </mark>
-              {tr(".")}
-            </p>
-            <ul className="ml-4 list-disc space-y-1">
-              <li>{tr("Diagnostic : glycémie à jeun ≥ 1,26 g/L à deux reprises")}</li>
-              <li>
-                {tr("Première ligne thérapeutique : règles hygiéno-diététiques + metformine")}
-              </li>
-              <li>
+          {/* Reproduces the real typography/colors of an uploaded résumé HTML file rather than a made-up mockup. */}
+          <div
+            style={{
+              fontFamily: "Georgia, 'Iowan Old Style', serif",
+              color: RESUME_COLORS.ink,
+              fontSize: 15,
+            }}
+          >
+            <h3
+              style={{
+                background: RESUME_COLORS.navy,
+                color: "#fff",
+                fontFamily: "'Helvetica Neue', Arial, sans-serif",
+                fontSize: 17,
+                fontWeight: 700,
+                margin: "0 0 16px",
+                padding: "11px 16px",
+                borderRadius: 4,
+              }}
+            >
+              1. {tr("Mélanome")}
+            </h3>
+            <h4
+              style={{
+                fontFamily: "'Helvetica Neue', Arial, sans-serif",
+                fontSize: 14,
+                fontWeight: 700,
+                color: RESUME_COLORS.burgundy,
+                borderBottom: `2px solid ${RESUME_COLORS.pinkBorder}`,
+                paddingBottom: 5,
+                margin: "0 0 10px",
+              }}
+            >
+              {tr("Définition & généralités")}
+            </h4>
+            <ul style={{ margin: "0 0 14px", paddingLeft: 20 }}>
+              <li style={{ marginBottom: 5 }}>
                 {tr(
-                  "Dépistage des complications : fond d'œil, microalbuminurie, bilan cardiovasculaire",
+                  "Tumeur maligne développée aux dépens des mélanocytes ; apparaît le + souvent de novo, plus rarement sur naevus préexistant",
+                )}
+              </li>
+              <li style={{ marginBottom: 5 }}>
+                {tr(
+                  "Diagnostic clinique + dermatoscopie, confirmé par histologie + immunohistochimie",
+                )}
+              </li>
+              <li style={{ marginBottom: 5 }}>
+                {tr(
+                  "Gravité liée à l'épaisseur (indice de Breslow) ; grand potentiel métastatique",
                 )}
               </li>
             </ul>
+            <div
+              style={{
+                background: RESUME_COLORS.amber,
+                border: `1px solid ${RESUME_COLORS.amberBorder}`,
+                borderLeft: `5px solid ${RESUME_COLORS.amberBorder}`,
+                borderRadius: 4,
+                padding: "12px 16px",
+                fontSize: 14,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: "'Helvetica Neue', Arial, sans-serif",
+                  fontWeight: 700,
+                  color: RESUME_COLORS.amberLabel,
+                  marginRight: 4,
+                }}
+              >
+                {tr("⚡ À retenir —")}
+              </span>
+              {tr(
+                "ABCDE = outil clinique clé du SSM. Breslow = facteur pronostique majeur. Immunomarquage HMB45+ confirme le diagnostic.",
+              )}
+            </div>
           </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            {tr(
+              "Extrait fidèle (mise en forme et texte) d'un résumé réellement disponible sur la plateforme.",
+            )}
+          </p>
         </CardContent>
       </Card>
     </div>
