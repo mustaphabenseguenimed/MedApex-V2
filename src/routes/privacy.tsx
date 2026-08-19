@@ -33,7 +33,12 @@ function PrivacyPolicy() {
 
         <h1 className="text-3xl font-bold mt-4 mb-2">Politique de confidentialité</h1>
         <p className="text-sm text-muted-foreground mb-10">
-          MedApex · Dernière mise à jour : {new Date().toLocaleDateString("fr-FR", { year: "numeric", month: "long", day: "numeric" })}
+          MedApex · Dernière mise à jour :{" "}
+          {new Date().toLocaleDateString("fr-FR", {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          })}
         </p>
 
         <Section title="1. Qui nous sommes">
@@ -74,26 +79,23 @@ function PrivacyPolicy() {
             <li>Assurer la sécurité de la plateforme et prévenir les abus ;</li>
             <li>Communiquer avec vous en cas de besoin lié à votre compte ou votre paiement.</li>
           </ul>
-          <p>
-            Nous ne vendons pas vos données et ne les partageons pas à des fins publicitaires.
-          </p>
+          <p>Nous ne vendons pas vos données et ne les partageons pas à des fins publicitaires.</p>
         </Section>
 
         <Section title="4. Connexion avec Google">
           <p>
-            Si vous choisissez de vous connecter avec Google, nous recevons de Google votre
-            adresse e-mail, votre nom et votre photo de profil, dans le seul but de créer et
-            sécuriser votre compte MedApex. Nous ne demandons accès à aucune autre donnée de votre
-            compte Google (contacts, agenda, fichiers, etc.).
+            Si vous choisissez de vous connecter avec Google, nous recevons de Google votre adresse
+            e-mail, votre nom et votre photo de profil, dans le seul but de créer et sécuriser votre
+            compte MedApex. Nous ne demandons accès à aucune autre donnée de votre compte Google
+            (contacts, agenda, fichiers, etc.).
           </p>
         </Section>
 
         <Section title="5. Où sont stockées vos données">
           <p>
-            Vos données sont hébergées chez Supabase (base de données et authentification) au
-            sein de l'Union européenne, et le site est déployé via Vercel. Ces prestataires
-            agissent comme sous-traitants techniques et n'utilisent pas vos données à leurs
-            propres fins.
+            Vos données sont hébergées chez Supabase (base de données et authentification) au sein
+            de l'Union européenne, et le site est déployé via Vercel. Ces prestataires agissent
+            comme sous-traitants techniques et n'utilisent pas vos données à leurs propres fins.
           </p>
         </Section>
 
@@ -104,9 +106,7 @@ function PrivacyPolicy() {
             <li>Demander la correction ou la suppression de vos données ;</li>
             <li>Demander la suppression complète de votre compte.</li>
           </ul>
-          <p>
-            Pour exercer ces droits, contactez-nous à l'adresse indiquée ci-dessous.
-          </p>
+          <p>Pour exercer ces droits, contactez-nous à l'adresse indiquée ci-dessous.</p>
         </Section>
 
         <Section title="7. Conservation des données">
@@ -120,23 +120,38 @@ function PrivacyPolicy() {
 
         <Section title="8. Cookies">
           <p>
-            MedApex utilise uniquement des cookies techniques nécessaires au fonctionnement du
-            site (maintien de votre session de connexion). Nous n'utilisons pas de cookies
-            publicitaires ou de suivi tiers.
+            MedApex utilise uniquement des cookies techniques nécessaires au fonctionnement du site
+            (maintien de votre session de connexion). Nous n'utilisons pas de cookies publicitaires
+            ou de suivi tiers.
           </p>
         </Section>
 
         <Section title="9. Modifications de cette politique">
           <p>
-            Nous pouvons mettre à jour cette politique de confidentialité de temps à autre. La
-            date de dernière mise à jour est indiquée en haut de cette page.
+            Nous pouvons mettre à jour cette politique de confidentialité de temps à autre. La date
+            de dernière mise à jour est indiquée en haut de cette page.
+          </p>
+        </Section>
+
+        <Section title="Conditions d'utilisation">
+          <p>
+            Les règles d'utilisation du service (abonnements, usage autorisé, résiliation) sont
+            décrites dans nos{" "}
+            <Link to="/terms" className="text-primary hover:underline">
+              conditions d'utilisation
+            </Link>
+            .
           </p>
         </Section>
 
         <Section title="10. Contact">
           <p>
-            Pour toute question concernant cette politique ou vos données personnelles, contactez-nous à :{" "}
-            <a href="mailto:mustaphabensegueni.med@gmail.com" className="text-primary hover:underline">
+            Pour toute question concernant cette politique ou vos données personnelles,
+            contactez-nous à :{" "}
+            <a
+              href="mailto:mustaphabensegueni.med@gmail.com"
+              className="text-primary hover:underline"
+            >
               mustaphabensegueni.med@gmail.com
             </a>
           </p>

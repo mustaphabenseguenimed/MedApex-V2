@@ -466,6 +466,9 @@ function SiteFooter() {
           <Link to="/privacy" className="hover:text-foreground hover:underline">
             {tr("Confidentialité")}
           </Link>
+          <Link to="/terms" className="hover:text-foreground hover:underline">
+            {tr("Conditions d'utilisation")}
+          </Link>
           <span>© {new Date().getFullYear()} Med Apex</span>
         </div>
       </div>
