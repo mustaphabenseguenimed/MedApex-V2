@@ -25,6 +25,8 @@ import {
   TypeChip,
 } from "@/components/session/SessionShell";
 
+const LIMIT_PRESETS = [10, 20, 50, 100, 200];
+
 export const Route = createFileRoute("/_authenticated/questions/new")({
   head: () => ({
     meta: [
@@ -553,6 +555,23 @@ function NewSessionPage() {
                   setLimit(Math.max(1, Number(e.target.value) || 1));
                 }}
               />
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {LIMIT_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    disabled={total > 0 && preset > total}
+                    onClick={() => {
+                      setLimitTouched(true);
+                      setLimit(total > 0 ? Math.min(preset, total) : preset);
+                    }}
+                    className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:border-foreground/25 disabled:cursor-not-allowed disabled:opacity-40 aria-pressed:border-primary aria-pressed:bg-primary/10 aria-pressed:text-primary"
+                    aria-pressed={limit === preset}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </SessionSection>
