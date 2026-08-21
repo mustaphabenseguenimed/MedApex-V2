@@ -64,7 +64,9 @@ export const generateExplanationsForQuestion = createServerFn({ method: "POST" }
       "",
       `Question (${q.type}, polarité=${q.polarity}): ${q.stem}`,
       `Bonnes réponses (indices 0-based): [${correct.join(", ")}]`,
-      choices.length ? "Options:\n" + choices.map((c, i) => `${i}. ${c}`).join("\n") : `Réponse attendue: ${q.model_answer ?? ""}`,
+      choices.length
+        ? "Options:\n" + choices.map((c, i) => `${i}. ${c}`).join("\n")
+        : `Réponse attendue: ${q.model_answer ?? ""}`,
       q.explanation ? `\nContexte fourni par l'auteur: ${q.explanation}` : "",
     ].join("\n");
 
@@ -104,4 +106,44 @@ export const generateExplanationsForQuestion = createServerFn({ method: "POST" }
       }
       throw error;
     }
+  });
+
+export const askAboutQuestion = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) =>
+    z.object({ questionId: z.string().uuid(), query: z.string().min(1).max(500) }).parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    const { data: q, error: qErr } = await context.supabase
+      .from("questions")
+      .select("stem, choices, correct_indices, model_answer, explanation")
+      .eq("id", data.questionId)
+      .maybeSingle();
+    if (qErr) throw new Error(qErr.message);
+    if (!q) throw new Error("Question introuvable");
+
+    const google = getGeminiProvider();
+    if (!google) throw new Error("GOOGLE_GENERATIVE_AI_API_KEY manquante");
+    const model = google(GEMINI_DEFAULT_MODEL);
+
+    const choices = (q.choices as string[] | null) ?? [];
+    const correct = (q.correct_indices as number[] | null) ?? [];
+
+    const prompt = [
+      "Tu es un enseignant de médecine qui aide un étudiant à réviser une question de QCM.",
+      "Voici la question, pour contexte :",
+      `Question: ${q.stem}`,
+      choices.length
+        ? "Options:\n" +
+          choices.map((c, i) => `${i}. ${c}${correct.includes(i) ? " (correcte)" : ""}`).join("\n")
+        : `Réponse attendue: ${q.model_answer ?? ""}`,
+      q.explanation ? `Explication fournie par l'auteur: ${q.explanation}` : "",
+      "",
+      `L'étudiant demande : ${data.query}`,
+      "",
+      "Réponds en français, de façon claire et concise, en te concentrant sur ce qui aide à comprendre la question ci-dessus.",
+    ].join("\n");
+
+    const { text } = await generateText({ model, prompt });
+    return { answer: text };
   });
