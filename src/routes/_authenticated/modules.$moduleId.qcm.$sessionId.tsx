@@ -130,6 +130,7 @@ function QcmRunner() {
   const saveNote = useServerFn(upsertNote);
   const review = useServerFn(submitReview);
   const autoCards = useServerFn(createFlashcardsFromSession);
+  const ask = useServerFn(askAboutQuestion);
   const [session, setSession] = useState<Session | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [idx, setIdx] = useState(0);
@@ -142,6 +143,9 @@ function QcmRunner() {
   const [now, setNow] = useState(Date.now());
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [resumeQid, setResumeQid] = useState<string | null>(null);
+  const [askQueries, setAskQueries] = useState<Record<string, string>>({});
+  const [askAnswers, setAskAnswers] = useState<Record<string, string>>({});
+  const [askingId, setAskingId] = useState<string | null>(null);
   const finishedRef = useRef(false);
 
   useEffect(() => {
@@ -341,6 +345,20 @@ function QcmRunner() {
       toast.error(e.message ?? tr("Erreur de correction"));
     } finally {
       setGradingId(null);
+    }
+  };
+
+  const submitAsk = async (questionId: string) => {
+    const query = (askQueries[questionId] ?? "").trim();
+    if (!query) return;
+    setAskingId(questionId);
+    try {
+      const res: any = await ask({ data: { questionId, query } });
+      setAskAnswers((prev) => ({ ...prev, [questionId]: res.answer }));
+    } catch (e: any) {
+      toast.error(e.message ?? tr("Erreur IA"));
+    } finally {
+      setAskingId(null);
     }
   };
 
@@ -665,6 +683,45 @@ function QcmRunner() {
                           html={q.explanation}
                           className="text-sm prose prose-sm dark:prose-invert max-w-none"
                         />
+                      )}
+                    </div>
+                  )}
+                {!isExam &&
+                  revealed.has(q.id) &&
+                  (q.type === "qcm" || q.type === "qcs" || q.type === "qroc") && (
+                    <div className="pt-2 border-t">
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-1.5">
+                        <Search className="h-3.5 w-3.5" />
+                        {tr("Poser une question à l'IA sur ce sujet")}
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          value={askQueries[q.id] ?? ""}
+                          onChange={(e) =>
+                            setAskQueries((prev) => ({ ...prev, [q.id]: e.target.value }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && askingId !== q.id) submitAsk(q.id);
+                          }}
+                          placeholder={tr("Ex : pourquoi cette réponse est fausse ?")}
+                          className="text-sm"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() => submitAsk(q.id)}
+                          disabled={askingId === q.id || !(askQueries[q.id] ?? "").trim()}
+                        >
+                          {askingId === q.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Search className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </div>
+                      {askAnswers[q.id] && (
+                        <div className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm whitespace-pre-wrap">
+                          {askAnswers[q.id]}
+                        </div>
                       )}
                     </div>
                   )}
