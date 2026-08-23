@@ -19,7 +19,7 @@ import {
 import { ArrowLeft, Save, Trash2, Plus, Check, X, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { useAdminPermissions } from "@/hooks/use-permissions";
-import { useConfirm } from "@/hooks/use-confirm";
+import { useConfirm, usePromptDialog } from "@/hooks/use-confirm";
 import { useI18n } from "@/lib/i18n";
 
 export const Route = createFileRoute("/_authenticated/admin/payments")({
@@ -134,6 +134,7 @@ function PaymentsAdmin() {
 
 function RequestsPanel() {
   const { tr, lang } = useI18n();
+  const promptDialog = usePromptDialog();
   const [reqs, setReqs] = useState<Req[]>([]);
   const [profiles, setProfiles] = useState<Record<string, UserInfo>>({});
   const [filter, setFilter] = useState<"pending" | "approved" | "rejected" | "all">("pending");
@@ -171,7 +172,7 @@ function RequestsPanel() {
     }
   };
   const reject = async (id: string) => {
-    const reason = window.prompt(tr("Motif du rejet ?")) ?? "";
+    const reason = (await promptDialog(tr("Motif du rejet ?"))) ?? "";
     if (!reason.trim()) return;
     const { error } = await supabase.rpc("reject_payment_request", {
       _request_id: id,
