@@ -58,6 +58,13 @@ export const Route = createFileRoute("/_authenticated/modules/$moduleId/qcm/$ses
   component: QcmRunnerGate,
 });
 
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
+  ]);
+}
+
 function QcmRunnerGate() {
   const { moduleId } = Route.useParams();
   return (
@@ -353,7 +360,11 @@ function QcmRunner() {
     if (!query) return;
     setAskingId(questionId);
     try {
-      const res: any = await ask({ data: { questionId, query } });
+      const res: any = await withTimeout(
+        ask({ data: { questionId, query } }),
+        30_000,
+        tr("Délai dépassé, réessayez"),
+      );
       setAskAnswers((prev) => ({ ...prev, [questionId]: res.answer }));
     } catch (e: any) {
       toast.error(e.message ?? tr("Erreur IA"));
@@ -996,7 +1007,11 @@ function ReviewCard({
     if (!askQuery.trim()) return;
     setAsking(true);
     try {
-      const res: any = await ask({ data: { questionId: q.id, query: askQuery.trim() } });
+      const res: any = await withTimeout(
+        ask({ data: { questionId: q.id, query: askQuery.trim() } }),
+        30_000,
+        tr("Délai dépassé, réessayez"),
+      );
       setAskAnswer(res.answer);
     } catch (e: any) {
       toast.error(e.message ?? tr("Erreur IA"));
