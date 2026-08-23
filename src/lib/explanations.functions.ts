@@ -131,7 +131,7 @@ export const askAboutQuestion = createServerFn({ method: "POST" })
 
     const prompt = [
       "Tu es un enseignant de médecine qui aide un étudiant à réviser une question de QCM.",
-      "Voici la question, pour contexte :",
+      "Contexte (ne le recopie pas dans ta réponse) :",
       `Question: ${q.stem}`,
       choices.length
         ? "Options:\n" +
@@ -139,16 +139,23 @@ export const askAboutQuestion = createServerFn({ method: "POST" })
         : `Réponse attendue: ${q.model_answer ?? ""}`,
       q.explanation ? `Explication fournie par l'auteur: ${q.explanation}` : "",
       "",
-      `L'étudiant demande : ${data.query}`,
+      `Question de l'étudiant : ${data.query}`,
       "",
-      "Réponds en français, de façon claire et concise, en te concentrant sur ce qui aide à comprendre la question ci-dessus.",
+      "Consignes : réponds uniquement à cette question, en français, de façon directe et concise (quelques phrases, ou une courte liste si utile). Base-toi sur des données médicales fiables et à jour ; si tu n'es pas certain d'un fait, dis-le plutôt que de l'inventer. Ne recopie pas l'énoncé ni les options.",
     ].join("\n");
 
     try {
       const { text } = await generateText({
         model,
         prompt,
+        temperature: 0.3,
+        maxOutputTokens: 700,
         abortSignal: AbortSignal.timeout(25_000),
+        providerOptions: {
+          google: {
+            thinkingConfig: { thinkingLevel: "low" },
+          },
+        },
       });
       return { answer: text };
     } catch (error: any) {
