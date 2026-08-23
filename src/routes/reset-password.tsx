@@ -5,14 +5,17 @@ import { Button } from "@/components/ui/button";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
-import { toast, Toaster } from "sonner";
+import { toast } from "sonner";
 import { useTr } from "@/lib/i18n";
 
 export const Route = createFileRoute("/reset-password")({
   head: () => ({
     meta: [
       { title: "Med Apex — Réinitialiser le mot de passe" },
-      { name: "description", content: "Choisissez un nouveau mot de passe pour votre compte Med Apex." },
+      {
+        name: "description",
+        content: "Choisissez un nouveau mot de passe pour votre compte Med Apex.",
+      },
     ],
   }),
   component: ResetPassword,
@@ -40,12 +43,21 @@ function ResetPassword() {
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password.length < 6) { toast.error(tr("Mot de passe: 6 caractères minimum")); return; }
-    if (password !== confirm) { toast.error(tr("Les mots de passe ne correspondent pas")); return; }
+    if (password.length < 6) {
+      toast.error(tr("Mot de passe: 6 caractères minimum"));
+      return;
+    }
+    if (password !== confirm) {
+      toast.error(tr("Les mots de passe ne correspondent pas"));
+      return;
+    }
     setLoading(true);
     const { error } = await supabase.auth.updateUser({ password });
     setLoading(false);
-    if (error) { toast.error(error.message); return; }
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
     toast.success(tr("Mot de passe mis à jour"));
     await supabase.auth.signOut();
     navigate({ to: "/login", replace: true });
@@ -53,11 +65,12 @@ function ResetPassword() {
 
   return (
     <div className="relative flex min-h-screen items-center justify-center px-4 py-10">
-      <Toaster richColors position="top-center" />
       <div className="w-full max-w-md">
         <div className="mb-8 text-center">
           <h1 className="text-4xl font-bold tracking-tight text-gradient">Med Apex</h1>
-          <p className="mt-3 text-sm text-muted-foreground">{tr("Choisissez un nouveau mot de passe")}</p>
+          <p className="mt-3 text-sm text-muted-foreground">
+            {tr("Choisissez un nouveau mot de passe")}
+          </p>
         </div>
         <Card className="surface-card border-0 shadow-none">
           <CardContent className="pt-6">
@@ -69,11 +82,23 @@ function ResetPassword() {
               <form onSubmit={onSubmit} className="space-y-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="rp-pw">{tr("Nouveau mot de passe")}</Label>
-                  <PasswordInput id="rp-pw" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} />
+                  <PasswordInput
+                    id="rp-pw"
+                    required
+                    minLength={6}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="rp-pw2">{tr("Confirmer")}</Label>
-                  <PasswordInput id="rp-pw2" required minLength={6} value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+                  <PasswordInput
+                    id="rp-pw2"
+                    required
+                    minLength={6}
+                    value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)}
+                  />
                 </div>
                 <Button type="submit" className="w-full" disabled={loading}>
                   {loading ? tr("Mise à jour...") : tr("Mettre à jour")}

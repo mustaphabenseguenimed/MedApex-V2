@@ -13,6 +13,8 @@ import appCss from "../styles.css?url";
 import { LanguageProvider } from "../lib/i18n";
 import { ThemeProvider, themeInitScript } from "../lib/theme";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { ConfirmDialogProvider } from "../hooks/use-confirm";
+import { Toaster } from "../components/ui/sonner";
 
 function NotFoundComponent() {
   return (
@@ -125,11 +127,14 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <LanguageProvider>
-          {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-          <Outlet />
-          <div className="fixed right-3 top-3 z-50 print:hidden">
-            <ThemeToggle />
-          </div>
+          <ConfirmDialogProvider>
+            {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+            <Outlet />
+            <div className="fixed right-3 top-3 z-50 print:hidden">
+              <ThemeToggle />
+            </div>
+            <Toaster richColors position="top-center" />
+          </ConfirmDialogProvider>
         </LanguageProvider>
       </ThemeProvider>
     </QueryClientProvider>
