@@ -144,6 +144,17 @@ export const askAboutQuestion = createServerFn({ method: "POST" })
       "Réponds en français, de façon claire et concise, en te concentrant sur ce qui aide à comprendre la question ci-dessus.",
     ].join("\n");
 
-    const { text } = await generateText({ model, prompt });
-    return { answer: text };
+    try {
+      const { text } = await generateText({
+        model,
+        prompt,
+        abortSignal: AbortSignal.timeout(25_000),
+      });
+      return { answer: text };
+    } catch (error: any) {
+      if (error?.name === "AbortError" || error?.name === "TimeoutError") {
+        throw new Error("L'IA met trop de temps à répondre, réessayez.");
+      }
+      throw error;
+    }
   });
