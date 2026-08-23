@@ -9,7 +9,8 @@ import {
   generateExplanationsForQuestion,
   getQuestionExplanations,
 } from "@/lib/explanations.functions";
-import { RichText } from "@/components/RichText";
+import { RichText, sanitizeExplanationHtml } from "@/components/RichText";
+import { markdownToHtml } from "@/lib/markdown";
 import { CaseRunner } from "@/components/session/CaseRunner";
 import {
   createFlashcard,
@@ -730,9 +731,12 @@ function QcmRunner() {
                         </Button>
                       </div>
                       {askAnswers[q.id] && (
-                        <div className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm whitespace-pre-wrap">
-                          {askAnswers[q.id]}
-                        </div>
+                        <div
+                          className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm prose prose-sm dark:prose-invert max-w-none"
+                          dangerouslySetInnerHTML={{
+                            __html: sanitizeExplanationHtml(markdownToHtml(askAnswers[q.id])),
+                          }}
+                        />
                       )}
                     </div>
                   )}
@@ -1171,9 +1175,12 @@ function ReviewCard({
             </Button>
           </div>
           {askAnswer && (
-            <div className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm whitespace-pre-wrap">
-              {askAnswer}
-            </div>
+            <div
+              className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm prose prose-sm dark:prose-invert max-w-none"
+              dangerouslySetInnerHTML={{
+                __html: sanitizeExplanationHtml(markdownToHtml(askAnswer)),
+              }}
+            />
           )}
         </div>
       </CardContent>
