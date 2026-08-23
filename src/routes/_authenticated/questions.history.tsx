@@ -18,6 +18,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
+import { useConfirm } from "@/hooks/use-confirm";
 import { AnyScopeGate } from "@/lib/scopes";
 
 export const Route = createFileRoute("/_authenticated/questions/history")({
@@ -55,6 +56,7 @@ type Mod = { id: string; title: string; year: number | null };
 
 function HistoryPage() {
   const { t, tr } = useI18n();
+  const confirm = useConfirm();
   const [rows, setRows] = useState<Row[]>([]);
   const [mods, setMods] = useState<Record<string, string>>({});
   const [modYear, setModYear] = useState<Record<string, number | null>>({});
@@ -115,7 +117,12 @@ function HistoryPage() {
   const deleteSession = async (id: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!confirm(tr("Supprimer cette session ? Cette action est irréversible."))) return;
+    if (
+      !(await confirm(tr("Supprimer cette session ? Cette action est irréversible."), {
+        variant: "destructive",
+      }))
+    )
+      return;
     const { error } = await supabase.from("qcm_sessions").delete().eq("id", id);
     if (error) {
       toast.error(error.message);
