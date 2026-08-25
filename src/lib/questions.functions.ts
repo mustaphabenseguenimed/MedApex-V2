@@ -350,6 +350,7 @@ const INSTRUCTIONS = (hint?: string) =>
     "- year_hint: année d'études visible sur le document (ex: '3ème année', 'DCEM2', '4A'), sinon null.",
     "- rotation_hint: période/rotation visible (ex: 'P1 2026', 'Résidanat 2024', 'Rotation 2'), sinon null.",
     "- case_stem: CAS CLINIQUES. Si plusieurs questions consécutives partagent un même énoncé/vignette clinique (observation d'un patient suivie de plusieurs questions), recopie ce texte commun À L'IDENTIQUE dans case_stem pour CHACUNE de ces questions, et NE le répète PAS dans leur champ stem (stem = uniquement la question elle-même). Pour une question isolée, case_stem = null.",
+    'Si un paragraphe <p data-doc-intro="1">…</p> précède les questions, c\'est probablement une vignette clinique partagée par les questions de cet extrait (même sans étiquette "Cas clinique"): si c\'est bien le cas, recopie CE TEXTE À L\'IDENTIQUE (verbatim, sans le paraphraser) dans case_stem pour chaque question concernée, exactement comme pour un cas clinique explicite.',
     'IMPORTANT couleurs: PRÉSERVE fidèlement les couleurs et surlignages (highlighter) présents dans la source. Encode-les en HTML: <span style="color:#RRGGBB">…</span> pour les couleurs de texte et <span style="background-color:#RRGGBB">…</span> pour les surlignages/highlighter. Si le fragment `colorHint` est fourni ci-dessous, applique ces styles exacts autour des fragments de texte listés.',
     "Respecte l'ordre d'apparition des questions dans le document.",
     hint ? `Contexte fourni par l'admin: ${hint}` : "",
