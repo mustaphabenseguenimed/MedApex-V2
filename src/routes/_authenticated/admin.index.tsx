@@ -1227,6 +1227,8 @@ function ImportFromFiles({
   const [engines, setEngines] = useState<string[]>([]);
   /** Mode sans IA : analyse locale gratuite (0 crédit). */
   const [noAi, setNoAi] = useState(false);
+  /** Détection des cas cliniques (regroupement des sous-questions). */
+  const [detectCases, setDetectCases] = useState(true);
   /** Collage direct de JSON (0 crédit). */
   const [jsonPaste, setJsonPaste] = useState("");
   /** JSON = un cas clinique (énoncé commun + sous-questions). */
@@ -1402,7 +1404,9 @@ function ImportFromFiles({
             source: job.name,
             order: baseOrder,
             run: async () => {
-              const r = await extractImg({ data: { imageDataUrl: dataUrl, hint: h } });
+              const r = await extractImg({
+                data: { imageDataUrl: dataUrl, hint: h, detectCases },
+              });
               noteEngine((r as any).engine);
               return { qs: r.questions ?? [] };
             },
@@ -1427,7 +1431,9 @@ function ImportFromFiles({
           });
         } else if (job.kind === "text") {
           const raw = await file.text();
-          const { chunks, totalExpected } = await prepText({ data: { text: raw } });
+          const { chunks, totalExpected } = await prepText({
+            data: { text: raw, detectCases },
+          });
           if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
           expected += totalExpected;
           setJobs((prev) =>
@@ -1442,7 +1448,13 @@ function ImportFromFiles({
               order: baseOrder + i,
               run: async () => {
                 const r = await extractHtml({
-                  data: { html: c.html, hint: h, expected: c.expected, allowNoAi: noAi },
+                  data: {
+                    html: c.html,
+                    hint: h,
+                    expected: c.expected,
+                    allowNoAi: noAi,
+                    detectCases,
+                  },
                 });
                 noteEngine((r as any).engine);
                 return {
@@ -1454,7 +1466,9 @@ function ImportFromFiles({
           );
         } else if (job.kind === "docx") {
           const dataUrl = await readAsDataUrl(file);
-          const { chunks, totalExpected } = await prepDocx({ data: { docxDataUrl: dataUrl } });
+          const { chunks, totalExpected } = await prepDocx({
+            data: { docxDataUrl: dataUrl, detectCases },
+          });
           expected += totalExpected;
           setJobs((prev) =>
             prev.map((j) =>
@@ -1474,6 +1488,7 @@ function ImportFromFiles({
                     hint: h,
                     expected: c.expected,
                     allowNoAi: noAi,
+                    detectCases,
                   },
                 });
                 noteEngine((r as any).engine);
@@ -1496,7 +1511,9 @@ function ImportFromFiles({
             const scannedRatio = pages.length ? scannedPages.length / pages.length : 1;
             if (scannedRatio <= 0.3) {
               const text = pages.join("\n");
-              const { chunks, totalExpected } = await prepText({ data: { text } });
+              const { chunks, totalExpected } = await prepText({
+                data: { text, detectCases },
+              });
               if (chunks.length) {
                 usedTextPath = true;
                 expected += totalExpected;
@@ -1523,7 +1540,13 @@ function ImportFromFiles({
                     order: baseOrder + i,
                     run: async () => {
                       const r = await extractHtml({
-                        data: { html: c.html, hint: h, expected: c.expected, allowNoAi: noAi },
+                        data: {
+                          html: c.html,
+                          hint: h,
+                          expected: c.expected,
+                          allowNoAi: noAi,
+                          detectCases,
+                        },
                       });
                       noteEngine((r as any).engine);
                       return {
@@ -1573,7 +1596,7 @@ function ImportFromFiles({
               order: baseOrder + ci,
               run: async () => {
                 const r = await extractPdfChunk({
-                  data: { pdfDataUrl: dataUrl, filename: chunkName, hint: h },
+                  data: { pdfDataUrl: dataUrl, filename: chunkName, hint: h, detectCases },
                 });
                 noteEngine((r as any).engine);
                 return { qs: r.questions ?? [], warning: (r as any).warning as string | undefined };
@@ -1911,11 +1934,6 @@ function ImportFromFiles({
 
       // Clinical cases: questions sharing a `case_stem` become sub-questions of
       // a single `cas_clinique` parent inserted first.
-      const caseKey = (q: ReviewItem) =>
-        (q.case_stem ?? "")
-          .replace(/<[^>]*>/g, " ")
-          .replace(/\s+/g, " ")
-          .trim();
       const caseParentId = new Map<string, string>();
       const caseKeys: string[] = [];
       for (const q of kept) {
@@ -1966,6 +1984,21 @@ function ImportFromFiles({
 
   const updateItem = (i: number, patch: Partial<ReviewItem>) => {
     setItems((prev) => prev.map((it, k) => (k === i ? { ...it, ...patch } : it)));
+  };
+
+  // Normalized grouping key for "questions sharing a cas-clinique énoncé" —
+  // shared with _importAll so the review list and the actual import agree on
+  // which questions belong together.
+  const caseKey = (q: ReviewItem) =>
+    (q.case_stem ?? "")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  /** Editing a shared case_stem updates every question in that case at once,
+   *  so they stay byte-identical (required for the grouping above to hold). */
+  const updateCaseStem = (key: string, html: string) => {
+    setItems((prev) => prev.map((it) => (caseKey(it) === key ? { ...it, case_stem: html } : it)));
   };
 
   const applyBulk = () => {
@@ -2268,6 +2301,21 @@ function ImportFromFiles({
                 Explication :) — 0 crédit. Images et PDF scannés nécessitent l'IA.
               </span>
             </div>
+            <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 p-2">
+              <Checkbox
+                id="detect-cases"
+                checked={detectCases}
+                onCheckedChange={(v) => setDetectCases(v === true)}
+              />
+              <Label htmlFor="detect-cases" className="cursor-pointer text-sm font-medium">
+                Détection des cas cliniques
+              </Label>
+              <span className="text-xs text-muted-foreground">
+                Regroupe les questions qui partagent un énoncé/vignette clinique commun. Désactivez
+                si vos fichiers ne contiennent pas de cas cliniques, pour éviter tout regroupement
+                erroné.
+              </span>
+            </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Button onClick={analyzeAll} disabled={jobs.length === 0 || busy}>
                 <Sparkles className="mr-1.5 h-4 w-4" />
@@ -2406,264 +2454,288 @@ function ImportFromFiles({
                     Détection auto
                   </Button>
                 </div>
-                {items.map((q, i) => (
-                  <div key={i} className="rounded-md border p-3 space-y-2 bg-muted/30">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={q.keep}
-                        onChange={(e) => updateItem(i, { keep: e.target.checked })}
-                      />
-                      <Badge variant="secondary" className="text-[10px]">
-                        {q.type.toUpperCase()}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        Q{i + 1} · {q.source}
-                      </span>
-                      {(q.course_hint || q.year_hint || q.rotation_hint) && (
-                        <span className="text-[10px] text-muted-foreground/80 truncate">
-                          {q.course_hint && <>· {q.course_hint} </>}
-                          {q.year_hint && <>· {q.year_hint} </>}
-                          {q.rotation_hint && <>· {q.rotation_hint}</>}
-                        </span>
-                      )}
-                      {q.detection_snippet && (
-                        <span
-                          className="text-[10px] text-muted-foreground font-mono truncate"
-                          title={q.detection_snippet}
-                        >
-                          source « {q.detection_snippet} »
-                        </span>
-                      )}
-                      {q.year_detected != null &&
-                        q.exam_year === "__none" &&
-                        q.year_detected !== year && (
-                          <Badge variant="destructive" className="text-[10px]">
-                            Année détectée: {q.year_detected}
-                          </Badge>
-                        )}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="ml-auto h-7 px-2 text-xs"
-                        onClick={() => updateItem(i, { preview: !q.preview })}
-                        title="Aperçu de la mise en forme"
-                      >
-                        {q.preview ? (
-                          <>
-                            <EyeOff className="mr-1 h-3.5 w-3.5" />
-                            Éditer
-                          </>
-                        ) : (
-                          <>
-                            <Eye className="mr-1 h-3.5 w-3.5" />
-                            Aperçu
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-3">
-                      <div className="space-y-1">
-                        <MultiSearchableSelect
-                          values={(q.rotation_ids ?? []).filter((r) => r && r !== "__none")}
-                          onValuesChange={(vals) => {
-                            const primary = primaryRotation(vals, rotations);
-                            updateItem(i, { rotation_ids: vals, rotation_id: primary ?? "__none" });
-                          }}
-                          options={rotationMultiOptions(rotations)}
-                          placeholder="Rotations (Pn)"
-                          searchPlaceholder="Rechercher une rotation…"
-                          triggerClassName="h-8"
-                        />
-                        {(q.rotation_ids ?? []).some((r) => r && r !== "__none") && (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 px-1.5 text-xs text-destructive"
-                            onClick={() =>
-                              updateItem(i, {
-                                rotation_ids: [],
-                                rotation_id: "__none",
-                                rotation_hint: null,
-                                rotation_hints: null,
-                              })
-                            }
-                          >
-                            <X className="mr-1 h-3 w-3" />
-                            Retirer toutes les rotations
-                          </Button>
-                        )}
-                      </div>
-                      <div className="space-y-1">
-                        <MultiSearchableSelect
-                          values={q.exam_years ?? []}
-                          onValuesChange={(vals) => {
-                            const latest = latestYear(vals);
-                            updateItem(i, {
-                              exam_years: vals,
-                              exam_year: latest != null ? String(latest) : "__none",
-                            });
-                          }}
-                          options={yearMultiOptions(tr, year)}
-                          placeholder="Années (la plus récente affichée)"
-                          searchPlaceholder="Rechercher une année…"
-                          triggerClassName="h-8"
-                        />
-                        {(q.exam_years ?? []).length > 0 && (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 px-1.5 text-xs text-destructive"
-                            onClick={() =>
-                              updateItem(i, {
-                                exam_years: [],
-                                exam_year: "__none",
-                                year_hint: null,
-                                year_hints: null,
-                                year_detected: null,
-                              })
-                            }
-                          >
-                            <X className="mr-1 h-3 w-3" />
-                            Retirer toutes les années
-                          </Button>
-                        )}
-                      </div>
-                      <SearchableSelect
-                        value={q.folder_id}
-                        onValueChange={(v) => updateItem(i, { folder_id: v })}
-                        options={folderOptions(tr, folders, "— cours —")}
-                        placeholder="Cours / dossier"
-                        triggerClassName="h-8"
-                      />
-                    </div>
-                    {q.preview ? (
-                      <div className="min-w-0 rounded-md border bg-background p-3 space-y-3">
-                        <div className="min-w-0">
-                          <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                            Énoncé
+                {items.map((q, i) => {
+                  const groupKey = caseKey(q);
+                  const isNewCaseGroup =
+                    groupKey !== "" && (i === 0 || groupKey !== caseKey(items[i - 1]));
+                  return (
+                    <div key={i}>
+                      {isNewCaseGroup && (
+                        <div className="mb-2 space-y-1.5 rounded-md border border-primary/40 bg-primary/5 p-3">
+                          <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+                            <Sparkles className="h-3.5 w-3.5" />
+                            Cas clinique — énoncé partagé
                           </div>
-                          <RichText
-                            html={q.stem}
-                            className="prose prose-sm max-w-none dark:prose-invert break-words [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
+                          <RichTextEditor
+                            value={q.case_stem ?? ""}
+                            onChange={(html) => updateCaseStem(groupKey, html)}
+                            placeholder="Énoncé du cas clinique…"
+                            minHeight={60}
                           />
                         </div>
-                        {q.type !== "qroc" && q.choices && q.choices.length > 0 && (
-                          <div className="min-w-0">
-                            <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                              Propositions
-                            </div>
-                            <ol className="list-none space-y-1">
-                              {q.choices.map((c, k) => {
-                                const isCorrect = (q.correct_indices ?? []).includes(k);
-                                return (
-                                  <li
-                                    key={k}
-                                    className={`flex min-w-0 gap-2 rounded px-2 py-1 text-sm ${isCorrect ? "bg-emerald-500/10 ring-1 ring-emerald-500/30" : ""}`}
-                                  >
-                                    <span className="font-mono text-xs text-muted-foreground pt-0.5 shrink-0">
-                                      {String.fromCharCode(65 + k)}.
-                                    </span>
-                                    <RichText
-                                      html={c}
-                                      className="prose prose-sm max-w-none dark:prose-invert min-w-0 flex-1 break-words [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
-                                    />
-                                  </li>
-                                );
-                              })}
-                            </ol>
-                          </div>
-                        )}
-                        {q.type === "qroc" && q.model_answer && (
-                          <div className="min-w-0">
-                            <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                              Réponse modèle
-                            </div>
-                            <RichText
-                              autoColor
-                              html={q.model_answer}
-                              className="prose prose-sm max-w-none dark:prose-invert break-words [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
-                            />
-                          </div>
-                        )}
-                        {q.explanation && (
-                          <div className="min-w-0">
-                            <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                              Explication
-                            </div>
-                            <RichText
-                              autoColor
-                              html={q.explanation}
-                              className="prose prose-sm max-w-none dark:prose-invert break-words [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <>
-                        <Textarea
-                          rows={2}
-                          value={q.stem}
-                          onChange={(e) => updateItem(i, { stem: e.target.value })}
-                        />
-                        {q.type !== "qroc" && q.choices && q.choices.length > 0 && (
+                      )}
+                      <div className="rounded-md border p-3 space-y-2 bg-muted/30">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={q.keep}
+                            onChange={(e) => updateItem(i, { keep: e.target.checked })}
+                          />
+                          <Badge variant="secondary" className="text-[10px]">
+                            {q.type.toUpperCase()}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">
+                            Q{i + 1} · {q.source}
+                          </span>
+                          {(q.course_hint || q.year_hint || q.rotation_hint) && (
+                            <span className="text-[10px] text-muted-foreground/80 truncate">
+                              {q.course_hint && <>· {q.course_hint} </>}
+                              {q.year_hint && <>· {q.year_hint} </>}
+                              {q.rotation_hint && <>· {q.rotation_hint}</>}
+                            </span>
+                          )}
+                          {q.detection_snippet && (
+                            <span
+                              className="text-[10px] text-muted-foreground font-mono truncate"
+                              title={q.detection_snippet}
+                            >
+                              source « {q.detection_snippet} »
+                            </span>
+                          )}
+                          {q.year_detected != null &&
+                            q.exam_year === "__none" &&
+                            q.year_detected !== year && (
+                              <Badge variant="destructive" className="text-[10px]">
+                                Année détectée: {q.year_detected}
+                              </Badge>
+                            )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="ml-auto h-7 px-2 text-xs"
+                            onClick={() => updateItem(i, { preview: !q.preview })}
+                            title="Aperçu de la mise en forme"
+                          >
+                            {q.preview ? (
+                              <>
+                                <EyeOff className="mr-1 h-3.5 w-3.5" />
+                                Éditer
+                              </>
+                            ) : (
+                              <>
+                                <Eye className="mr-1 h-3.5 w-3.5" />
+                                Aperçu
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-3">
                           <div className="space-y-1">
-                            {q.choices.map((c, k) => (
-                              <div key={k} className="flex items-center gap-2 text-sm">
-                                <input
-                                  type={q.type === "qcs" ? "radio" : "checkbox"}
-                                  name={`c-${i}`}
-                                  checked={(q.correct_indices ?? []).includes(k)}
-                                  onChange={() => {
-                                    const cur = new Set(q.correct_indices ?? []);
-                                    if (q.type === "qcs") {
-                                      cur.clear();
-                                      cur.add(k);
-                                    } else {
-                                      cur.has(k) ? cur.delete(k) : cur.add(k);
-                                    }
-                                    updateItem(i, {
-                                      correct_indices: [...cur].sort((a, b) => a - b),
-                                    });
-                                  }}
-                                />
-                                <Input
-                                  value={c}
-                                  onChange={(e) => {
-                                    const nc = [...(q.choices ?? [])];
-                                    nc[k] = e.target.value;
-                                    updateItem(i, { choices: nc });
-                                  }}
+                            <MultiSearchableSelect
+                              values={(q.rotation_ids ?? []).filter((r) => r && r !== "__none")}
+                              onValuesChange={(vals) => {
+                                const primary = primaryRotation(vals, rotations);
+                                updateItem(i, {
+                                  rotation_ids: vals,
+                                  rotation_id: primary ?? "__none",
+                                });
+                              }}
+                              options={rotationMultiOptions(rotations)}
+                              placeholder="Rotations (Pn)"
+                              searchPlaceholder="Rechercher une rotation…"
+                              triggerClassName="h-8"
+                            />
+                            {(q.rotation_ids ?? []).some((r) => r && r !== "__none") && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 px-1.5 text-xs text-destructive"
+                                onClick={() =>
+                                  updateItem(i, {
+                                    rotation_ids: [],
+                                    rotation_id: "__none",
+                                    rotation_hint: null,
+                                    rotation_hints: null,
+                                  })
+                                }
+                              >
+                                <X className="mr-1 h-3 w-3" />
+                                Retirer toutes les rotations
+                              </Button>
+                            )}
+                          </div>
+                          <div className="space-y-1">
+                            <MultiSearchableSelect
+                              values={q.exam_years ?? []}
+                              onValuesChange={(vals) => {
+                                const latest = latestYear(vals);
+                                updateItem(i, {
+                                  exam_years: vals,
+                                  exam_year: latest != null ? String(latest) : "__none",
+                                });
+                              }}
+                              options={yearMultiOptions(tr, year)}
+                              placeholder="Années (la plus récente affichée)"
+                              searchPlaceholder="Rechercher une année…"
+                              triggerClassName="h-8"
+                            />
+                            {(q.exam_years ?? []).length > 0 && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 px-1.5 text-xs text-destructive"
+                                onClick={() =>
+                                  updateItem(i, {
+                                    exam_years: [],
+                                    exam_year: "__none",
+                                    year_hint: null,
+                                    year_hints: null,
+                                    year_detected: null,
+                                  })
+                                }
+                              >
+                                <X className="mr-1 h-3 w-3" />
+                                Retirer toutes les années
+                              </Button>
+                            )}
+                          </div>
+                          <SearchableSelect
+                            value={q.folder_id}
+                            onValueChange={(v) => updateItem(i, { folder_id: v })}
+                            options={folderOptions(tr, folders, "— cours —")}
+                            placeholder="Cours / dossier"
+                            triggerClassName="h-8"
+                          />
+                        </div>
+                        {q.preview ? (
+                          <div className="min-w-0 rounded-md border bg-background p-3 space-y-3">
+                            <div className="min-w-0">
+                              <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                Énoncé
+                              </div>
+                              <RichText
+                                html={q.stem}
+                                className="prose prose-sm max-w-none dark:prose-invert break-words [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
+                              />
+                            </div>
+                            {q.type !== "qroc" && q.choices && q.choices.length > 0 && (
+                              <div className="min-w-0">
+                                <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  Propositions
+                                </div>
+                                <ol className="list-none space-y-1">
+                                  {q.choices.map((c, k) => {
+                                    const isCorrect = (q.correct_indices ?? []).includes(k);
+                                    return (
+                                      <li
+                                        key={k}
+                                        className={`flex min-w-0 gap-2 rounded px-2 py-1 text-sm ${isCorrect ? "bg-emerald-500/10 ring-1 ring-emerald-500/30" : ""}`}
+                                      >
+                                        <span className="font-mono text-xs text-muted-foreground pt-0.5 shrink-0">
+                                          {String.fromCharCode(65 + k)}.
+                                        </span>
+                                        <RichText
+                                          html={c}
+                                          className="prose prose-sm max-w-none dark:prose-invert min-w-0 flex-1 break-words [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
+                                        />
+                                      </li>
+                                    );
+                                  })}
+                                </ol>
+                              </div>
+                            )}
+                            {q.type === "qroc" && q.model_answer && (
+                              <div className="min-w-0">
+                                <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  Réponse modèle
+                                </div>
+                                <RichText
+                                  autoColor
+                                  html={q.model_answer}
+                                  className="prose prose-sm max-w-none dark:prose-invert break-words [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
                                 />
                               </div>
-                            ))}
+                            )}
+                            {q.explanation && (
+                              <div className="min-w-0">
+                                <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  Explication
+                                </div>
+                                <RichText
+                                  autoColor
+                                  html={q.explanation}
+                                  className="prose prose-sm max-w-none dark:prose-invert break-words [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto"
+                                />
+                              </div>
+                            )}
                           </div>
+                        ) : (
+                          <>
+                            <Textarea
+                              rows={2}
+                              value={q.stem}
+                              onChange={(e) => updateItem(i, { stem: e.target.value })}
+                            />
+                            {q.type !== "qroc" && q.choices && q.choices.length > 0 && (
+                              <div className="space-y-1">
+                                {q.choices.map((c, k) => (
+                                  <div key={k} className="flex items-center gap-2 text-sm">
+                                    <input
+                                      type={q.type === "qcs" ? "radio" : "checkbox"}
+                                      name={`c-${i}`}
+                                      checked={(q.correct_indices ?? []).includes(k)}
+                                      onChange={() => {
+                                        const cur = new Set(q.correct_indices ?? []);
+                                        if (q.type === "qcs") {
+                                          cur.clear();
+                                          cur.add(k);
+                                        } else {
+                                          cur.has(k) ? cur.delete(k) : cur.add(k);
+                                        }
+                                        updateItem(i, {
+                                          correct_indices: [...cur].sort((a, b) => a - b),
+                                        });
+                                      }}
+                                    />
+                                    <Input
+                                      value={c}
+                                      onChange={(e) => {
+                                        const nc = [...(q.choices ?? [])];
+                                        nc[k] = e.target.value;
+                                        updateItem(i, { choices: nc });
+                                      }}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {q.type === "qroc" && (
+                              <Textarea
+                                rows={2}
+                                placeholder="Réponse modèle"
+                                value={q.model_answer ?? ""}
+                                onChange={(e) => updateItem(i, { model_answer: e.target.value })}
+                              />
+                            )}
+                            <div className="space-y-1">
+                              <Label className="text-xs">
+                                Explication (mise en forme, couleurs, images)
+                              </Label>
+                              <RichTextEditor
+                                value={q.explanation ?? ""}
+                                onChange={(html) => updateItem(i, { explanation: html })}
+                                placeholder="Explication (optionnel)…"
+                                minHeight={80}
+                              />
+                            </div>
+                          </>
                         )}
-                        {q.type === "qroc" && (
-                          <Textarea
-                            rows={2}
-                            placeholder="Réponse modèle"
-                            value={q.model_answer ?? ""}
-                            onChange={(e) => updateItem(i, { model_answer: e.target.value })}
-                          />
-                        )}
-                        <div className="space-y-1">
-                          <Label className="text-xs">
-                            Explication (mise en forme, couleurs, images)
-                          </Label>
-                          <RichTextEditor
-                            value={q.explanation ?? ""}
-                            onChange={(html) => updateItem(i, { explanation: html })}
-                            placeholder="Explication (optionnel)…"
-                            minHeight={80}
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

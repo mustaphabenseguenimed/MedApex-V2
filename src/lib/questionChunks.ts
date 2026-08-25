@@ -269,7 +269,7 @@ const EXPLANATION_LINE_ONLY =
  * documents without numbering are grouped by option runs (a block followed by
  * A./B./C. lines starts a new question).
  */
-export function buildQuestionUnits(html: string): QuestionUnit[] {
+export function buildQuestionUnits(html: string, detectCases = true): QuestionUnit[] {
   const blocks = splitBlocks(html);
   const texts = blocks.map(stripTags);
   const numbered = texts.some((t) => isQuestionStart(t));
@@ -294,7 +294,7 @@ export function buildQuestionUnits(html: string): QuestionUnit[] {
 
   if (starts.length === 0) return [];
 
-  const vignettes = findCaseVignettes(texts, starts);
+  const vignettes = detectCases ? findCaseVignettes(texts, starts) : [];
   const allVignetteProseIndices = new Set<number>();
   vignettes.forEach((v) => v.proseIndices.forEach((i) => allVignetteProseIndices.add(i)));
 
@@ -307,10 +307,12 @@ export function buildQuestionUnits(html: string): QuestionUnit[] {
   // likely an implicit shared vignette — forward it as-is so the AI can
   // still detect the shared case, without us asserting case_stem ourselves.
   const DOC_INTRO_MIN_LEN = 150;
-  const docIntro = leadingTexts
-    .filter((t) => t.trim().length >= DOC_INTRO_MIN_LEN)
-    .join(" ")
-    .trim();
+  const docIntro = detectCases
+    ? leadingTexts
+        .filter((t) => t.trim().length >= DOC_INTRO_MIN_LEN)
+        .join(" ")
+        .trim()
+    : "";
   docHeader.doc_intro = docIntro || null;
 
   const units: QuestionUnit[] = [];
