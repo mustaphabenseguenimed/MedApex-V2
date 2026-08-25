@@ -13,6 +13,11 @@ export type QHeader = {
   course_hint: string | null;
   /** Shared clinical-case vignette this question belongs to, if any. */
   case_stem: string | null;
+  /** Long leading paragraph before the first question, with no structured
+   *  hint and no explicit "Cas clinique" marker — likely an implicit shared
+   *  vignette, forwarded to the AI as context so it can still detect the
+   *  case even though we don't assert case_stem ourselves. */
+  doc_intro: string | null;
 };
 
 export type QuestionUnit = {
@@ -42,15 +47,28 @@ const stripTags = (html: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-/** A numbered question start: "1.", "Q3)", "QCM 12 -", "N°4:". */
-const QUESTION_START =
-  /^\s*(?:<[^>]+>\s*)*(?:(?:Q(?:uestion)?|QCM|QCS|QROC|Cas)\s*)?[N°#]?\s*\d{1,3}\s*[.)\-:–]/i;
+/** A keyword-anchored question start: "Question 4", "QCM 12)", "Q3:" — and,
+ *  since the keyword alone is unambiguous, also a bare "Question 4" with NO
+ *  trailing punctuation (very common: Word often puts just the number on
+ *  its own line with nothing after it). */
+const QUESTION_START_KEYWORD =
+  /^\s*(?:<[^>]+>\s*)*(?:Q(?:uestion)?|QCM|QCS|QROC|Cas)\s*[N°#]?\s*\d{1,3}\s*[.)\-:–]?/i;
 
-/** An answer-option line: "A.", "b)", "- C -". */
-const OPTION_LINE = /^\s*[-•*]?\s*\(?([A-Ea-e])\s*[).:\-–]\s+/;
+/** A bare numbered start with no keyword: "1.", "N°4:". Ambiguous with a
+ *  numbered *option* line ("1. Some choice text") — callers must also check
+ *  `isOptionLine` before trusting this as a real question boundary. */
+const QUESTION_START_BARE = /^\s*(?:<[^>]+>\s*)*[N°#]?\s*\d{1,3}\s*[.)\-:–]/;
+
+/** An answer-option line: "A.", "b)", "- C -", "1.", "2)". */
+const OPTION_LINE = /^\s*[-•*]?\s*\(?([A-Ea-e]|[1-9])\s*[).:\-–]\s+/;
 
 export function isQuestionStart(text: string): boolean {
-  return QUESTION_START.test(text);
+  return QUESTION_START_KEYWORD.test(text) || QUESTION_START_BARE.test(text);
+}
+/** A question start that's unambiguous even without checking `isOptionLine` —
+ *  i.e. it has an explicit keyword, so it can never be a numbered choice. */
+export function isUnambiguousQuestionStart(text: string): boolean {
+  return QUESTION_START_KEYWORD.test(text);
 }
 export function isOptionLine(text: string): boolean {
   return OPTION_LINE.test(text);
@@ -62,8 +80,7 @@ const YEAR_RE =
   /((?:\d{1,2})\s*(?:è?re|ème|eme|er)?\s*(?:année|annee|an\b)|(?:DCEM|PCEM|DFGSM|DFASM)\s*\d|(?:\b[1-7]\s*A\b)|(?:\bA[1-7]\b)|(?<!\d)(20\d{2})(?!\d))/i;
 const ROTATION_RE =
   /((?:rotation|rot\.?|période|periode|stage)\s*n?°?\s*\d{1,2}|\bP\s?\d{1,2}\b|\bR\s?\d{1,2}\b|résidanat\s*\d{4}|residanat\s*\d{4}|résidanat|residanat)/i;
-const COURSE_RE =
-  /(?:cours|chapitre|module|matière|matiere|thème|theme|item)\s*[:\-–]\s*(.+)$/i;
+const COURSE_RE = /(?:cours|chapitre|module|matière|matiere|thème|theme|item)\s*[:\-–]\s*(.+)$/i;
 
 /** A line that is clearly leftover from the previous question's answer/explanation, never a header for the next one. */
 const ANSWER_OR_EXPLANATION_LINE =
@@ -89,11 +106,18 @@ export function isCaseMarkerLine(text: string): boolean {
  * previous question must never be treated as a header for this one.
  */
 export function parseContextHints(lines: string[]): QHeader {
-  const out: QHeader = { year_hint: null, rotation_hint: null, course_hint: null, case_stem: null };
+  const out: QHeader = {
+    year_hint: null,
+    rotation_hint: null,
+    course_hint: null,
+    case_stem: null,
+    doc_intro: null,
+  };
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
-    if (isOptionLine(line) || ANSWER_OR_EXPLANATION_LINE.test(line) || isCaseMarkerLine(line)) continue;
+    if (isOptionLine(line) || ANSWER_OR_EXPLANATION_LINE.test(line) || isCaseMarkerLine(line))
+      continue;
     if (!out.year_hint) {
       const m = line.match(YEAR_RE);
       if (m) out.year_hint = (m[1] || m[2]).trim();
@@ -129,6 +153,7 @@ function mergeHeader(base: QHeader, extra: QHeader): QHeader {
     rotation_hint: extra.rotation_hint ?? base.rotation_hint,
     course_hint: extra.course_hint ?? base.course_hint,
     case_stem: extra.case_stem ?? base.case_stem,
+    doc_intro: extra.doc_intro ?? base.doc_intro,
   };
 }
 
@@ -146,7 +171,9 @@ export function splitBlocks(html: string): string[] {
   const blockRe = /<(?:p|h[1-6]|li|div)\b[^>]*>[\s\S]*?<\/(?:p|h[1-6]|li|div)>/gi;
   const rawBlocks = withSentinels.match(blockRe) ?? [withSentinels];
   return rawBlocks
-    .map((b) => b.replace(new RegExp(`${sentinel}(\\d+)\uE001`, "g"), (_m, i) => tables[Number(i)] ?? ""))
+    .map((b) =>
+      b.replace(new RegExp(`${sentinel}(\\d+)\uE001`, "g"), (_m, i) => tables[Number(i)] ?? ""),
+    )
     .filter((b) => stripTags(b).length > 0 || /<(img|table)\b/i.test(b));
 }
 
@@ -170,7 +197,12 @@ function findCaseVignettes(
     const proseParts: string[] = [];
     const proseIndices = new Set<number>();
     let j = i + 1;
-    while (j < texts.length && !starts.includes(j) && !isOptionLine(texts[j]) && !isCaseMarkerLine(texts[j])) {
+    while (
+      j < texts.length &&
+      !starts.includes(j) &&
+      !isOptionLine(texts[j]) &&
+      !isCaseMarkerLine(texts[j])
+    ) {
       if (texts[j].trim()) {
         proseParts.push(texts[j].trim());
         proseIndices.add(j);
@@ -199,13 +231,23 @@ function findCaseVignettes(
       let interrupted = false;
       for (let k = from + 1; k < to; k++) {
         const t = texts[k];
-        if (isOptionLine(t)) { inExplanation = false; continue; }
-        if (ANSWER_LINE_ONLY.test(t)) { inExplanation = false; continue; }
-        if (EXPLANATION_LINE_ONLY.test(t)) { inExplanation = true; continue; }
+        if (isOptionLine(t)) {
+          inExplanation = false;
+          continue;
+        }
+        if (ANSWER_LINE_ONLY.test(t)) {
+          inExplanation = false;
+          continue;
+        }
+        if (EXPLANATION_LINE_ONLY.test(t)) {
+          inExplanation = true;
+          continue;
+        }
         // A short standalone line looks like a heading, not explanation prose,
         // even while "inExplanation" — treat it as the interruption rather
         // than silently folding it into the case.
-        const looksLikeHeading = t.trim().length > 0 && t.trim().length <= 90 && !/[.!?]\s*$/.test(t.trim());
+        const looksLikeHeading =
+          t.trim().length > 0 && t.trim().length <= 90 && !/[.!?]\s*$/.test(t.trim());
         if (inExplanation && !looksLikeHeading) continue; // explanation continuation line
         interrupted = true;
         break;
@@ -235,7 +277,11 @@ export function buildQuestionUnits(html: string): QuestionUnit[] {
   const starts: number[] = [];
   if (numbered) {
     texts.forEach((t, i) => {
-      if (isQuestionStart(t)) starts.push(i);
+      // A keyword-anchored match ("Question 4") is always a real boundary.
+      // A bare numeric match ("1.") is ambiguous with a numbered choice
+      // ("1. Some option text") — only trust it when it's NOT also an
+      // option line.
+      if (isUnambiguousQuestionStart(t) || (isQuestionStart(t) && !isOptionLine(t))) starts.push(i);
     });
   } else {
     // Unnumbered: the last non-option block right before an option run is the
@@ -254,9 +300,18 @@ export function buildQuestionUnits(html: string): QuestionUnit[] {
 
   // Document-level context = everything before the first question, excluding
   // any vignette marker/prose lines (those describe a case, not the course).
-  const docHeader = parseContextHints(
-    texts.slice(0, starts[0]).filter((_, i) => !allVignetteProseIndices.has(i)),
-  );
+  const leadingTexts = texts.slice(0, starts[0]).filter((_, i) => !allVignetteProseIndices.has(i));
+  const docHeader = parseContextHints(leadingTexts);
+  // A long leading paragraph (a real sentence, not a short label like "P3
+  // 2026") that isn't behind an explicit "Cas clinique" marker is very
+  // likely an implicit shared vignette — forward it as-is so the AI can
+  // still detect the shared case, without us asserting case_stem ourselves.
+  const DOC_INTRO_MIN_LEN = 150;
+  const docIntro = leadingTexts
+    .filter((t) => t.trim().length >= DOC_INTRO_MIN_LEN)
+    .join(" ")
+    .trim();
+  docHeader.doc_intro = docIntro || null;
 
   const units: QuestionUnit[] = [];
   for (let s = 0; s < starts.length; s++) {
@@ -296,6 +351,10 @@ export function countQuestions(html: string): number {
   return buildQuestionUnits(html).length;
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 /** Group question units into chunks of `perChunk` questions. */
 export function chunkUnits(
   units: QuestionUnit[],
@@ -305,7 +364,9 @@ export function chunkUnits(
   const chunks: PreparedChunk[] = [];
   for (let i = 0; i < units.length; i += perChunk) {
     const group = units.slice(i, i + perChunk);
-    const chunkHtml = group.map((u) => u.html).join("\n");
+    const docIntro = group[0]?.header.doc_intro;
+    const introBlock = docIntro ? `<p data-doc-intro="1">${escapeHtml(docIntro)}</p>\n` : "";
+    const chunkHtml = introBlock + group.map((u) => u.html).join("\n");
     chunks.push({
       html: chunkHtml,
       colorHint: colorHintFor(chunkHtml),
