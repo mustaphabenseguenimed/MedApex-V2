@@ -1348,7 +1348,12 @@ function ImportFromFiles({
     const wait = cooldownUntilRef.current - Date.now();
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   };
-  type Ctx = { year_hint: string | null; rotation_hint: string | null; course_hint: string | null };
+  type Ctx = {
+    year_hint: string | null;
+    rotation_hint: string | null;
+    course_hint: string | null;
+    case_stem: string | null;
+  };
   type Task = {
     jobId: string;
     source: string;
@@ -1367,6 +1372,11 @@ function ImportFromFiles({
         year_hint: ctx.year_hint ?? q.year_hint,
         rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
         course_hint: ctx.course_hint ?? q.course_hint,
+        // Deterministically detected (explicit "Cas clinique n°X" marker) —
+        // wins over the model's own guess so every question in the same
+        // vignette group gets byte-identical text, even across separate
+        // chunk/AI calls, keeping _importAll's case_stem grouping intact.
+        case_stem: ctx.case_stem ?? q.case_stem,
       };
     });
 

@@ -3,7 +3,12 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { generateText, NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
 import { assertAdminPermission } from "./admin-guard";
-import { normalizeInlineTextColors, stripImportedColors, stripBold, isUnreadableOnDark } from "./htmlColors";
+import {
+  normalizeInlineTextColors,
+  stripImportedColors,
+  stripBold,
+  isUnreadableOnDark,
+} from "./htmlColors";
 import { getExtractModelCandidates, type ExtractEngine } from "./ai-extract-provider.server";
 import {
   buildQuestionUnits,
@@ -113,6 +118,12 @@ async function runExtract(
       output: Output.object({ schema: ExtractSchema }),
       abortSignal: AbortSignal.timeout(150_000),
       messages: [{ role: "user", content: content as any }],
+      temperature: 0.2,
+      providerOptions: {
+        google: {
+          thinkingConfig: { thinkingLevel: "high" },
+        },
+      },
     });
     return output;
   };
@@ -167,8 +178,12 @@ function normalizeQuestions(result: { questions: ExtractedQ[] }): { questions: E
       // Stems and choices keep the author's styling only — no auto vrai/faux
       // or option-letter coloring (that is reserved for explanations).
       stem: stripBold(stripImportedColors(q.stem ?? "")),
-      choices: q.choices ? q.choices.map((c) => stripBold(stripImportedColors(c ?? ""))) : q.choices,
-      explanation: q.explanation ? normalizeInlineTextColors(splitPerOptionExplanation(q.explanation)) : q.explanation,
+      choices: q.choices
+        ? q.choices.map((c) => stripBold(stripImportedColors(c ?? "")))
+        : q.choices,
+      explanation: q.explanation
+        ? normalizeInlineTextColors(splitPerOptionExplanation(q.explanation))
+        : q.explanation,
       model_answer: q.model_answer ? normalizeInlineTextColors(q.model_answer) : q.model_answer,
     })),
   };
@@ -184,11 +199,12 @@ function splitPerOptionExplanation(html: string): string {
   // Only touch flat content: skip if it already contains a list or multiple blocks.
   if (/<(ul|ol|li|table|h[1-6])\b/i.test(html)) return html;
   const blocks = html.match(/<p\b[^>]*>[\s\S]*?<\/p>/gi);
-  const inner = blocks && blocks.length === 1
-    ? blocks[0].replace(/^<p\b[^>]*>/i, "").replace(/<\/p>\s*$/i, "")
-    : blocks && blocks.length > 1
-      ? null
-      : html;
+  const inner =
+    blocks && blocks.length === 1
+      ? blocks[0].replace(/^<p\b[^>]*>/i, "").replace(/<\/p>\s*$/i, "")
+      : blocks && blocks.length > 1
+        ? null
+        : html;
   if (inner === null) return html;
   // Match markers like "A.", "A)", "A -", "A:" (letters A-H, case-insensitive)
   // that appear at start-of-string or right after whitespace/<br>.
@@ -196,14 +212,21 @@ function splitPerOptionExplanation(html: string): string {
   const positions: { idx: number; letter: string; end: number }[] = [];
   let m: RegExpExecArray | null;
   while ((m = markerRe.exec(inner)) !== null) {
-    positions.push({ idx: m.index + (m[0].length - m[0].trimStart().length), letter: m[1].toUpperCase(), end: markerRe.lastIndex });
+    positions.push({
+      idx: m.index + (m[0].length - m[0].trimStart().length),
+      letter: m[1].toUpperCase(),
+      end: markerRe.lastIndex,
+    });
   }
   if (positions.length < 2) return html;
   const items: string[] = [];
   for (let i = 0; i < positions.length; i++) {
     const start = positions[i].end;
     const stop = i + 1 < positions.length ? positions[i + 1].idx : inner.length;
-    const body = inner.slice(start, stop).trim().replace(/<br\s*\/?>\s*$/i, "");
+    const body = inner
+      .slice(start, stop)
+      .trim()
+      .replace(/<br\s*\/?>\s*$/i, "");
     if (!body) continue;
     items.push(`<p><strong>${positions[i].letter}.</strong> ${body}</p>`);
   }
@@ -308,29 +331,32 @@ async function extractChunkComplete(
   };
 }
 
-const INSTRUCTIONS = (hint?: string) => [
-  "Tu extrais des questions de QCM médicales à partir d'un document (capture d'écran, PDF, ou texte extrait d'un fichier Word), en français ou en arabe.",
-  "Le fragment fourni contient un ou plusieurs QCM. N'en oublie aucun, ne fusionne pas deux questions, et ne réinvente rien.",
-  "Pour chaque question visible, retourne:",
-  "- type: 'qcs' si une seule bonne réponse, 'qcm' si plusieurs, 'qroc' si question ouverte sans choix.",
-  "- stem: l'énoncé exact.",
-  "- choices: la liste des propositions (A, B, C, ...) SANS la lettre en préfixe. null pour qroc.",
-  "- correct_indices: indices (0-based) des bonnes réponses si visibles/soulignées/cochées/indiquées comme correction, sinon null.",
-  "- model_answer: réponse attendue pour qroc, sinon null.",
-  "- explanation: correction/justification si présente, sinon null. Renvoie du HTML si la source contient de la mise en forme: conserve <strong>, <em>, <u>, listes <ul>/<ol>/<li>, titres <h3>/<h4>, tableaux <table><tr><td>…</td></tr></table>, images <img src=\"…\"> (recopie l'URL exacte, ne l'invente pas). Ne renvoie PAS de balises <html>, <body>, <script>, <style>, ni d'attributs onclick.",
-  "- MISE EN FORME OBLIGATOIRE de explanation quand elle couvre plusieurs propositions: retourne une liste HTML <ul><li><strong>A.</strong> …</li><li><strong>B.</strong> …</li>…</ul>, une <li> par proposition, JAMAIS plusieurs justifications collées dans un même <p>. Si l'explication est unique et globale (pas ventilée par option), garde un simple <p>.",
-  "- Dans stem et choices, N'UTILISE JAMAIS de gras: pas de <strong>, pas de <b>, pas de font-weight. Tu peux conserver <em>, <u>, tableaux <table>, images <img src=\"…\"> si présents dans la source. Ne modifie JAMAIS l'URL d'une <img>: recopie l'attribut src verbatim (y compris les URLs commençant par storage://).",
-  "Pour les PDF et les images: encode l'italique, le souligné et les listes en HTML (<em>, <u>, <ul>/<ol>/<li>), mais jamais le gras dans stem/choices. Conserve la structure des tableaux avec <table><tr><td>. Ne produis aucune balise <html>, <body>, <script>, <style>, ni d'attribut onclick.",
-  "- Si une image ou un tableau se trouve à l'intérieur d'un énoncé, d'une proposition ou d'une explication, place-le dans le champ correspondant (stem/choices[i]/explanation) au bon endroit.",
-  "- course_hint: nom du cours/chapitre visible en en-tête ou dans un titre (ex: 'Cardiologie – Insuffisance cardiaque'), sinon null.",
-  "- year_hint: année d'études visible sur le document (ex: '3ème année', 'DCEM2', '4A'), sinon null.",
-  "- rotation_hint: période/rotation visible (ex: 'P1 2026', 'Résidanat 2024', 'Rotation 2'), sinon null.",
-  "- case_stem: CAS CLINIQUES. Si plusieurs questions consécutives partagent un même énoncé/vignette clinique (observation d'un patient suivie de plusieurs questions), recopie ce texte commun À L'IDENTIQUE dans case_stem pour CHACUNE de ces questions, et NE le répète PAS dans leur champ stem (stem = uniquement la question elle-même). Pour une question isolée, case_stem = null.",
-  "IMPORTANT couleurs: PRÉSERVE fidèlement les couleurs et surlignages (highlighter) présents dans la source. Encode-les en HTML: <span style=\"color:#RRGGBB\">…</span> pour les couleurs de texte et <span style=\"background-color:#RRGGBB\">…</span> pour les surlignages/highlighter. Si le fragment `colorHint` est fourni ci-dessous, applique ces styles exacts autour des fragments de texte listés.",
-  "Respecte l'ordre d'apparition des questions dans le document.",
-  hint ? `Contexte fourni par l'admin: ${hint}` : "",
-  "Ignore les éléments d'interface (boutons, menus, chrono, numéros de page). Ne rien inventer: si un champ n'est pas visible, mettre null.",
-].filter(Boolean).join("\n");
+const INSTRUCTIONS = (hint?: string) =>
+  [
+    "Tu extrais des questions de QCM médicales à partir d'un document (capture d'écran, PDF, ou texte extrait d'un fichier Word), en français ou en arabe.",
+    "Le fragment fourni contient un ou plusieurs QCM. N'en oublie aucun, ne fusionne pas deux questions, et ne réinvente rien.",
+    "Pour chaque question visible, retourne:",
+    "- type: 'qcs' si une seule bonne réponse, 'qcm' si plusieurs, 'qroc' si question ouverte sans choix.",
+    "- stem: l'énoncé exact.",
+    "- choices: la liste des propositions (A, B, C, ...) SANS la lettre en préfixe. null pour qroc.",
+    "- correct_indices: indices (0-based) des bonnes réponses si visibles/soulignées/cochées/indiquées comme correction, sinon null.",
+    "- model_answer: réponse attendue pour qroc, sinon null.",
+    "- explanation: correction/justification si présente, sinon null. Renvoie du HTML si la source contient de la mise en forme: conserve <strong>, <em>, <u>, listes <ul>/<ol>/<li>, titres <h3>/<h4>, tableaux <table><tr><td>…</td></tr></table>, images <img src=\"…\"> (recopie l'URL exacte, ne l'invente pas). Ne renvoie PAS de balises <html>, <body>, <script>, <style>, ni d'attributs onclick.",
+    "- MISE EN FORME OBLIGATOIRE de explanation quand elle couvre plusieurs propositions: retourne une liste HTML <ul><li><strong>A.</strong> …</li><li><strong>B.</strong> …</li>…</ul>, une <li> par proposition, JAMAIS plusieurs justifications collées dans un même <p>. Si l'explication est unique et globale (pas ventilée par option), garde un simple <p>.",
+    "- Dans stem et choices, N'UTILISE JAMAIS de gras: pas de <strong>, pas de <b>, pas de font-weight. Tu peux conserver <em>, <u>, tableaux <table>, images <img src=\"…\"> si présents dans la source. Ne modifie JAMAIS l'URL d'une <img>: recopie l'attribut src verbatim (y compris les URLs commençant par storage://).",
+    "Pour les PDF et les images: encode l'italique, le souligné et les listes en HTML (<em>, <u>, <ul>/<ol>/<li>), mais jamais le gras dans stem/choices. Conserve la structure des tableaux avec <table><tr><td>. Ne produis aucune balise <html>, <body>, <script>, <style>, ni d'attribut onclick.",
+    "- Si une image ou un tableau se trouve à l'intérieur d'un énoncé, d'une proposition ou d'une explication, place-le dans le champ correspondant (stem/choices[i]/explanation) au bon endroit.",
+    "- course_hint: nom du cours/chapitre visible en en-tête ou dans un titre (ex: 'Cardiologie – Insuffisance cardiaque'), sinon null.",
+    "- year_hint: année d'études visible sur le document (ex: '3ème année', 'DCEM2', '4A'), sinon null.",
+    "- rotation_hint: période/rotation visible (ex: 'P1 2026', 'Résidanat 2024', 'Rotation 2'), sinon null.",
+    "- case_stem: CAS CLINIQUES. Si plusieurs questions consécutives partagent un même énoncé/vignette clinique (observation d'un patient suivie de plusieurs questions), recopie ce texte commun À L'IDENTIQUE dans case_stem pour CHACUNE de ces questions, et NE le répète PAS dans leur champ stem (stem = uniquement la question elle-même). Pour une question isolée, case_stem = null.",
+    'IMPORTANT couleurs: PRÉSERVE fidèlement les couleurs et surlignages (highlighter) présents dans la source. Encode-les en HTML: <span style="color:#RRGGBB">…</span> pour les couleurs de texte et <span style="background-color:#RRGGBB">…</span> pour les surlignages/highlighter. Si le fragment `colorHint` est fourni ci-dessous, applique ces styles exacts autour des fragments de texte listés.',
+    "Respecte l'ordre d'apparition des questions dans le document.",
+    hint ? `Contexte fourni par l'admin: ${hint}` : "",
+    "Ignore les éléments d'interface (boutons, menus, chrono, numéros de page). Ne rien inventer: si un champ n'est pas visible, mettre null.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 
 /**
  * Convert a DOCX buffer to HTML while uploading every inline image to the
@@ -338,10 +364,7 @@ const INSTRUCTIONS = (hint?: string) => [
  * uploaded assets via `storage://explanation-images/<path>` URIs which the
  * <RichText> renderer resolves to signed URLs at display time.
  */
-async function docxToHtmlWithImages(
-  buffer: Buffer,
-  userId: string,
-): Promise<string> {
+async function docxToHtmlWithImages(buffer: Buffer, userId: string): Promise<string> {
   const mammoth = await import("mammoth");
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const styleMap = [
@@ -365,7 +388,10 @@ async function docxToHtmlWithImages(
       const cached = uploadedByHash.get(hash);
       if (cached) return { src: cached };
       const ext =
-        contentType.split("/")[1]?.replace("jpeg", "jpg").replace(/[^a-z0-9]/gi, "") || "png";
+        contentType
+          .split("/")[1]
+          ?.replace("jpeg", "jpg")
+          .replace(/[^a-z0-9]/gi, "") || "png";
       const path = `imports/${userId}/${Date.now()}-${hash.slice(0, 12)}.${ext}`;
       const bytes = Buffer.from(b64, "base64");
       const { error } = await supabaseAdmin.storage
@@ -385,10 +411,7 @@ async function docxToHtmlWithImages(
     }
   });
 
-  const result = await mammoth.convertToHtml(
-    { buffer },
-    { styleMap, convertImage } as any,
-  );
+  const result = await mammoth.convertToHtml({ buffer }, { styleMap, convertImage } as any);
   return (result.value ?? "").trim();
 }
 
@@ -432,7 +455,12 @@ export const extractQuestionsFromPdf = createServerFn({ method: "POST" })
     const base64 = data.pdfDataUrl.replace(/^data:application\/pdf;base64,/i, "");
     return runExtract([
       { type: "text", text: INSTRUCTIONS(data.hint) },
-      { type: "file", data: base64, mediaType: "application/pdf", filename: data.filename ?? "document.pdf" },
+      {
+        type: "file",
+        data: base64,
+        mediaType: "application/pdf",
+        filename: data.filename ?? "document.pdf",
+      },
     ]);
   });
 
@@ -485,14 +513,15 @@ export const extractQuestionsFromDocx = createServerFn({ method: "POST" })
             const style: string[] = [];
             if (color && !isUnreadableOnDark(`#${color}`)) style.push(`color:#${color}`);
             if (shd && !isWhiteFill(shd)) style.push(`background-color:#${shd}`);
-            if (highlight && highlight !== "none" && (!shd || isWhiteFill(shd))) style.push(`background-color:${highlight}`);
+            if (highlight && highlight !== "none" && (!shd || isWhiteFill(shd)))
+              style.push(`background-color:${highlight}`);
             if (!style.length) continue;
             if (!style.length) continue;
-          parts.push(`${JSON.stringify(text)} -> ${style.join(";")}`);
+            parts.push(`${JSON.stringify(text)} -> ${style.join(";")}`);
           }
           if (parts.length) {
             colorXmlHint =
-              "Mise en forme couleur détectée dans la source (à réinjecter en <span style=\"...\">…</span> autour de ces fragments exacts):\n" +
+              'Mise en forme couleur détectée dans la source (à réinjecter en <span style="...">…</span> autour de ces fragments exacts):\n' +
               parts.slice(0, 400).join("\n");
           }
         }
@@ -581,13 +610,14 @@ export const prepareDocxChunks = createServerFn({ method: "POST" })
           const style: string[] = [];
           if (color && !isUnreadableOnDark(`#${color}`)) style.push(`color:#${color}`);
           if (shd && !isWhiteFill(shd)) style.push(`background-color:#${shd}`);
-          if (highlight && highlight !== "none" && (!shd || isWhiteFill(shd))) style.push(`background-color:${highlight}`);
+          if (highlight && highlight !== "none" && (!shd || isWhiteFill(shd)))
+            style.push(`background-color:${highlight}`);
           if (!style.length) continue;
           parts.push(`${JSON.stringify(text)} -> ${style.join(";")}`);
         }
         if (parts.length) {
           colorXmlHint =
-            "Mise en forme couleur détectée dans la source (à réinjecter en <span style=\"...\">…</span> autour de ces fragments exacts):\n" +
+            'Mise en forme couleur détectée dans la source (à réinjecter en <span style="...">…</span> autour de ces fragments exacts):\n' +
             parts.slice(0, 800).join("\n");
         }
       }
@@ -596,7 +626,9 @@ export const prepareDocxChunks = createServerFn({ method: "POST" })
     }
 
     if (!html) return { chunks: [] as PreparedChunk[], totalExpected: 0 };
-    const chunks = prepareChunks(html, data.questionsPerChunk ?? 8, (c) => filterColorHint(colorXmlHint, c));
+    const chunks = prepareChunks(html, data.questionsPerChunk ?? 4, (c) =>
+      filterColorHint(colorXmlHint, c),
+    );
     return { chunks, totalExpected: chunks.reduce((s, c) => s + c.expected, 0) };
   });
 
@@ -618,7 +650,7 @@ export const prepareTextChunks = createServerFn({ method: "POST" })
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
     const html = textToHtml(data.text);
     if (!html) return { chunks: [] as PreparedChunk[], totalExpected: 0 };
-    const chunks = prepareChunks(html, data.questionsPerChunk ?? 8, () => "");
+    const chunks = prepareChunks(html, data.questionsPerChunk ?? 4, () => "");
     return { chunks, totalExpected: chunks.reduce((s, c) => s + c.expected, 0) };
   });
 
@@ -693,7 +725,12 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
     return runExtract([
       { type: "text", text: INSTRUCTIONS(data.hint) },
       { type: "text", text: expectedCountNote(data.expected ?? 0) },
-      { type: "file", data: base64, mediaType: "application/pdf", filename: data.filename ?? "chunk.pdf" },
+      {
+        type: "file",
+        data: base64,
+        mediaType: "application/pdf",
+        filename: data.filename ?? "chunk.pdf",
+      },
     ]);
   });
 
@@ -704,7 +741,14 @@ export const testGoogleAi = createServerFn({ method: "POST" })
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
 
     const candidates = await getExtractModelCandidates();
-    type Row = { model: string; engine: string; ok: boolean; latencyMs: number; reply?: string; error?: string };
+    type Row = {
+      model: string;
+      engine: string;
+      ok: boolean;
+      latencyMs: number;
+      reply?: string;
+      error?: string;
+    };
     if (!candidates.length) {
       return {
         ok: false,
@@ -724,7 +768,13 @@ export const testGoogleAi = createServerFn({ method: "POST" })
           abortSignal: AbortSignal.timeout(20_000),
           prompt: "Réponds exactement par: OK",
         });
-        models.push({ model: name, engine, ok: true, latencyMs: Date.now() - started, reply: text.trim().slice(0, 40) });
+        models.push({
+          model: name,
+          engine,
+          ok: true,
+          latencyMs: Date.now() - started,
+          reply: text.trim().slice(0, 40),
+        });
       } catch (error) {
         models.push({
           model: name,
@@ -798,15 +848,25 @@ export const gradeQrocAnswer = createServerFn({ method: "POST" })
       grade = output;
     } catch (error) {
       if (NoObjectGeneratedError.isInstance(error)) {
-        grade = { verdict: "partial", score: 0.5, feedback: "Correction automatique indisponible. Vérifiez avec la réponse attendue." };
+        grade = {
+          verdict: "partial",
+          score: 0.5,
+          feedback: "Correction automatique indisponible. Vérifiez avec la réponse attendue.",
+        };
       } else {
         throw error;
       }
     }
     grade.score = Math.max(0, Math.min(1, grade.score));
 
-    const nextGrades = { ...((session.grades as Record<string, unknown>) ?? {}), [data.questionId]: { ...grade, userAnswer: data.userAnswer } };
-    const { error: upErr } = await supabase.from("qcm_sessions").update({ grades: nextGrades as any }).eq("id", data.sessionId);
+    const nextGrades = {
+      ...((session.grades as Record<string, unknown>) ?? {}),
+      [data.questionId]: { ...grade, userAnswer: data.userAnswer },
+    };
+    const { error: upErr } = await supabase
+      .from("qcm_sessions")
+      .update({ grades: nextGrades as any })
+      .eq("id", data.sessionId);
     if (upErr) throw new Error(upErr.message);
 
     return grade;
