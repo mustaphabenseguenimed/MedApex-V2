@@ -244,8 +244,9 @@ function prepareChunks(
   html: string,
   targetPerChunk: number,
   colorHintFor: (chunkHtml: string) => string,
+  detectCases = true,
 ): PreparedChunk[] {
-  const units = buildQuestionUnits(html);
+  const units = buildQuestionUnits(html, detectCases);
   if (units.length === 0) {
     // No question boundary detected at all — send the whole document as one
     // chunk with an unknown expected count rather than blind byte slicing.
@@ -331,7 +332,7 @@ async function extractChunkComplete(
   };
 }
 
-const INSTRUCTIONS = (hint?: string) =>
+const INSTRUCTIONS = (hint?: string, detectCases = true) =>
   [
     "Tu extrais des questions de QCM médicales à partir d'un document (capture d'écran, PDF, ou texte extrait d'un fichier Word), en français ou en arabe.",
     "Le fragment fourni contient un ou plusieurs QCM. N'en oublie aucun, ne fusionne pas deux questions, et ne réinvente rien.",
@@ -349,8 +350,12 @@ const INSTRUCTIONS = (hint?: string) =>
     "- course_hint: nom du cours/chapitre visible en en-tête ou dans un titre (ex: 'Cardiologie – Insuffisance cardiaque'), sinon null.",
     "- year_hint: année d'études visible sur le document (ex: '3ème année', 'DCEM2', '4A'), sinon null.",
     "- rotation_hint: période/rotation visible (ex: 'P1 2026', 'Résidanat 2024', 'Rotation 2'), sinon null.",
-    "- case_stem: CAS CLINIQUES. Si plusieurs questions consécutives partagent un même énoncé/vignette clinique (observation d'un patient suivie de plusieurs questions), recopie ce texte commun À L'IDENTIQUE dans case_stem pour CHACUNE de ces questions, et NE le répète PAS dans leur champ stem (stem = uniquement la question elle-même). Pour une question isolée, case_stem = null.",
-    'Si un paragraphe <p data-doc-intro="1">…</p> précède les questions, c\'est probablement une vignette clinique partagée par les questions de cet extrait (même sans étiquette "Cas clinique"): si c\'est bien le cas, recopie CE TEXTE À L\'IDENTIQUE (verbatim, sans le paraphraser) dans case_stem pour chaque question concernée, exactement comme pour un cas clinique explicite.',
+    detectCases
+      ? "- case_stem: CAS CLINIQUES. Si plusieurs questions consécutives partagent un même énoncé/vignette clinique (observation d'un patient suivie de plusieurs questions), recopie ce texte commun À L'IDENTIQUE dans case_stem pour CHACUNE de ces questions, et NE le répète PAS dans leur champ stem (stem = uniquement la question elle-même). Pour une question isolée, case_stem = null."
+      : "- case_stem: laisse TOUJOURS ce champ à null. Ne détecte ni ne regroupe aucun cas clinique, même si plusieurs questions semblent partager un énoncé commun — traite chaque question comme indépendante.",
+    detectCases
+      ? 'Si un paragraphe <p data-doc-intro="1">…</p> précède les questions, c\'est probablement une vignette clinique partagée par les questions de cet extrait (même sans étiquette "Cas clinique"): si c\'est bien le cas, recopie CE TEXTE À L\'IDENTIQUE (verbatim, sans le paraphraser) dans case_stem pour chaque question concernée, exactement comme pour un cas clinique explicite.'
+      : "",
     'IMPORTANT couleurs: PRÉSERVE fidèlement les couleurs et surlignages (highlighter) présents dans la source. Encode-les en HTML: <span style="color:#RRGGBB">…</span> pour les couleurs de texte et <span style="background-color:#RRGGBB">…</span> pour les surlignages/highlighter. Si le fragment `colorHint` est fourni ci-dessous, applique ces styles exacts autour des fragments de texte listés.',
     "Respecte l'ordre d'apparition des questions dans le document.",
     hint ? `Contexte fourni par l'admin: ${hint}` : "",
@@ -426,13 +431,14 @@ export const extractQuestionsFromImage = createServerFn({ method: "POST" })
           .max(15_000_000)
           .regex(/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i, "Image invalide"),
         hint: z.string().max(500).optional(),
+        detectCases: z.boolean().optional(),
       })
       .parse(input),
   )
   .handler(async ({ data, context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
     return runExtract([
-      { type: "text", text: INSTRUCTIONS(data.hint) },
+      { type: "text", text: INSTRUCTIONS(data.hint, data.detectCases ?? true) },
       { type: "image", image: data.imageDataUrl },
     ]);
   });
@@ -581,6 +587,7 @@ export const prepareDocxChunks = createServerFn({ method: "POST" })
             "DOCX invalide",
           ),
         questionsPerChunk: z.number().int().min(1).max(30).optional(),
+        detectCases: z.boolean().optional(),
       })
       .parse(input),
   )
@@ -627,8 +634,11 @@ export const prepareDocxChunks = createServerFn({ method: "POST" })
     }
 
     if (!html) return { chunks: [] as PreparedChunk[], totalExpected: 0 };
-    const chunks = prepareChunks(html, data.questionsPerChunk ?? 4, (c) =>
-      filterColorHint(colorXmlHint, c),
+    const chunks = prepareChunks(
+      html,
+      data.questionsPerChunk ?? 4,
+      (c) => filterColorHint(colorXmlHint, c),
+      data.detectCases ?? true,
     );
     return { chunks, totalExpected: chunks.reduce((s, c) => s + c.expected, 0) };
   });
@@ -644,6 +654,7 @@ export const prepareTextChunks = createServerFn({ method: "POST" })
       .object({
         text: z.string().max(4_000_000),
         questionsPerChunk: z.number().int().min(1).max(30).optional(),
+        detectCases: z.boolean().optional(),
       })
       .parse(input),
   )
@@ -651,7 +662,12 @@ export const prepareTextChunks = createServerFn({ method: "POST" })
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
     const html = textToHtml(data.text);
     if (!html) return { chunks: [] as PreparedChunk[], totalExpected: 0 };
-    const chunks = prepareChunks(html, data.questionsPerChunk ?? 4, () => "");
+    const chunks = prepareChunks(
+      html,
+      data.questionsPerChunk ?? 4,
+      () => "",
+      data.detectCases ?? true,
+    );
     return { chunks, totalExpected: chunks.reduce((s, c) => s + c.expected, 0) };
   });
 
@@ -666,6 +682,7 @@ export const extractQuestionsFromHtmlChunk = createServerFn({ method: "POST" })
         hint: z.string().max(500).optional(),
         expected: z.number().int().min(0).max(200).optional(),
         allowNoAi: z.boolean().optional(),
+        detectCases: z.boolean().optional(),
       })
       .parse(input),
   )
@@ -689,7 +706,7 @@ export const extractQuestionsFromHtmlChunk = createServerFn({ method: "POST" })
     }
     return extractChunkComplete(
       (chunkHtml, expected) => [
-        { type: "text", text: INSTRUCTIONS(data.hint) },
+        { type: "text", text: INSTRUCTIONS(data.hint, data.detectCases ?? true) },
         { type: "text", text: expectedCountNote(expected) },
         {
           type: "text",
@@ -717,6 +734,7 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
         filename: z.string().max(200).optional(),
         hint: z.string().max(500).optional(),
         expected: z.number().int().min(0).max(200).optional(),
+        detectCases: z.boolean().optional(),
       })
       .parse(input),
   )
@@ -724,7 +742,7 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
     const base64 = data.pdfDataUrl.replace(/^data:application\/pdf;base64,/i, "");
     return runExtract([
-      { type: "text", text: INSTRUCTIONS(data.hint) },
+      { type: "text", text: INSTRUCTIONS(data.hint, data.detectCases ?? true) },
       { type: "text", text: expectedCountNote(data.expected ?? 0) },
       {
         type: "file",
