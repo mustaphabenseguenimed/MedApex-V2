@@ -134,6 +134,31 @@ function toJsonObjects(qs: ExtractedQ[]): unknown[] {
 
 const EXPLAIN_BATCH_SIZE = 60;
 
+/** Retry a network-level failure (dropped mobile connection mid-upload shows up
+ *  as a bare "Failed to fetch" TypeError from the browser) with backoff. Server
+ *  errors that actually reached the backend are not retried here — the server
+ *  functions already retry AI-transient failures themselves. */
+async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      const isNetworkError =
+        e instanceof TypeError || /failed to fetch|network/i.test(String(e?.message ?? ""));
+      if (!isNetworkError || attempt >= retries) throw e;
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    }
+  }
+}
+
+/** Friendlier message for a dropped connection than the raw "Failed to fetch". */
+function friendlyError(e: any, tr: (s: string) => string): string {
+  if (e instanceof TypeError || /failed to fetch/i.test(String(e?.message ?? ""))) {
+    return tr("Connexion réseau instable — le fichier n'a pas pu être envoyé. Réessayez.");
+  }
+  return e?.message ?? tr("Échec de la conversion");
+}
+
 // ---- page shell -------------------------------------------------------------
 
 function ConvertAdmin() {
@@ -202,29 +227,37 @@ function Step1Panel() {
     setBusy(true);
     setCount(null);
     try {
-      const all: ExtractedQ[] = [];
+      const chunkJobs: { dataUrl: string; filename: string }[] = [];
       for (const file of files) {
         const bytes = await file.arrayBuffer();
         const chunks = await splitPdfIntoPageChunks(bytes, 3);
         for (const chunk of chunks) {
-          const r = await extractPdfChunk({
-            data: {
-              pdfDataUrl: chunk.dataUrl,
-              filename: `${file.name} (${chunk.label})`,
-              detectCases: true,
-            },
-          });
-          all.push(...(r.questions ?? []));
+          chunkJobs.push({ dataUrl: chunk.dataUrl, filename: `${file.name} (${chunk.label})` });
         }
       }
+      // Fire every PDF chunk at once instead of one at a time — this is the
+      // main driver of wall-clock time for a multi-page/multi-file upload.
+      // Each chunk also retries on a dropped connection (common on mobile).
+      const parts = await Promise.all(
+        chunkJobs.map((job) =>
+          withRetry(() =>
+            extractPdfChunk({
+              data: { pdfDataUrl: job.dataUrl, filename: job.filename, detectCases: true },
+            }),
+          ).then((r) => r.questions ?? []),
+        ),
+      );
+      const all: ExtractedQ[] = parts.flat();
       if (!all.length) throw new Error(tr("Aucune question détectée"));
       const items = toDocxItems(all, rotation);
-      const { base64 } = await genDocx({ data: { items, includeExplanations: false } });
+      const { base64 } = await withRetry(() =>
+        genDocx({ data: { items, includeExplanations: false } }),
+      );
       downloadBase64(`questions_${Date.now()}.docx`, base64, DOCX_MIME);
       setCount(all.length);
       toast.success(`${all.length} ${tr("question(s) converties")}`);
     } catch (e: any) {
-      toast.error(e?.message ?? tr("Échec de la conversion"));
+      toast.error(friendlyError(e, tr));
     } finally {
       setBusy(false);
     }
@@ -308,19 +341,23 @@ function Step2Panel() {
     setCount(null);
     try {
       const dataUrl = await readAsDataUrl(docxFile);
-      const { chunks } = await prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } });
+      const { chunks } = await withRetry(() =>
+        prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
+      );
       if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
       const parts = await Promise.all(
         chunks.map((c) =>
-          extractHtml({
-            data: {
-              html: c.html,
-              colorHint: c.colorHint,
-              expected: c.expected,
-              allowNoAi,
-              detectCases: true,
-            },
-          }).then((r) =>
+          withRetry(() =>
+            extractHtml({
+              data: {
+                html: c.html,
+                colorHint: c.colorHint,
+                expected: c.expected,
+                allowNoAi,
+                detectCases: true,
+              },
+            }),
+          ).then((r) =>
             (r.questions ?? []).map((q, i) => {
               const ctx = c.contexts[i];
               if (!ctx) return q;
@@ -348,38 +385,50 @@ function Step2Panel() {
         referenceText = pages.join("\n");
       } else if (refMode === "docx" && refFile) {
         const refDataUrl = await readAsDataUrl(refFile);
-        const { text } = await extractDocxText({ data: { docxDataUrl: refDataUrl } });
+        const { text } = await withRetry(() =>
+          extractDocxText({ data: { docxDataUrl: refDataUrl } }),
+        );
         referenceText = text;
       }
 
-      const explanations: (string | null)[] = [];
+      // Batches run in parallel — sequential batches were the main bottleneck
+      // for documents with more than EXPLAIN_BATCH_SIZE questions.
+      const batches: ExtractedQ[][] = [];
       for (let i = 0; i < qs.length; i += EXPLAIN_BATCH_SIZE) {
-        const batch = qs.slice(i, i + EXPLAIN_BATCH_SIZE);
-        const r = await genExplanations({
-          data: {
-            items: batch.map((q) => ({
-              stem: q.stem,
-              choices: q.choices,
-              correct_indices: q.correct_indices,
-              model_answer: q.model_answer,
-            })),
-            referenceText,
-          },
-        });
-        explanations.push(...r.explanations);
+        batches.push(qs.slice(i, i + EXPLAIN_BATCH_SIZE));
       }
+      const explanationParts = await Promise.all(
+        batches.map((batch) =>
+          withRetry(() =>
+            genExplanations({
+              data: {
+                items: batch.map((q) => ({
+                  stem: q.stem,
+                  choices: q.choices,
+                  correct_indices: q.correct_indices,
+                  model_answer: q.model_answer,
+                })),
+                referenceText,
+              },
+            }),
+          ).then((r) => r.explanations),
+        ),
+      );
+      const explanations = explanationParts.flat();
       const withExplanations = qs.map((q, i) => ({
         ...q,
         explanation: explanations[i] ?? q.explanation,
       }));
 
       const items = toDocxItems(withExplanations);
-      const { base64 } = await genDocx({ data: { items, includeExplanations: true } });
+      const { base64 } = await withRetry(() =>
+        genDocx({ data: { items, includeExplanations: true } }),
+      );
       downloadBase64(`questions_explications_${Date.now()}.docx`, base64, DOCX_MIME);
       setCount(qs.length);
       toast.success(`${qs.length} ${tr("question(s) traitées")}`);
     } catch (e: any) {
-      toast.error(e?.message ?? tr("Échec de la conversion"));
+      toast.error(friendlyError(e, tr));
     } finally {
       setBusy(false);
     }
@@ -479,19 +528,23 @@ function Step3Panel() {
     setCount(null);
     try {
       const dataUrl = await readAsDataUrl(docxFile);
-      const { chunks } = await prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } });
+      const { chunks } = await withRetry(() =>
+        prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
+      );
       if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
       const parts = await Promise.all(
         chunks.map((c) =>
-          extractHtml({
-            data: {
-              html: c.html,
-              colorHint: c.colorHint,
-              expected: c.expected,
-              allowNoAi,
-              detectCases: true,
-            },
-          }).then((r) =>
+          withRetry(() =>
+            extractHtml({
+              data: {
+                html: c.html,
+                colorHint: c.colorHint,
+                expected: c.expected,
+                allowNoAi,
+                detectCases: true,
+              },
+            }),
+          ).then((r) =>
             (r.questions ?? []).map((q, i) => {
               const ctx = c.contexts[i];
               if (!ctx) return q;
@@ -513,7 +566,7 @@ function Step3Panel() {
       setCount(qs.length);
       toast.success(`${qs.length} ${tr("question(s) converties en JSON")}`);
     } catch (e: any) {
-      toast.error(e?.message ?? tr("Échec de la conversion"));
+      toast.error(friendlyError(e, tr));
     } finally {
       setBusy(false);
     }
