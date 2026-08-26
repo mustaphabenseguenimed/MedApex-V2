@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
@@ -160,6 +161,44 @@ function friendlyError(e: any, tr: (s: string) => string): string {
   return e?.message ?? tr("Échec de la conversion");
 }
 
+type Progress = { done: number; total: number };
+
+/** Run jobs in parallel (same as Promise.all) while reporting live progress
+ *  as each one completes, so the UI can show "X/Y" instead of a bare spinner. */
+async function withProgress<T>(
+  jobs: Array<() => Promise<T>>,
+  onProgress: (p: Progress) => void,
+): Promise<T[]> {
+  const total = jobs.length;
+  let done = 0;
+  onProgress({ done, total });
+  return Promise.all(
+    jobs.map((job) =>
+      job().then((r) => {
+        done++;
+        onProgress({ done, total });
+        return r;
+      }),
+    ),
+  );
+}
+
+/** Current phase label + optional "X/Y" progress bar shown under a step's
+ *  Convertir button while it's running. */
+function StepProgress({ phase, progress }: { phase: string | null; progress: Progress | null }) {
+  if (!phase) return null;
+  const pct = progress && progress.total ? (progress.done / progress.total) * 100 : 0;
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs text-muted-foreground">
+        {phase}
+        {progress ? ` — ${progress.done}/${progress.total}` : "…"}
+      </p>
+      <Progress value={progress ? pct : undefined} className="h-1.5" />
+    </div>
+  );
+}
+
 // ---- page shell -------------------------------------------------------------
 
 function ConvertAdmin() {
@@ -223,6 +262,8 @@ function Step1Panel() {
   const [prepared, setPrepared] = useState<PdfChunkJob[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [count, setCount] = useState<number | null>(null);
+  const [phase, setPhase] = useState<string | null>(null);
+  const [progress, setProgress] = useState<Progress | null>(null);
 
   const upload = async () => {
     if (!files.length) {
@@ -256,21 +297,27 @@ function Step1Panel() {
     if (!prepared) return;
     setBusy(true);
     setCount(null);
+    setProgress(null);
     try {
       // Fire every PDF chunk at once instead of one at a time — this is the
       // main driver of wall-clock time for a multi-page/multi-file upload.
       // Each chunk also retries on a dropped connection (common on mobile).
-      const parts = await Promise.all(
-        prepared.map((job) =>
-          withRetry(() =>
-            extractPdfChunk({
-              data: { pdfDataUrl: job.dataUrl, filename: job.filename, detectCases: true },
-            }),
-          ).then((r) => r.questions ?? []),
+      setPhase(tr("Extraction des questions"));
+      const parts = await withProgress(
+        prepared.map(
+          (job) => () =>
+            withRetry(() =>
+              extractPdfChunk({
+                data: { pdfDataUrl: job.dataUrl, filename: job.filename, detectCases: true },
+              }),
+            ).then((r) => r.questions ?? []),
         ),
+        setProgress,
       );
       const all: ExtractedQ[] = parts.flat();
       if (!all.length) throw new Error(tr("Aucune question détectée"));
+      setPhase(tr("Génération du fichier Word"));
+      setProgress(null);
       const items = toDocxItems(all, rotation);
       const { base64 } = await withRetry(() =>
         genDocx({ data: { items, includeExplanations: false } }),
@@ -282,6 +329,8 @@ function Step1Panel() {
       toast.error(friendlyError(e, tr));
     } finally {
       setBusy(false);
+      setPhase(null);
+      setProgress(null);
     }
   };
 
@@ -341,7 +390,8 @@ function Step1Panel() {
             {tr("Convertir en .docx")}
           </Button>
         </div>
-        {prepared && !count && (
+        <StepProgress phase={phase} progress={progress} />
+        {prepared && !busy && !count && (
           <p className="text-sm text-muted-foreground">
             {prepared.length} {tr("page(s)/lot(s) prêt(s) — cliquez sur Convertir.")}
           </p>
@@ -375,6 +425,8 @@ function Step2Panel() {
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [count, setCount] = useState<number | null>(null);
+  const [phase, setPhase] = useState<string | null>(null);
+  const [progress, setProgress] = useState<Progress | null>(null);
 
   const upload = async () => {
     if (!docxFile) {
@@ -402,37 +454,43 @@ function Step2Panel() {
     if (!prepared) return;
     setBusy(true);
     setCount(null);
+    setProgress(null);
     try {
-      const parts = await Promise.all(
-        prepared.map((c) =>
-          withRetry(() =>
-            extractHtml({
-              data: {
-                html: c.html,
-                colorHint: c.colorHint,
-                expected: c.expected,
-                allowNoAi,
-                detectCases: true,
-              },
-            }),
-          ).then((r) =>
-            (r.questions ?? []).map((q, i) => {
-              const ctx = c.contexts[i];
-              if (!ctx) return q;
-              return {
-                ...q,
-                year_hint: ctx.year_hint ?? q.year_hint,
-                rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
-                course_hint: ctx.course_hint ?? q.course_hint,
-                case_stem: ctx.case_stem ?? q.case_stem,
-              };
-            }),
-          ),
+      setPhase(tr("Lecture des questions"));
+      const parts = await withProgress(
+        prepared.map(
+          (c) => () =>
+            withRetry(() =>
+              extractHtml({
+                data: {
+                  html: c.html,
+                  colorHint: c.colorHint,
+                  expected: c.expected,
+                  allowNoAi,
+                  detectCases: true,
+                },
+              }),
+            ).then((r) =>
+              (r.questions ?? []).map((q, i) => {
+                const ctx = c.contexts[i];
+                if (!ctx) return q;
+                return {
+                  ...q,
+                  year_hint: ctx.year_hint ?? q.year_hint,
+                  rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
+                  course_hint: ctx.course_hint ?? q.course_hint,
+                  case_stem: ctx.case_stem ?? q.case_stem,
+                };
+              }),
+            ),
         ),
+        setProgress,
       );
       const qs: ExtractedQ[] = parts.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
 
+      setPhase(tr("Préparation du document de référence"));
+      setProgress(null);
       let referenceText: string | undefined;
       if (refMode === "text") {
         referenceText = refText.trim() || undefined;
@@ -451,26 +509,29 @@ function Step2Panel() {
 
       // Batches run in parallel — sequential batches were the main bottleneck
       // for documents with more than EXPLAIN_BATCH_SIZE questions.
+      setPhase(tr("Génération des explications"));
       const batches: ExtractedQ[][] = [];
       for (let i = 0; i < qs.length; i += EXPLAIN_BATCH_SIZE) {
         batches.push(qs.slice(i, i + EXPLAIN_BATCH_SIZE));
       }
-      const explanationParts = await Promise.all(
-        batches.map((batch) =>
-          withRetry(() =>
-            genExplanations({
-              data: {
-                items: batch.map((q) => ({
-                  stem: q.stem,
-                  choices: q.choices,
-                  correct_indices: q.correct_indices,
-                  model_answer: q.model_answer,
-                })),
-                referenceText,
-              },
-            }),
-          ).then((r) => r.explanations),
+      const explanationParts = await withProgress(
+        batches.map(
+          (batch) => () =>
+            withRetry(() =>
+              genExplanations({
+                data: {
+                  items: batch.map((q) => ({
+                    stem: q.stem,
+                    choices: q.choices,
+                    correct_indices: q.correct_indices,
+                    model_answer: q.model_answer,
+                  })),
+                  referenceText,
+                },
+              }),
+            ).then((r) => r.explanations),
         ),
+        setProgress,
       );
       const explanations = explanationParts.flat();
       const withExplanations = qs.map((q, i) => ({
@@ -478,6 +539,8 @@ function Step2Panel() {
         explanation: explanations[i] ?? q.explanation,
       }));
 
+      setPhase(tr("Génération du fichier Word"));
+      setProgress(null);
       const items = toDocxItems(withExplanations);
       const { base64 } = await withRetry(() =>
         genDocx({ data: { items, includeExplanations: true } }),
@@ -489,6 +552,8 @@ function Step2Panel() {
       toast.error(friendlyError(e, tr));
     } finally {
       setBusy(false);
+      setPhase(null);
+      setProgress(null);
     }
   };
 
@@ -571,7 +636,8 @@ function Step2Panel() {
             {tr("Convertir avec explications")}
           </Button>
         </div>
-        {prepared && !count && (
+        <StepProgress phase={phase} progress={progress} />
+        {prepared && !busy && !count && (
           <p className="text-sm text-muted-foreground">
             {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Convertir.")}
           </p>
@@ -598,6 +664,8 @@ function Step3Panel() {
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [count, setCount] = useState<number | null>(null);
+  const [phase, setPhase] = useState<string | null>(null);
+  const [progress, setProgress] = useState<Progress | null>(null);
 
   const upload = async () => {
     if (!docxFile) {
@@ -625,33 +693,37 @@ function Step3Panel() {
     if (!prepared) return;
     setBusy(true);
     setCount(null);
+    setProgress(null);
     try {
-      const parts = await Promise.all(
-        prepared.map((c) =>
-          withRetry(() =>
-            extractHtml({
-              data: {
-                html: c.html,
-                colorHint: c.colorHint,
-                expected: c.expected,
-                allowNoAi,
-                detectCases: true,
-              },
-            }),
-          ).then((r) =>
-            (r.questions ?? []).map((q, i) => {
-              const ctx = c.contexts[i];
-              if (!ctx) return q;
-              return {
-                ...q,
-                year_hint: ctx.year_hint ?? q.year_hint,
-                rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
-                course_hint: ctx.course_hint ?? q.course_hint,
-                case_stem: ctx.case_stem ?? q.case_stem,
-              };
-            }),
-          ),
+      setPhase(tr("Lecture des questions"));
+      const parts = await withProgress(
+        prepared.map(
+          (c) => () =>
+            withRetry(() =>
+              extractHtml({
+                data: {
+                  html: c.html,
+                  colorHint: c.colorHint,
+                  expected: c.expected,
+                  allowNoAi,
+                  detectCases: true,
+                },
+              }),
+            ).then((r) =>
+              (r.questions ?? []).map((q, i) => {
+                const ctx = c.contexts[i];
+                if (!ctx) return q;
+                return {
+                  ...q,
+                  year_hint: ctx.year_hint ?? q.year_hint,
+                  rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
+                  course_hint: ctx.course_hint ?? q.course_hint,
+                  case_stem: ctx.case_stem ?? q.case_stem,
+                };
+              }),
+            ),
         ),
+        setProgress,
       );
       const qs: ExtractedQ[] = parts.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
@@ -663,6 +735,8 @@ function Step3Panel() {
       toast.error(friendlyError(e, tr));
     } finally {
       setBusy(false);
+      setPhase(null);
+      setProgress(null);
     }
   };
 
@@ -709,7 +783,8 @@ function Step3Panel() {
             {tr("Convertir en .json")}
           </Button>
         </div>
-        {prepared && !count && (
+        <StepProgress phase={phase} progress={progress} />
+        {prepared && !busy && !count && (
           <p className="text-sm text-muted-foreground">
             {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Convertir.")}
           </p>
