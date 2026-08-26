@@ -3,7 +3,7 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { generateText, NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
 import { assertAdminPermission } from "./admin-guard";
-import { getGeminiProvider, GEMINI_DEFAULT_MODEL } from "./ai-provider.server";
+import { getClaudeProvider, CLAUDE_DEFAULT_MODEL } from "./ai-provider.server";
 import { buildQuestionsDocx, type DocxQuestionItem } from "./questionsDocxBuilder";
 
 /** Plain-text extraction from an uploaded reference .docx (course notes,
@@ -94,9 +94,9 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
   )
   .handler(async ({ data, context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
-    const google = getGeminiProvider();
-    if (!google) throw new Error("GOOGLE_GENERATIVE_AI_API_KEY manquante");
-    const model = google(GEMINI_DEFAULT_MODEL);
+    const anthropic = getClaudeProvider();
+    if (!anthropic) throw new Error("ANTHROPIC_API_KEY manquante");
+    const model = anthropic(CLAUDE_DEFAULT_MODEL);
 
     const questionsBlock = data.items
       .map((q, i) => {

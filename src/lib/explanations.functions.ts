@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { generateText, NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
-import { getGeminiProvider, GEMINI_DEFAULT_MODEL } from "./ai-provider.server";
+import { getClaudeProvider, CLAUDE_DEFAULT_MODEL } from "./ai-provider.server";
 
 const OptionExpl = z.object({
   choice_index: z.number().int(),
@@ -50,9 +50,9 @@ export const generateExplanationsForQuestion = createServerFn({ method: "POST" }
       if (existing && existing.length > 0) return { cached: true };
     }
 
-    const google = getGeminiProvider();
-    if (!google) throw new Error("GOOGLE_GENERATIVE_AI_API_KEY manquante");
-    const model = google(GEMINI_DEFAULT_MODEL);
+    const anthropic = getClaudeProvider();
+    if (!anthropic) throw new Error("ANTHROPIC_API_KEY manquante");
+    const model = anthropic(CLAUDE_DEFAULT_MODEL);
 
     const choices = (q.choices as string[] | null) ?? [];
     const correct = (q.correct_indices as number[] | null) ?? [];
@@ -83,14 +83,14 @@ export const generateExplanationsForQuestion = createServerFn({ method: "POST" }
           question_id: data.questionId,
           choice_index: o.choice_index,
           body: o.explanation,
-          model: GEMINI_DEFAULT_MODEL,
+          model: CLAUDE_DEFAULT_MODEL,
           generated_by: userId,
         }));
       rows.push({
         question_id: data.questionId,
         choice_index: null as unknown as number,
         body: output.overall,
-        model: GEMINI_DEFAULT_MODEL,
+        model: CLAUDE_DEFAULT_MODEL,
         generated_by: userId,
       });
 
@@ -122,9 +122,9 @@ export const askAboutQuestion = createServerFn({ method: "POST" })
     if (qErr) throw new Error(qErr.message);
     if (!q) throw new Error("Question introuvable");
 
-    const google = getGeminiProvider();
-    if (!google) throw new Error("GOOGLE_GENERATIVE_AI_API_KEY manquante");
-    const model = google(GEMINI_DEFAULT_MODEL);
+    const anthropic = getClaudeProvider();
+    if (!anthropic) throw new Error("ANTHROPIC_API_KEY manquante");
+    const model = anthropic(CLAUDE_DEFAULT_MODEL);
 
     const choices = (q.choices as string[] | null) ?? [];
     const correct = (q.correct_indices as number[] | null) ?? [];
@@ -152,8 +152,8 @@ export const askAboutQuestion = createServerFn({ method: "POST" })
         maxOutputTokens: 700,
         abortSignal: AbortSignal.timeout(25_000),
         providerOptions: {
-          google: {
-            thinkingConfig: { thinkingLevel: "low" },
+          anthropic: {
+            effort: "low",
           },
         },
       });

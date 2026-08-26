@@ -1,16 +1,16 @@
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createAnthropic } from "@ai-sdk/anthropic";
 
 /**
- * Direct Google Gemini API access.
+ * Direct Anthropic Claude API access.
  *
- * Requires `GOOGLE_GENERATIVE_AI_API_KEY` to be set (same key already used by
+ * Requires `ANTHROPIC_API_KEY` to be set (same key already used by
  * the AI-assisted DOCX/image import pipeline).
  */
-export function getGeminiProvider() {
-  const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+export function getClaudeProvider() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
-  return createGoogleGenerativeAI({ apiKey });
+  return createAnthropic({ apiKey });
 }
 
 /** Default model for quick text/structured-output tasks (explanations, program extraction, …). */
-export const GEMINI_DEFAULT_MODEL = "gemini-3.6-flash";
+export const CLAUDE_DEFAULT_MODEL = "claude-sonnet-5";

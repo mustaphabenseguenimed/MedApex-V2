@@ -66,7 +66,7 @@ import {
   prepareTextChunks,
   extractQuestionsFromHtmlChunk,
   extractQuestionsFromPdfChunk,
-  testGoogleAi,
+  testClaudeAi,
   type ExtractedQ,
 } from "@/lib/questions.functions";
 import { parseQuestionsJson } from "@/lib/structuredImport";
@@ -1129,7 +1129,7 @@ function resolveImportAssignments(q: ExtractedQ, rotations: Rotation[]) {
   };
 }
 
-type GoogleAiCheck = {
+type ClaudeAiCheck = {
   ok: boolean;
   message: string;
   models: Array<{
@@ -1143,17 +1143,17 @@ type GoogleAiCheck = {
 };
 
 /** Admin health check for the AI engines used by question extraction. */
-function GoogleAiTestButton() {
+function ClaudeAiTestButton() {
   const { tr } = useI18n();
-  const runTest = useServerFn(testGoogleAi);
+  const runTest = useServerFn(testClaudeAi);
   const [testing, setTesting] = useState(false);
-  const [result, setResult] = useState<GoogleAiCheck | null>(null);
+  const [result, setResult] = useState<ClaudeAiCheck | null>(null);
 
   const onClick = async () => {
     setTesting(true);
     setResult(null);
     try {
-      const r = (await runTest({} as any)) as GoogleAiCheck;
+      const r = (await runTest({} as any)) as ClaudeAiCheck;
       setResult(r);
       if (r.ok) toast.success(r.message);
       else toast.error(r.message);
@@ -2297,7 +2297,7 @@ function ImportFromFiles({
                 placeholder="ex: cardiologie, réponses cochées en vert"
               />
             </div>
-            <GoogleAiTestButton />
+            <ClaudeAiTestButton />
             <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 p-2">
               <Checkbox
                 id="no-ai-mode"
@@ -2355,7 +2355,7 @@ function ImportFromFiles({
                           ? "Local (0 crédit)"
                           : e === "json"
                             ? "JSON exact (0 crédit)"
-                            : "Gemini (IA intégrée)"}
+                            : "Claude (IA intégrée)"}
                       </Badge>
                     ))}
                   </div>

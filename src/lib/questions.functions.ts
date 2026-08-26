@@ -78,11 +78,11 @@ export type ExtractedQ = z.infer<typeof ExtractedQuestion>;
 
 // ---- helpers ---------------------------------------------------------------
 
-/** Extract the "Please retry in Ns" delay Google returns on 429, in ms. */
+/** Honor the `retry-after` header Anthropic sends on 429s, in ms. */
 function retryDelayMs(error: unknown, attempt: number): number {
-  const raw = String((error as any)?.message ?? (error as any)?.responseBody ?? "");
-  const m = raw.match(/retry in ([\d.]+)s/i);
-  if (m) return Math.min(45_000, Math.ceil(parseFloat(m[1]) * 1000) + 500);
+  const retryAfter = (error as any)?.responseHeaders?.["retry-after"];
+  const seconds = retryAfter ? parseFloat(retryAfter) : NaN;
+  if (Number.isFinite(seconds)) return Math.min(45_000, Math.ceil(seconds * 1000) + 500);
   return Math.min(20_000, 1500 * 2 ** attempt);
 }
 
@@ -120,8 +120,8 @@ async function runExtract(
       messages: [{ role: "user", content: content as any }],
       temperature: 0.2,
       providerOptions: {
-        google: {
-          thinkingConfig: { thinkingLevel: "high" },
+        anthropic: {
+          effort: "high",
         },
       },
     });
@@ -131,7 +131,7 @@ async function runExtract(
   let lastError: unknown = new Error("Aucun moteur IA configuré");
 
   for (const candidate of candidates) {
-    // Up to 3 tries per model: transient 429/5xx get a real backoff (Google
+    // Up to 3 tries per model: transient 429/5xx get a real backoff (Anthropic
     // tells us how long to wait), schema misses get one immediate retry.
     for (let attemptNo = 0; attemptNo < 3; attemptNo++) {
       try {
@@ -498,7 +498,7 @@ export const extractQuestionsFromDocx = createServerFn({ method: "POST" })
       // Convert to HTML so bold/italic/headers/lists/tables/images survive.
       html = await docxToHtmlWithImages(buffer, context.userId);
 
-      // mammoth drops font colors — extract them from document.xml so Gemini
+      // mammoth drops font colors — extract them from document.xml so Claude
       // can re-inject <span style="color:#..."> where needed.
       try {
         const JSZip = (await import("jszip")).default;
@@ -754,7 +754,7 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
   });
 
 /** Health check for the admin panel: pings each built-in model candidate. */
-export const testGoogleAi = createServerFn({ method: "POST" })
+export const testClaudeAi = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
@@ -778,7 +778,7 @@ export const testGoogleAi = createServerFn({ method: "POST" })
 
     const models: Row[] = [];
     for (const candidate of candidates) {
-      const name = String((candidate.model as any)?.modelId ?? "gemini");
+      const name = String((candidate.model as any)?.modelId ?? "claude");
       const engine = "IA intégrée";
       const started = Date.now();
       try {
