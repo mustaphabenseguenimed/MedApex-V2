@@ -54,6 +54,7 @@ import {
   ScrollText,
   AlertTriangle,
   CalendarClock,
+  FileCog,
 } from "lucide-react";
 import { ImagePlus, Sparkles, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { useIsAdmin } from "@/hooks/use-admin";
@@ -351,6 +352,14 @@ function AdminConsole() {
                 <Link to="/admin/reports">
                   <AlertTriangle className="mr-1.5 h-4 w-4" />
                   {tr("Signalements")}
+                </Link>
+              </Button>
+            )}
+            {(isSuper || has("manage_quiz")) && (
+              <Button asChild variant="outline" size="sm">
+                <Link to="/admin/convert">
+                  <FileCog className="mr-1.5 h-4 w-4" />
+                  {tr("Conversion")}
                 </Link>
               </Button>
             )}

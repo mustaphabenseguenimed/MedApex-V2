@@ -80,6 +80,10 @@ const YEAR_RE =
   /((?:\d{1,2})\s*(?:è?re|ème|eme|er)?\s*(?:année|annee|an\b)|(?:DCEM|PCEM|DFGSM|DFASM)\s*\d|(?:\b[1-7]\s*A\b)|(?:\bA[1-7]\b)|(?<!\d)(20\d{2})(?!\d))/i;
 const ROTATION_RE =
   /((?:rotation|rot\.?|période|periode|stage)\s*n?°?\s*\d{1,2}|\bP\s?\d{1,2}\b|\bR\s?\d{1,2}\b|résidanat\s*\d{4}|residanat\s*\d{4}|résidanat|residanat)/i;
+/** An explicit "Rotation : <value>" label line — captures the value verbatim
+ *  (e.g. "P3 2010" in full) instead of the looser ROTATION_RE, which would
+ *  only recover the "P3" token and drop the year. Takes priority when present. */
+const ROTATION_LABEL_RE = /^\s*rotation\s*[:\-–]\s*(.+)$/i;
 const COURSE_RE = /(?:cours|chapitre|module|matière|matiere|thème|theme|item)\s*[:\-–]\s*(.+)$/i;
 
 /** A line that is clearly leftover from the previous question's answer/explanation, never a header for the next one. */
@@ -123,8 +127,13 @@ export function parseContextHints(lines: string[]): QHeader {
       if (m) out.year_hint = (m[1] || m[2]).trim();
     }
     if (!out.rotation_hint) {
-      const m = line.match(ROTATION_RE);
-      if (m) out.rotation_hint = m[1].trim();
+      const label = line.match(ROTATION_LABEL_RE);
+      if (label) {
+        out.rotation_hint = label[1].trim();
+      } else {
+        const m = line.match(ROTATION_RE);
+        if (m) out.rotation_hint = m[1].trim();
+      }
     }
     if (!out.course_hint) {
       const m = line.match(COURSE_RE);
