@@ -858,6 +858,9 @@ function QuestionsPanel({
                           ) : (
                             <ChevronRight className="h-4 w-4" />
                           )}
+                          {g.label}
+                        </span>
+                        <span className="flex items-center gap-2">
                           {canManage && groupBy === "folder" && (
                             <span onClick={(e) => e.stopPropagation()}>
                               <Checkbox
@@ -867,9 +870,8 @@ function QuestionsPanel({
                               />
                             </span>
                           )}
-                          {g.label}
+                          <Badge variant="secondary">{g.items.length}</Badge>
                         </span>
-                        <Badge variant="secondary">{g.items.length}</Badge>
                       </button>
                     )}
                     {(groupBy === "none" || gOpen) && (
