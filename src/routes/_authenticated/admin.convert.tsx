@@ -15,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Loader2, FileDown } from "lucide-react";
+import { ArrowLeft, Loader2, FileDown, UploadCloud, Check } from "lucide-react";
 import { toast } from "sonner";
 import { useAdminPermissions } from "@/hooks/use-permissions";
 import { useI18n } from "@/lib/i18n";
@@ -31,6 +31,7 @@ import {
   generateGroundedExplanations,
 } from "@/lib/conversion.functions";
 import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
+import type { PreparedChunk } from "@/lib/questionChunks";
 import { readAsDataUrl, splitPdfIntoPageChunks } from "@/lib/fileUtils";
 import { downloadBase64, downloadText } from "@/lib/download";
 
@@ -210,24 +211,28 @@ function ConvertAdmin() {
 
 // ---- Step 1: PDF(s) → DOCX (no explanations) --------------------------------
 
+type PdfChunkJob = { dataUrl: string; filename: string };
+
 function Step1Panel() {
   const { tr } = useI18n();
   const extractPdfChunk = useServerFn(extractQuestionsFromPdfChunk);
   const genDocx = useServerFn(generateQuestionsDocx);
   const [files, setFiles] = useState<File[]>([]);
   const [rotation, setRotation] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [prepared, setPrepared] = useState<PdfChunkJob[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [count, setCount] = useState<number | null>(null);
 
-  const run = async () => {
+  const upload = async () => {
     if (!files.length) {
       toast.error(tr("Ajoutez au moins un fichier PDF"));
       return;
     }
-    setBusy(true);
-    setCount(null);
+    setUploading(true);
+    setPrepared(null);
     try {
-      const chunkJobs: { dataUrl: string; filename: string }[] = [];
+      const chunkJobs: PdfChunkJob[] = [];
       for (const file of files) {
         const bytes = await file.arrayBuffer();
         const chunks = await splitPdfIntoPageChunks(bytes, 3);
@@ -235,11 +240,28 @@ function Step1Panel() {
           chunkJobs.push({ dataUrl: chunk.dataUrl, filename: `${file.name} (${chunk.label})` });
         }
       }
+      if (!chunkJobs.length) throw new Error(tr("Fichier vide ou illisible"));
+      setPrepared(chunkJobs);
+      toast.success(
+        `${files.length} ${tr("fichier(s) chargé(s)")} — ${chunkJobs.length} ${tr("page(s)/lot(s) prêt(s)")}`,
+      );
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const run = async () => {
+    if (!prepared) return;
+    setBusy(true);
+    setCount(null);
+    try {
       // Fire every PDF chunk at once instead of one at a time — this is the
       // main driver of wall-clock time for a multi-page/multi-file upload.
       // Each chunk also retries on a dropped connection (common on mobile).
       const parts = await Promise.all(
-        chunkJobs.map((job) =>
+        prepared.map((job) =>
           withRetry(() =>
             extractPdfChunk({
               data: { pdfDataUrl: job.dataUrl, filename: job.filename, detectCases: true },
@@ -277,7 +299,10 @@ function Step1Panel() {
             type="file"
             accept="application/pdf,.pdf"
             multiple
-            onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
+            onChange={(e) => {
+              setFiles(Array.from(e.target.files ?? []));
+              setPrepared(null);
+            }}
           />
           {files.length > 0 && (
             <p className="mt-1 text-xs text-muted-foreground">
@@ -296,14 +321,31 @@ function Step1Panel() {
             {tr("Laissez vide pour garder la rotation détectée automatiquement par question.")}
           </p>
         </div>
-        <Button onClick={run} disabled={busy}>
-          {busy ? (
-            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-          ) : (
-            <FileDown className="mr-1.5 h-4 w-4" />
-          )}
-          {tr("Générer le .docx")}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={upload} disabled={uploading || !files.length}>
+            {uploading ? (
+              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            ) : prepared ? (
+              <Check className="mr-1.5 h-4 w-4" />
+            ) : (
+              <UploadCloud className="mr-1.5 h-4 w-4" />
+            )}
+            {tr("Charger les fichiers")}
+          </Button>
+          <Button onClick={run} disabled={busy || !prepared}>
+            {busy ? (
+              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            ) : (
+              <FileDown className="mr-1.5 h-4 w-4" />
+            )}
+            {tr("Convertir en .docx")}
+          </Button>
+        </div>
+        {prepared && !count && (
+          <p className="text-sm text-muted-foreground">
+            {prepared.length} {tr("page(s)/lot(s) prêt(s) — cliquez sur Convertir.")}
+          </p>
+        )}
         {count != null && (
           <p className="text-sm text-muted-foreground">
             {count} {tr("question(s) écrites dans le fichier téléchargé.")}
@@ -329,24 +371,40 @@ function Step2Panel() {
   const [refFile, setRefFile] = useState<File | null>(null);
   const [refText, setRefText] = useState("");
   const [allowNoAi, setAllowNoAi] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [count, setCount] = useState<number | null>(null);
 
-  const run = async () => {
+  const upload = async () => {
     if (!docxFile) {
       toast.error(tr("Ajoutez un fichier .docx (étape 1)"));
       return;
     }
-    setBusy(true);
-    setCount(null);
+    setUploading(true);
+    setPrepared(null);
     try {
       const dataUrl = await readAsDataUrl(docxFile);
       const { chunks } = await withRetry(() =>
         prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
       );
       if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
+      setPrepared(chunks);
+      toast.success(`${chunks.length} ${tr("lot(s) de questions chargé(s)")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const run = async () => {
+    if (!prepared) return;
+    setBusy(true);
+    setCount(null);
+    try {
       const parts = await Promise.all(
-        chunks.map((c) =>
+        prepared.map((c) =>
           withRetry(() =>
             extractHtml({
               data: {
@@ -447,7 +505,10 @@ function Step2Panel() {
           <Input
             type="file"
             accept={`.docx,${DOCX_MIME}`}
-            onChange={(e) => setDocxFile(e.target.files?.[0] ?? null)}
+            onChange={(e) => {
+              setDocxFile(e.target.files?.[0] ?? null);
+              setPrepared(null);
+            }}
           />
         </div>
         <div className="flex items-center gap-2">
@@ -490,14 +551,31 @@ function Step2Panel() {
             )}
           </p>
         </div>
-        <Button onClick={run} disabled={busy}>
-          {busy ? (
-            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-          ) : (
-            <FileDown className="mr-1.5 h-4 w-4" />
-          )}
-          {tr("Générer le .docx avec explications")}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={upload} disabled={uploading || !docxFile}>
+            {uploading ? (
+              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            ) : prepared ? (
+              <Check className="mr-1.5 h-4 w-4" />
+            ) : (
+              <UploadCloud className="mr-1.5 h-4 w-4" />
+            )}
+            {tr("Charger le fichier")}
+          </Button>
+          <Button onClick={run} disabled={busy || !prepared}>
+            {busy ? (
+              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            ) : (
+              <FileDown className="mr-1.5 h-4 w-4" />
+            )}
+            {tr("Convertir avec explications")}
+          </Button>
+        </div>
+        {prepared && !count && (
+          <p className="text-sm text-muted-foreground">
+            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Convertir.")}
+          </p>
+        )}
         {count != null && (
           <p className="text-sm text-muted-foreground">
             {count} {tr("question(s) écrites dans le fichier téléchargé.")}
@@ -516,24 +594,40 @@ function Step3Panel() {
   const extractHtml = useServerFn(extractQuestionsFromHtmlChunk);
   const [docxFile, setDocxFile] = useState<File | null>(null);
   const [allowNoAi, setAllowNoAi] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [count, setCount] = useState<number | null>(null);
 
-  const run = async () => {
+  const upload = async () => {
     if (!docxFile) {
       toast.error(tr("Ajoutez un fichier .docx (étape 1 ou 2)"));
       return;
     }
-    setBusy(true);
-    setCount(null);
+    setUploading(true);
+    setPrepared(null);
     try {
       const dataUrl = await readAsDataUrl(docxFile);
       const { chunks } = await withRetry(() =>
         prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
       );
       if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
+      setPrepared(chunks);
+      toast.success(`${chunks.length} ${tr("lot(s) de questions chargé(s)")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const run = async () => {
+    if (!prepared) return;
+    setBusy(true);
+    setCount(null);
+    try {
       const parts = await Promise.all(
-        chunks.map((c) =>
+        prepared.map((c) =>
           withRetry(() =>
             extractHtml({
               data: {
@@ -583,7 +677,10 @@ function Step3Panel() {
           <Input
             type="file"
             accept={`.docx,${DOCX_MIME}`}
-            onChange={(e) => setDocxFile(e.target.files?.[0] ?? null)}
+            onChange={(e) => {
+              setDocxFile(e.target.files?.[0] ?? null);
+              setPrepared(null);
+            }}
           />
         </div>
         <div className="flex items-center gap-2">
@@ -592,14 +689,31 @@ function Step3Panel() {
             {tr("Mode sans IA pour la lecture du .docx (gratuit, un seul fichier par rotation)")}
           </Label>
         </div>
-        <Button onClick={run} disabled={busy}>
-          {busy ? (
-            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-          ) : (
-            <FileDown className="mr-1.5 h-4 w-4" />
-          )}
-          {tr("Générer le .json")}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={upload} disabled={uploading || !docxFile}>
+            {uploading ? (
+              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            ) : prepared ? (
+              <Check className="mr-1.5 h-4 w-4" />
+            ) : (
+              <UploadCloud className="mr-1.5 h-4 w-4" />
+            )}
+            {tr("Charger le fichier")}
+          </Button>
+          <Button onClick={run} disabled={busy || !prepared}>
+            {busy ? (
+              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            ) : (
+              <FileDown className="mr-1.5 h-4 w-4" />
+            )}
+            {tr("Convertir en .json")}
+          </Button>
+        </div>
+        {prepared && !count && (
+          <p className="text-sm text-muted-foreground">
+            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Convertir.")}
+          </p>
+        )}
         {count != null && (
           <p className="text-sm text-muted-foreground">
             {count} {tr("question(s) écrites dans le fichier téléchargé.")}
