@@ -11,6 +11,15 @@ export function downloadText(filename: string, text: string, mimeType = "applica
   downloadBlob(filename, new Blob([text], { type: mimeType }));
 }
 
+/** Turn a base64-encoded result back into a File, so it can be fed straight
+ *  into the next step's upload without a round trip through the disk. */
+export function base64ToFile(filename: string, base64: string, mimeType: string): File {
+  const bytes = atob(base64);
+  const buf = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+  return new File([buf], filename, { type: mimeType });
+}
+
 function downloadBlob(filename: string, blob: Blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
