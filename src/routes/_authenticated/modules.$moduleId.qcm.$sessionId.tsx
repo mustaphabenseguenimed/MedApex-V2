@@ -11,7 +11,7 @@ import {
 } from "@/lib/explanations.functions";
 import { RichText, sanitizeExplanationHtml } from "@/components/RichText";
 import { markdownToHtml } from "@/lib/markdown";
-import { CaseRunner } from "@/components/session/CaseRunner";
+import { CaseRunner, type ReportReason } from "@/components/session/CaseRunner";
 import {
   createFlashcard,
   createFlashcardsFromSession,
@@ -130,6 +130,18 @@ function gradeChoice(q: Question, ans: any): number {
   return sameSet(picks, target) ? 1 : 0;
 }
 
+/** Flashcard "back" text for a whole question, used when creating a card
+ *  from the live session (before per-choice AI explanations exist). */
+function answerTextFor(q: Question, tr: (s: string) => string): string {
+  if ((q.type === "qcm" || q.type === "qcs") && q.choices) {
+    const target = targetIndices(q);
+    const lines = target.map((i) => `${String.fromCharCode(65 + i)}. ${q.choices![i]}`);
+    return lines.join("\n") || tr("(réponse non définie)");
+  }
+  if (q.type === "qroc") return q.model_answer || q.explanation || tr("(réponse non définie)");
+  return q.explanation || tr("(réponse non définie)");
+}
+
 function QcmRunner() {
   const { tr } = useI18n();
   const { moduleId, sessionId } = Route.useParams();
@@ -139,6 +151,8 @@ function QcmRunner() {
   const review = useServerFn(submitReview);
   const autoCards = useServerFn(createFlashcardsFromSession);
   const ask = useServerFn(askAboutQuestion);
+  const report = useServerFn(reportQuestion);
+  const addCard = useServerFn(createFlashcard);
   const [session, setSession] = useState<Session | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [idx, setIdx] = useState(0);
@@ -154,6 +168,8 @@ function QcmRunner() {
   const [askQueries, setAskQueries] = useState<Record<string, string>>({});
   const [askAnswers, setAskAnswers] = useState<Record<string, string>>({});
   const [askingId, setAskingId] = useState<string | null>(null);
+  const [reportReason, setReportReason] = useState<ReportReason>("missing_rotation");
+  const [reportDetails, setReportDetails] = useState("");
   const finishedRef = useRef(false);
 
   useEffect(() => {
@@ -453,6 +469,33 @@ function QcmRunner() {
     }
   };
 
+  const submitReport = async (q: Question, reason: ReportReason, details?: string) => {
+    try {
+      await report({ data: { questionId: q.id, reason, details } });
+      toast.success(tr("Signalement envoyé"));
+      setReportDetails("");
+    } catch (e: any) {
+      toast.error(e.message ?? tr("Erreur"));
+    }
+  };
+
+  const saveCardLive = async (q: Question) => {
+    try {
+      await addCard({
+        data: {
+          front: q.stem,
+          back: answerTextFor(q, tr),
+          question_id: q.id,
+          choice_index: null,
+          module_id: moduleId,
+        },
+      });
+      toast.success(tr("Ajouté aux flashcards"));
+    } catch (e: any) {
+      toast.error(e.message ?? tr("Erreur"));
+    }
+  };
+
   if (!session) return <div className="p-10 text-center text-muted-foreground">…</div>;
 
   const step = steps[idx];
@@ -536,6 +579,20 @@ function QcmRunner() {
               onSubmitQroc={(qq) => submitQroc(qq as Question)}
               onRevealAll={revealAll}
               onFlag={(qq) => doFlag(qq as Question)}
+              onReport={(qq, reason, details) => submitReport(qq as Question, reason, details)}
+              onSaveCard={(qq, front, back) =>
+                addCard({
+                  data: {
+                    front,
+                    back,
+                    question_id: qq.id,
+                    choice_index: null,
+                    module_id: moduleId,
+                  },
+                })
+                  .then(() => toast.success(tr("Ajouté aux flashcards")))
+                  .catch((e: any) => toast.error(e.message ?? tr("Erreur")))
+              }
             />
             <div className="flex justify-between pt-1">
               <Button variant="ghost" disabled={idx === 0} onClick={() => setIdx(idx - 1)}>
@@ -573,6 +630,14 @@ function QcmRunner() {
                     </Badge>
                   )}
                   <div className="ml-auto flex items-center gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => saveCardLive(q)}
+                      title={tr("Ajouter aux flashcards")}
+                    >
+                      <Layers className="h-4 w-4" />
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={() => doFlag(q)} title={tr("Flag")}>
                       <Flag
                         className={`h-4 w-4 ${flagged.has(q.id) ? "fill-current text-primary" : ""}`}
@@ -600,6 +665,53 @@ function QcmRunner() {
                         </p>
                       </SheetContent>
                     </Sheet>
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button size="sm" variant="ghost" title={tr("Signaler un problème")}>
+                          <AlertTriangle className="h-4 w-4" />
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>{tr("Signaler la question")}</DialogTitle>
+                        </DialogHeader>
+                        <div className="space-y-3">
+                          <Select
+                            value={reportReason}
+                            onValueChange={(v) => setReportReason(v as ReportReason)}
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="missing_rotation">
+                                {tr("Rotation / année manquante")}
+                              </SelectItem>
+                              <SelectItem value="wrong_answer">{tr("Mauvaise réponse")}</SelectItem>
+                              <SelectItem value="wrong_vocabulary">
+                                {tr("Vocabulaire incorrect")}
+                              </SelectItem>
+                              <SelectItem value="other">{tr("Autre")}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Textarea
+                            rows={4}
+                            placeholder={tr("Détails (optionnel)")}
+                            value={reportDetails}
+                            onChange={(e) => setReportDetails(e.target.value)}
+                          />
+                        </div>
+                        <DialogFooter>
+                          <Button
+                            onClick={() =>
+                              submitReport(q, reportReason, reportDetails || undefined)
+                            }
+                          >
+                            {tr("Envoyer")}
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
                   </div>
                 </div>
                 <CardTitle className="text-base whitespace-pre-wrap">{q.stem}</CardTitle>
@@ -944,9 +1056,7 @@ function ReviewCard({
   const ask = useServerFn(askAboutQuestion);
   const [expl, setExpl] = useState<Record<string, string>>({}); // key: choice_index or "overall"
   const [loadingExpl, setLoadingExpl] = useState(false);
-  const [reportReason, setReportReason] = useState<
-    "error" | "typo" | "ambiguous" | "outdated" | "other"
-  >("error");
+  const [reportReason, setReportReason] = useState<ReportReason>("missing_rotation");
   const [reportDetails, setReportDetails] = useState("");
   const [askQuery, setAskQuery] = useState("");
   const [askAnswer, setAskAnswer] = useState<string | null>(null);
@@ -1052,15 +1162,21 @@ function ReviewCard({
                   <DialogTitle>{tr("Signaler la question")}</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-3">
-                  <Select value={reportReason} onValueChange={(v) => setReportReason(v as any)}>
+                  <Select
+                    value={reportReason}
+                    onValueChange={(v) => setReportReason(v as ReportReason)}
+                  >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="error">{tr("Erreur médicale")}</SelectItem>
-                      <SelectItem value="typo">{tr("Faute de frappe")}</SelectItem>
-                      <SelectItem value="ambiguous">{tr("Ambigu")}</SelectItem>
-                      <SelectItem value="outdated">{tr("Obsolète")}</SelectItem>
+                      <SelectItem value="missing_rotation">
+                        {tr("Rotation / année manquante")}
+                      </SelectItem>
+                      <SelectItem value="wrong_answer">{tr("Mauvaise réponse")}</SelectItem>
+                      <SelectItem value="wrong_vocabulary">
+                        {tr("Vocabulaire incorrect")}
+                      </SelectItem>
                       <SelectItem value="other">{tr("Autre")}</SelectItem>
                     </SelectContent>
                   </Select>

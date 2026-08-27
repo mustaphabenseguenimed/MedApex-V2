@@ -38,6 +38,13 @@ type Report = {
   questions: ReportedQuestion | null;
 };
 
+const REASON_LABELS: Record<string, string> = {
+  missing_rotation: "Rotation / année manquante",
+  wrong_answer: "Mauvaise réponse",
+  wrong_vocabulary: "Vocabulaire incorrect",
+  other: "Autre",
+};
+
 function ReportsPage() {
   const { tr } = useI18n();
   const { loading, isSuper, has } = useAdminPermissions();
@@ -131,7 +138,7 @@ function ReportsPage() {
             {rows.map((r) => (
               <div key={r.id} className="rounded-md border p-3 space-y-2">
                 <div className="flex items-center gap-2 text-xs flex-wrap">
-                  <Badge variant="outline">{r.reason}</Badge>
+                  <Badge variant="outline">{tr(REASON_LABELS[r.reason] ?? r.reason)}</Badge>
                   <Badge variant={r.status === "open" ? "destructive" : "secondary"}>
                     {r.status}
                   </Badge>
