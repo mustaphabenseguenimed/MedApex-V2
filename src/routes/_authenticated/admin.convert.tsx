@@ -163,24 +163,32 @@ function friendlyError(e: any, tr: (s: string) => string): string {
 
 type Progress = { done: number; total: number };
 
-/** Run jobs in parallel (same as Promise.all) while reporting live progress
- *  as each one completes, so the UI can show "X/Y" instead of a bare spinner. */
+/** Run jobs with a bounded number in flight at once (unlike a bare
+ *  Promise.all, which fires everything simultaneously and can blow past the
+ *  Gemini free tier's ~20 requests/minute cap on a large batch), reporting
+ *  live progress as each one completes. Each job already retries its own
+ *  429/quota errors with backoff, so this just keeps the burst small enough
+ *  not to trigger them in the first place. */
 async function withProgress<T>(
   jobs: Array<() => Promise<T>>,
   onProgress: (p: Progress) => void,
+  concurrency = 4,
 ): Promise<T[]> {
   const total = jobs.length;
   let done = 0;
   onProgress({ done, total });
-  return Promise.all(
-    jobs.map((job) =>
-      job().then((r) => {
-        done++;
-        onProgress({ done, total });
-        return r;
-      }),
-    ),
-  );
+  const results: T[] = new Array(total);
+  let next = 0;
+  async function worker() {
+    while (next < jobs.length) {
+      const i = next++;
+      results[i] = await jobs[i]();
+      done++;
+      onProgress({ done, total });
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
+  return results;
 }
 
 /** Current phase label + optional "X/Y" progress bar shown under a step's
