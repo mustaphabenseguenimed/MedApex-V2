@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RichTextEditor } from "@/components/RichTextEditor";
+import { MultiSearchableSelect } from "@/components/ui/multi-searchable-select";
+import type { SearchableOption } from "@/components/ui/searchable-select";
 import { toast } from "sonner";
 import { ArrowLeft, Check, Pencil, Plus, Save, Trash2, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
@@ -26,7 +28,25 @@ type ReportedQuestion = {
   model_answer: string | null;
   explanation: string | null;
   module_id: string;
+  parent_id: string | null;
+  rotation_ids: string[];
+  exam_years: number[];
 };
+
+function stripHtml(html: string | null | undefined): string {
+  return (html ?? "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function yearOptions(): SearchableOption[] {
+  const now = new Date().getFullYear();
+  const years: number[] = [];
+  for (let y = now - 8; y <= now + 1; y++) years.push(y);
+  return years.sort((a, b) => b - a).map((y) => ({ value: String(y), label: String(y) }));
+}
 type Report = {
   id: string;
   question_id: string;
@@ -57,7 +77,7 @@ function ReportsPage() {
     let q = supabase
       .from("question_reports")
       .select(
-        "id, question_id, user_id, reason, details, status, created_at, questions(id, stem, type, choices, correct_indices, model_answer, explanation, module_id)",
+        "id, question_id, user_id, reason, details, status, created_at, questions(id, stem, type, choices, correct_indices, model_answer, explanation, module_id, parent_id, rotation_ids, exam_years)",
       )
       .order("created_at", { ascending: false })
       .limit(200);
@@ -183,8 +203,8 @@ function ReportsPage() {
                   )}
                 </div>
                 {editingId === r.id && r.questions && (
-                  <QuestionEditor
-                    question={r.questions}
+                  <CaseContextEditor
+                    report={r}
                     onSaved={(patch) => {
                       setRows((prev) =>
                         prev.map((row) =>
@@ -193,7 +213,6 @@ function ReportsPage() {
                             : row,
                         ),
                       );
-                      setEditingId(null);
                     }}
                   />
                 )}
@@ -202,6 +221,95 @@ function ReportsPage() {
           </CardContent>
         </Card>
       </main>
+    </div>
+  );
+}
+
+/**
+ * When the reported question is a cas-clinique sub-question (or the case
+ * itself), show the shared vignette plus every sub-question so the admin has
+ * full context — the fix for a report often lives in the vignette or a
+ * sibling question, not just the one that was reported.
+ */
+function CaseContextEditor({
+  report,
+  onSaved,
+}: {
+  report: Report;
+  onSaved: (patch: Partial<ReportedQuestion>) => void;
+}) {
+  const { tr } = useI18n();
+  const q = report.questions!;
+  const caseParentId = q.type === "cas_clinique" ? q.id : q.parent_id;
+  const [parent, setParent] = useState<ReportedQuestion | null>(null);
+  const [subs, setSubs] = useState<ReportedQuestion[]>([]);
+  const [loading, setLoading] = useState(!!caseParentId);
+  const [openSubId, setOpenSubId] = useState<string | null>(
+    q.type === "cas_clinique" ? null : q.id,
+  );
+
+  useEffect(() => {
+    if (!caseParentId) return;
+    (async () => {
+      const cols =
+        "id, stem, type, choices, correct_indices, model_answer, explanation, module_id, parent_id, rotation_ids, exam_years";
+      const [{ data: p }, { data: s }] = await Promise.all([
+        supabase.from("questions").select(cols).eq("id", caseParentId).maybeSingle(),
+        supabase
+          .from("questions")
+          .select(`${cols}, sort_order`)
+          .eq("parent_id", caseParentId)
+          .order("sort_order"),
+      ]);
+      setParent(p as ReportedQuestion | null);
+      setSubs((s as ReportedQuestion[]) ?? []);
+      setLoading(false);
+    })();
+  }, [caseParentId]);
+
+  if (!caseParentId) return <QuestionEditor question={q} onSaved={onSaved} />;
+  if (loading) return <p className="text-sm text-muted-foreground">…</p>;
+
+  return (
+    <div className="space-y-2">
+      {parent && (
+        <div className="rounded-md border-2 border-primary/40 bg-primary/5 p-3">
+          <div className="mb-2 text-xs font-semibold text-primary">
+            {tr("Cas clinique (énoncé partagé)")}
+          </div>
+          <QuestionEditor question={parent} onSaved={() => {}} />
+        </div>
+      )}
+      {subs.map((s, i) => {
+        const isReported = s.id === q.id;
+        const isOpen = openSubId === s.id;
+        return (
+          <div
+            key={s.id}
+            className={`rounded-md border ${isReported ? "border-destructive/60" : ""}`}
+          >
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm"
+              onClick={() => setOpenSubId(isOpen ? null : s.id)}
+            >
+              <span className="flex-1 truncate">
+                {i + 1}. {stripHtml(s.stem)}
+              </span>
+              {isReported && (
+                <Badge variant="destructive" className="shrink-0 text-[10px]">
+                  {tr("Signalée")}
+                </Badge>
+              )}
+            </button>
+            {isOpen && (
+              <div className="border-t p-3">
+                <QuestionEditor question={s} onSaved={isReported ? onSaved : () => {}} />
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -219,10 +327,29 @@ function QuestionEditor({
   const [correct, setCorrect] = useState<number[]>(question.correct_indices ?? []);
   const [modelAnswer, setModelAnswer] = useState(question.model_answer ?? "");
   const [explanation, setExplanation] = useState(question.explanation ?? "");
+  const [rotationIds, setRotationIds] = useState<string[]>(question.rotation_ids ?? []);
+  const [examYears, setExamYears] = useState<string[]>((question.exam_years ?? []).map(String));
+  const [rotations, setRotations] = useState<{ id: string; label: string }[]>([]);
   const [saving, setSaving] = useState(false);
 
   const isQroc = question.type === "qroc";
   const hasChoices = question.type === "qcm" || question.type === "qcs";
+  // Rotation/year live on the parent question (standalone or cas-clinique
+  // vignette) — sub-questions inherit them, same convention as the main
+  // admin question editor.
+  const isChild = !!question.parent_id;
+
+  useEffect(() => {
+    if (isChild) return;
+    (async () => {
+      const { data } = await supabase
+        .from("module_rotations")
+        .select("id, label")
+        .eq("module_id", question.module_id)
+        .order("sort_order");
+      setRotations((data as { id: string; label: string }[]) ?? []);
+    })();
+  }, [question.module_id, isChild]);
 
   const save = async () => {
     if (!stem.trim()) {
@@ -238,6 +365,10 @@ function QuestionEditor({
     }
     if (isQroc) patch.model_answer = modelAnswer || null;
     patch.explanation = explanation || null;
+    if (!isChild) {
+      patch.rotation_ids = rotationIds;
+      patch.exam_years = examYears.map(Number).filter((n) => Number.isFinite(n));
+    }
     const { error } = await supabase.from("questions").update(patch).eq("id", question.id);
     setSaving(false);
     if (error) {
@@ -254,6 +385,32 @@ function QuestionEditor({
         <Label className="text-xs">{tr("Énoncé")}</Label>
         <RichTextEditor value={stem} onChange={setStem} minHeight={70} />
       </div>
+      {!isChild && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div className="space-y-1">
+            <Label className="text-xs">{tr("Rotation(s)")}</Label>
+            <MultiSearchableSelect
+              values={rotationIds}
+              onValuesChange={setRotationIds}
+              options={rotations.map((r) => ({ value: r.id, label: r.label }))}
+              placeholder={tr("Rotations (Pn)")}
+              searchPlaceholder={tr("Rechercher une rotation…")}
+              triggerClassName="h-8"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">{tr("Année(s)")}</Label>
+            <MultiSearchableSelect
+              values={examYears}
+              onValuesChange={setExamYears}
+              options={yearOptions()}
+              placeholder={tr("Années")}
+              searchPlaceholder={tr("Rechercher une année…")}
+              triggerClassName="h-8"
+            />
+          </div>
+        </div>
+      )}
       {hasChoices && (
         <div className="space-y-1">
           <Label className="text-xs">{tr("Propositions (cochez les bonnes réponses)")}</Label>
