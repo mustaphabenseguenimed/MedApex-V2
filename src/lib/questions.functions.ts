@@ -26,6 +26,10 @@ export type ExtractResult = {
   expected?: number;
   /** Set when the chunk could not be fully extracted after retries. */
   warning?: string;
+  /** Self-reported count of distinct questions the model says it saw in this
+   *  chunk (PDF path only — there is no independent ground truth for an
+   *  image-based PDF chunk, so this is an AI heuristic, not a hard fact). */
+  total_visible?: number | null;
 };
 
 /** Surface a friendly error when the AI gateway rejects a request (credits,
@@ -73,7 +77,10 @@ const ExtractedQuestion = z.object({
   /** Common clinical vignette shared by a group of questions (cas clinique). */
   case_stem: z.string().nullable().optional(),
 });
-const ExtractSchema = z.object({ questions: z.array(ExtractedQuestion) });
+const ExtractSchema = z.object({
+  questions: z.array(ExtractedQuestion),
+  total_visible: z.number().int().min(0).max(200).nullable().optional(),
+});
 export type ExtractedQ = z.infer<typeof ExtractedQuestion>;
 
 // ---- helpers ---------------------------------------------------------------
@@ -171,7 +178,10 @@ function useRunColor(color?: string, shd?: string, highlight?: string): boolean 
 }
 
 /** Neutralize black text colors so imported content follows the app theme. */
-function normalizeQuestions(result: { questions: ExtractedQ[] }): { questions: ExtractedQ[] } {
+function normalizeQuestions(result: { questions: ExtractedQ[]; total_visible?: number | null }): {
+  questions: ExtractedQ[];
+  total_visible?: number | null;
+} {
   return {
     questions: (result.questions ?? []).map((q) => ({
       ...q,
@@ -186,6 +196,7 @@ function normalizeQuestions(result: { questions: ExtractedQ[] }): { questions: E
         : q.explanation,
       model_answer: q.model_answer ? normalizeInlineTextColors(q.model_answer) : q.model_answer,
     })),
+    total_visible: result.total_visible ?? undefined,
   };
 }
 
@@ -332,10 +343,98 @@ async function extractChunkComplete(
   };
 }
 
-const INSTRUCTIONS = (hint?: string, detectCases = true) =>
+/** Split a base64 PDF (already a small chunk) into two base64 halves by page
+ *  count, server-side. Mirrors fileUtils.ts's splitPdfIntoPageChunks (which
+ *  is browser-only via btoa) but Buffer-based for use in a server function.
+ *  Returns null when there's nothing left to split (< 2 pages). */
+async function splitPdfBase64InHalf(base64: string): Promise<[string, string] | null> {
+  const { PDFDocument } = await import("pdf-lib");
+  const src = await PDFDocument.load(Buffer.from(base64, "base64"));
+  const pageCount = src.getPageCount();
+  if (pageCount < 2) return null;
+  const mid = Math.ceil(pageCount / 2);
+  const ranges: [number, number][] = [
+    [0, mid],
+    [mid, pageCount],
+  ];
+  const halves = await Promise.all(
+    ranges.map(async ([start, end]) => {
+      const indices = Array.from({ length: end - start }, (_, k) => start + k);
+      const sub = await PDFDocument.create();
+      (await sub.copyPages(src, indices)).forEach((p) => sub.addPage(p));
+      return Buffer.from(await sub.save()).toString("base64");
+    }),
+  );
+  return [halves[0], halves[1]];
+}
+
+/**
+ * PDF equivalent of extractChunkComplete: an image-based PDF chunk has no
+ * text layer to compute a real expected count from, so completeness is
+ * checked against the model's own self-reported total_visible instead (a
+ * soft heuristic, not a hard fact — it can be wrong in either direction).
+ * On a shortfall, re-split the chunk by page count (not by parsed text
+ * units) and retry the halves, keeping whichever attempt found more.
+ */
+async function extractPdfChunkComplete(
+  buildContent: (base64: string) => Parameters<typeof runExtract>[0],
+  base64: string,
+  priorExpected: number,
+  depth = 0,
+): Promise<ExtractResult> {
+  const result = await runExtract(buildContent(base64));
+  const got = result.questions.length;
+  const target = priorExpected > 0 ? priorExpected : (result.total_visible ?? 0);
+
+  if (target <= 0 || got >= target || depth >= 2) {
+    return {
+      ...result,
+      expected: target || undefined,
+      warning:
+        target > 0 && got < target
+          ? `${target} question(s) détectée(s) par l'IA, ${got} extraite(s)`
+          : undefined,
+    };
+  }
+
+  const halves = await splitPdfBase64InHalf(base64);
+  if (!halves) {
+    return {
+      ...result,
+      expected: target,
+      warning: `${target} question(s) détectée(s) par l'IA, ${got} extraite(s) (page unique, non re-scindable)`,
+    };
+  }
+
+  const parts = await Promise.all(
+    halves.map((half) => extractPdfChunkComplete(buildContent, half, 0, depth + 1)),
+  );
+  const questions = parts.flatMap((p) => p.questions);
+  if (questions.length <= got) {
+    return {
+      ...result,
+      expected: target,
+      warning: `${target} question(s) détectée(s) par l'IA, ${got} extraite(s)`,
+    };
+  }
+  return {
+    questions,
+    engine: parts[0]?.engine ?? result.engine,
+    expected: target,
+    warning:
+      questions.length < target
+        ? `${target} question(s) détectée(s) par l'IA, ${questions.length} extraite(s)`
+        : undefined,
+  };
+}
+
+const INSTRUCTIONS = (hint?: string, detectCases = true, askTotalVisible = false) =>
   [
     "Tu extrais des questions de QCM médicales à partir d'un document (capture d'écran, PDF, ou texte extrait d'un fichier Word), en français ou en arabe.",
     "Le fragment fourni contient un ou plusieurs QCM. N'en oublie aucun, ne fusionne pas deux questions, et ne réinvente rien.",
+    askTotalVisible
+      ? "Avant de répondre, compte silencieusement le nombre total de questions DISTINCTES visibles dans ce document/extrait (chaque QCM/QCS/QROC numéroté ou clairement séparé compte pour une). Renvoie ce total dans le champ total_visible, et assure-toi ensuite que la longueur du tableau questions est EXACTEMENT égale à total_visible : n'en omets, ne fusionne, ni ne dédouble aucune."
+      : "",
     "Pour chaque question visible, retourne:",
     "- type: 'qcs' si une seule bonne réponse, 'qcm' si plusieurs, 'qroc' si question ouverte sans choix.",
     "- stem: l'énoncé exact.",
@@ -741,16 +840,20 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
     const base64 = data.pdfDataUrl.replace(/^data:application\/pdf;base64,/i, "");
-    return runExtract([
-      { type: "text", text: INSTRUCTIONS(data.hint, data.detectCases ?? true) },
-      { type: "text", text: expectedCountNote(data.expected ?? 0) },
-      {
-        type: "file",
-        data: base64,
-        mediaType: "application/pdf",
-        filename: data.filename ?? "chunk.pdf",
-      },
-    ]);
+    return extractPdfChunkComplete(
+      (chunkBase64) => [
+        { type: "text", text: INSTRUCTIONS(data.hint, data.detectCases ?? true, true) },
+        { type: "text", text: expectedCountNote(data.expected ?? 0) },
+        {
+          type: "file",
+          data: chunkBase64,
+          mediaType: "application/pdf",
+          filename: data.filename ?? "chunk.pdf",
+        },
+      ],
+      base64,
+      data.expected ?? 0,
+    );
   });
 
 /** Health check for the admin panel: pings each built-in model candidate. */
