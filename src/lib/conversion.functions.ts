@@ -5,6 +5,7 @@ import { z } from "zod";
 import { assertAdminPermission } from "./admin-guard";
 import { getGeminiProvider, GEMINI_DEFAULT_MODEL } from "./ai-provider.server";
 import { buildQuestionsDocx, type DocxQuestionItem } from "./questionsDocxBuilder";
+import { friendlyGatewayError, isTransient, retryDelayMs, sleep } from "./questions.functions";
 
 /** Plain-text extraction from an uploaded reference .docx (course notes,
  *  textbook excerpt, …) — no image/formatting handling needed, just text
@@ -130,21 +131,33 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
       data.instructions ? `\nInstructions supplémentaires de l'admin :\n${data.instructions}` : "",
     ].join("\n");
 
-    try {
-      const { output } = await generateText({
-        model,
-        output: Output.object({ schema: ExplainSchema }),
-        temperature: 0.3,
-        prompt,
-      });
-      const byIndex = new Map(output.explanations.map((e) => [e.index, e.explanation]));
-      return {
-        explanations: data.items.map((_, i) => byIndex.get(i) ?? null),
-      };
-    } catch (error) {
-      if (NoObjectGeneratedError.isInstance(error)) {
-        return { explanations: data.items.map(() => null) };
+    // Same treatment as question extraction: a 429/quota hit is worth
+    // waiting out (Google tells us how long) rather than failing the whole
+    // batch — free-tier quotas reset within seconds to a couple minutes.
+    let lastError: unknown;
+    for (let attemptNo = 0; attemptNo < 3; attemptNo++) {
+      try {
+        const { output } = await generateText({
+          model,
+          output: Output.object({ schema: ExplainSchema }),
+          temperature: 0.3,
+          prompt,
+        });
+        const byIndex = new Map(output.explanations.map((e) => [e.index, e.explanation]));
+        return {
+          explanations: data.items.map((_, i) => byIndex.get(i) ?? null),
+        };
+      } catch (error) {
+        lastError = error;
+        if (NoObjectGeneratedError.isInstance(error)) {
+          return { explanations: data.items.map(() => null) };
+        }
+        if (isTransient(error) && attemptNo < 2) {
+          await sleep(retryDelayMs(error, attemptNo));
+          continue;
+        }
+        break;
       }
-      throw error;
     }
+    throw friendlyGatewayError(lastError);
   });

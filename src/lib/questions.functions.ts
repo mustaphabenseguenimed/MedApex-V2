@@ -30,7 +30,7 @@ export type ExtractResult = {
 
 /** Surface a friendly error when the AI gateway rejects a request (credits,
  *  quota, auth). Otherwise re-throw the original error. */
-function friendlyGatewayError(error: unknown): Error {
+export function friendlyGatewayError(error: unknown): Error {
   const anyErr = error as any;
   const status: number | undefined =
     anyErr?.statusCode ?? anyErr?.status ?? anyErr?.response?.status ?? anyErr?.cause?.statusCode;
@@ -79,7 +79,7 @@ export type ExtractedQ = z.infer<typeof ExtractedQuestion>;
 // ---- helpers ---------------------------------------------------------------
 
 /** Extract the "Please retry in Ns" delay Google returns on 429, in ms. */
-function retryDelayMs(error: unknown, attempt: number): number {
+export function retryDelayMs(error: unknown, attempt: number): number {
   const raw = String((error as any)?.message ?? (error as any)?.responseBody ?? "");
   const m = raw.match(/retry in ([\d.]+)s/i);
   if (m) return Math.min(45_000, Math.ceil(parseFloat(m[1]) * 1000) + 500);
@@ -92,7 +92,7 @@ function errorStatus(error: unknown): number | undefined {
 }
 
 /** 429 / 5xx are transient: worth waiting and retrying the same model. */
-function isTransient(error: unknown): boolean {
+export function isTransient(error: unknown): boolean {
   const status = errorStatus(error);
   if (status === 429 || (typeof status === "number" && status >= 500)) return true;
   return /rate.?limit|overloaded|unavailable|RESOURCE_EXHAUSTED|timeout/i.test(
@@ -100,7 +100,7 @@ function isTransient(error: unknown): boolean {
   );
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function runExtract(
   content: Array<
