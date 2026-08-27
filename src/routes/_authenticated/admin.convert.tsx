@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Loader2, FileDown, UploadCloud, Check } from "lucide-react";
+import { ArrowLeft, ArrowRight, Loader2, FileDown, UploadCloud, Check, Save } from "lucide-react";
 import { toast } from "sonner";
 import { useAdminPermissions } from "@/hooks/use-permissions";
 import { useI18n } from "@/lib/i18n";
@@ -34,7 +34,7 @@ import {
 import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
 import type { PreparedChunk } from "@/lib/questionChunks";
 import { readAsDataUrl, splitPdfIntoPageChunks } from "@/lib/fileUtils";
-import { downloadBase64, downloadText } from "@/lib/download";
+import { downloadBase64, downloadText, base64ToFile } from "@/lib/download";
 
 export const Route = createFileRoute("/_authenticated/admin/convert")({
   head: () => ({ meta: [{ title: "Conversion — Admin" }] }),
@@ -199,6 +199,62 @@ function StepProgress({ phase, progress }: { phase: string | null; progress: Pro
   );
 }
 
+/** Per-step "Indication pour l'IA" text, remembered across visits (and
+ *  files) via localStorage so the admin doesn't retype it every time —
+ *  still freely editable, and re-saved explicitly via the Save button. */
+function useSavedHint(step: string, tr: (s: string) => string) {
+  const storageKey = `medapex:convert:hint:${step}`;
+  const [hint, setHint] = useState(() => {
+    if (typeof window === "undefined") return "";
+    try {
+      return window.localStorage.getItem(storageKey) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const saveHint = () => {
+    try {
+      window.localStorage.setItem(storageKey, hint);
+      toast.success(tr("Indication enregistrée par défaut"));
+    } catch {
+      toast.error(tr("Impossible d'enregistrer l'indication"));
+    }
+  };
+  return { hint, setHint, saveHint };
+}
+
+function HintField({
+  hint,
+  setHint,
+  saveHint,
+  placeholder,
+}: {
+  hint: string;
+  setHint: (v: string) => void;
+  saveHint: () => void;
+  placeholder: string;
+}) {
+  const { tr } = useI18n();
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2">
+        <Label>{tr("Indication pour l'IA (optionnel)")}</Label>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-auto px-2 py-1 text-xs text-muted-foreground"
+          onClick={saveHint}
+        >
+          <Save className="mr-1 h-3 w-3" />
+          {tr("Enregistrer par défaut")}
+        </Button>
+      </div>
+      <Input value={hint} onChange={(e) => setHint(e.target.value)} placeholder={placeholder} />
+    </div>
+  );
+}
+
 // ---- page shell -------------------------------------------------------------
 
 function ConvertAdmin() {
@@ -227,24 +283,50 @@ function ConvertAdmin() {
         </div>
       </header>
       <main className="mx-auto max-w-4xl px-6 py-8">
-        <Tabs defaultValue="step1">
-          <TabsList>
-            <TabsTrigger value="step1">{tr("1. PDF → DOCX")}</TabsTrigger>
-            <TabsTrigger value="step2">{tr("2. + Explications")}</TabsTrigger>
-            <TabsTrigger value="step3">{tr("3. → JSON")}</TabsTrigger>
-          </TabsList>
-          <TabsContent value="step1" className="mt-6">
-            <Step1Panel />
-          </TabsContent>
-          <TabsContent value="step2" className="mt-6">
-            <Step2Panel />
-          </TabsContent>
-          <TabsContent value="step3" className="mt-6">
-            <Step3Panel />
-          </TabsContent>
-        </Tabs>
+        <ConvertTabs />
       </main>
     </div>
+  );
+}
+
+/** Owns which tab is active and hands off a just-generated file straight into
+ *  the next step's upload when the admin clicks "Continuer" instead of
+ *  Download — no manual download/re-upload round trip. */
+function ConvertTabs() {
+  const { tr } = useI18n();
+  const [tab, setTab] = useState("step1");
+  const [step2Incoming, setStep2Incoming] = useState<File | null>(null);
+  const [step3Incoming, setStep3Incoming] = useState<File | null>(null);
+
+  return (
+    <Tabs value={tab} onValueChange={setTab}>
+      <TabsList>
+        <TabsTrigger value="step1">{tr("1. PDF → DOCX")}</TabsTrigger>
+        <TabsTrigger value="step2">{tr("2. + Explications")}</TabsTrigger>
+        <TabsTrigger value="step3">{tr("3. → JSON")}</TabsTrigger>
+      </TabsList>
+      <TabsContent value="step1" className="mt-6">
+        <Step1Panel
+          onContinue={(file) => {
+            setStep2Incoming(file);
+            setTab("step2");
+          }}
+        />
+      </TabsContent>
+      <TabsContent value="step2" className="mt-6">
+        <Step2Panel
+          incomingFile={step2Incoming}
+          onConsumed={() => setStep2Incoming(null)}
+          onContinue={(file) => {
+            setStep3Incoming(file);
+            setTab("step3");
+          }}
+        />
+      </TabsContent>
+      <TabsContent value="step3" className="mt-6">
+        <Step3Panel incomingFile={step3Incoming} onConsumed={() => setStep3Incoming(null)} />
+      </TabsContent>
+    </Tabs>
   );
 }
 
@@ -252,17 +334,19 @@ function ConvertAdmin() {
 
 type PdfChunkJob = { dataUrl: string; filename: string };
 
-function Step1Panel() {
+type DocxResult = { base64: string; count: number };
+
+function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const { tr } = useI18n();
   const extractPdfChunk = useServerFn(extractQuestionsFromPdfChunk);
   const genDocx = useServerFn(generateQuestionsDocx);
   const [files, setFiles] = useState<File[]>([]);
   const [rotation, setRotation] = useState("");
-  const [hint, setHint] = useState("");
+  const { hint, setHint, saveHint } = useSavedHint("step1", tr);
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PdfChunkJob[] | null>(null);
   const [busy, setBusy] = useState(false);
-  const [count, setCount] = useState<number | null>(null);
+  const [result, setResult] = useState<DocxResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
 
@@ -273,6 +357,7 @@ function Step1Panel() {
     }
     setUploading(true);
     setPrepared(null);
+    setResult(null);
     try {
       const chunkJobs: PdfChunkJob[] = [];
       for (const file of files) {
@@ -297,7 +382,7 @@ function Step1Panel() {
   const run = async () => {
     if (!prepared) return;
     setBusy(true);
-    setCount(null);
+    setResult(null);
     setProgress(null);
     try {
       // Fire every PDF chunk at once instead of one at a time — this is the
@@ -328,8 +413,7 @@ function Step1Panel() {
       const { base64 } = await withRetry(() =>
         genDocx({ data: { items, includeExplanations: false } }),
       );
-      downloadBase64(`questions_${Date.now()}.docx`, base64, DOCX_MIME);
-      setCount(all.length);
+      setResult({ base64, count: all.length });
       toast.success(`${all.length} ${tr("question(s) converties")}`);
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
@@ -376,14 +460,12 @@ function Step1Panel() {
             {tr("Laissez vide pour garder la rotation détectée automatiquement par question.")}
           </p>
         </div>
-        <div>
-          <Label>{tr("Indication pour l'IA (optionnel)")}</Label>
-          <Input
-            value={hint}
-            onChange={(e) => setHint(e.target.value)}
-            placeholder={tr("ex: cardiologie, réponses cochées en vert")}
-          />
-        </div>
+        <HintField
+          hint={hint}
+          setHint={setHint}
+          saveHint={saveHint}
+          placeholder={tr("ex: cardiologie, réponses cochées en vert")}
+        />
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={upload} disabled={uploading || !files.length}>
             {uploading ? (
@@ -405,15 +487,36 @@ function Step1Panel() {
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && !busy && !count && (
+        {prepared && !busy && !result && (
           <p className="text-sm text-muted-foreground">
             {prepared.length} {tr("page(s)/lot(s) prêt(s) — cliquez sur Convertir.")}
           </p>
         )}
-        {count != null && (
-          <p className="text-sm text-muted-foreground">
-            {count} {tr("question(s) écrites dans le fichier téléchargé.")}
-          </p>
+        {result && (
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+            <p className="text-sm font-medium">
+              {result.count} {tr("question(s) prêtes")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() =>
+                  downloadBase64(`questions_${Date.now()}.docx`, result.base64, DOCX_MIME)
+                }
+              >
+                <FileDown className="mr-1.5 h-4 w-4" />
+                {tr("Télécharger")}
+              </Button>
+              <Button
+                onClick={() =>
+                  onContinue(base64ToFile(`questions_${Date.now()}.docx`, result.base64, DOCX_MIME))
+                }
+              >
+                <ArrowRight className="mr-1.5 h-4 w-4" />
+                {tr("Continuer vers l'étape 2 (même fichier)")}
+              </Button>
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -422,7 +525,15 @@ function Step1Panel() {
 
 // ---- Step 2: DOCX + reference file → DOCX with explanations -----------------
 
-function Step2Panel() {
+function Step2Panel({
+  incomingFile,
+  onConsumed,
+  onContinue,
+}: {
+  incomingFile?: File | null;
+  onConsumed?: () => void;
+  onContinue: (file: File) => void;
+}) {
   const { tr } = useI18n();
   const prepDocx = useServerFn(prepareDocxChunks);
   const extractHtml = useServerFn(extractQuestionsFromHtmlChunk);
@@ -434,24 +545,21 @@ function Step2Panel() {
   const [refMode, setRefMode] = useState<"pdf" | "docx" | "text">("text");
   const [refFile, setRefFile] = useState<File | null>(null);
   const [refText, setRefText] = useState("");
-  const [hint, setHint] = useState("");
+  const { hint, setHint, saveHint } = useSavedHint("step2", tr);
   const [allowNoAi, setAllowNoAi] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
   const [busy, setBusy] = useState(false);
-  const [count, setCount] = useState<number | null>(null);
+  const [result, setResult] = useState<DocxResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
 
-  const upload = async () => {
-    if (!docxFile) {
-      toast.error(tr("Ajoutez un fichier .docx (étape 1)"));
-      return;
-    }
+  const uploadFile = async (file: File) => {
     setUploading(true);
     setPrepared(null);
+    setResult(null);
     try {
-      const dataUrl = await readAsDataUrl(docxFile);
+      const dataUrl = await readAsDataUrl(file);
       const { chunks } = await withRetry(() =>
         prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
       );
@@ -465,10 +573,26 @@ function Step2Panel() {
     }
   };
 
+  const upload = () => {
+    if (!docxFile) {
+      toast.error(tr("Ajoutez un fichier .docx (étape 1)"));
+      return;
+    }
+    uploadFile(docxFile);
+  };
+
+  useEffect(() => {
+    if (!incomingFile) return;
+    setDocxFile(incomingFile);
+    uploadFile(incomingFile);
+    onConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingFile]);
+
   const run = async () => {
     if (!prepared) return;
     setBusy(true);
-    setCount(null);
+    setResult(null);
     setProgress(null);
     try {
       setPhase(tr("Lecture des questions"));
@@ -562,8 +686,7 @@ function Step2Panel() {
       const { base64 } = await withRetry(() =>
         genDocx({ data: { items, includeExplanations: true } }),
       );
-      downloadBase64(`questions_explications_${Date.now()}.docx`, base64, DOCX_MIME);
-      setCount(qs.length);
+      setResult({ base64, count: qs.length });
       toast.success(`${qs.length} ${tr("question(s) traitées")}`);
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
@@ -590,8 +713,10 @@ function Step2Panel() {
             onChange={(e) => {
               setDocxFile(e.target.files?.[0] ?? null);
               setPrepared(null);
+              setResult(null);
             }}
           />
+          {docxFile && <p className="mt-1 text-xs text-muted-foreground">{docxFile.name}</p>}
         </div>
         <div className="flex items-center gap-2">
           <Switch id="step2-noai" checked={allowNoAi} onCheckedChange={setAllowNoAi} />
@@ -633,14 +758,12 @@ function Step2Panel() {
             )}
           </p>
         </div>
-        <div>
-          <Label>{tr("Indication pour l'IA (optionnel)")}</Label>
-          <Input
-            value={hint}
-            onChange={(e) => setHint(e.target.value)}
-            placeholder={tr("ex: explications courtes, insister sur la physiopathologie")}
-          />
-        </div>
+        <HintField
+          hint={hint}
+          setHint={setHint}
+          saveHint={saveHint}
+          placeholder={tr("ex: explications courtes, insister sur la physiopathologie")}
+        />
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={upload} disabled={uploading || !docxFile}>
             {uploading ? (
@@ -662,15 +785,46 @@ function Step2Panel() {
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && !busy && !count && (
+        {prepared && !busy && !result && (
           <p className="text-sm text-muted-foreground">
             {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Convertir.")}
           </p>
         )}
-        {count != null && (
-          <p className="text-sm text-muted-foreground">
-            {count} {tr("question(s) écrites dans le fichier téléchargé.")}
-          </p>
+        {result && (
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+            <p className="text-sm font-medium">
+              {result.count} {tr("question(s) prêtes")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() =>
+                  downloadBase64(
+                    `questions_explications_${Date.now()}.docx`,
+                    result.base64,
+                    DOCX_MIME,
+                  )
+                }
+              >
+                <FileDown className="mr-1.5 h-4 w-4" />
+                {tr("Télécharger")}
+              </Button>
+              <Button
+                onClick={() =>
+                  onContinue(
+                    base64ToFile(
+                      `questions_explications_${Date.now()}.docx`,
+                      result.base64,
+                      DOCX_MIME,
+                    ),
+                  )
+                }
+              >
+                <ArrowRight className="mr-1.5 h-4 w-4" />
+                {tr("Continuer vers l'étape 3 (même fichier)")}
+              </Button>
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -679,29 +833,34 @@ function Step2Panel() {
 
 // ---- Step 3: DOCX → JSON -----------------------------------------------------
 
-function Step3Panel() {
+type JsonResult = { objects: unknown[]; count: number };
+
+function Step3Panel({
+  incomingFile,
+  onConsumed,
+}: {
+  incomingFile?: File | null;
+  onConsumed?: () => void;
+}) {
   const { tr } = useI18n();
   const prepDocx = useServerFn(prepareDocxChunks);
   const extractHtml = useServerFn(extractQuestionsFromHtmlChunk);
   const [docxFile, setDocxFile] = useState<File | null>(null);
   const [allowNoAi, setAllowNoAi] = useState(false);
-  const [hint, setHint] = useState("");
+  const { hint, setHint, saveHint } = useSavedHint("step3", tr);
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
   const [busy, setBusy] = useState(false);
-  const [count, setCount] = useState<number | null>(null);
+  const [result, setResult] = useState<JsonResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
 
-  const upload = async () => {
-    if (!docxFile) {
-      toast.error(tr("Ajoutez un fichier .docx (étape 1 ou 2)"));
-      return;
-    }
+  const uploadFile = async (file: File) => {
     setUploading(true);
     setPrepared(null);
+    setResult(null);
     try {
-      const dataUrl = await readAsDataUrl(docxFile);
+      const dataUrl = await readAsDataUrl(file);
       const { chunks } = await withRetry(() =>
         prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
       );
@@ -715,10 +874,26 @@ function Step3Panel() {
     }
   };
 
+  const upload = () => {
+    if (!docxFile) {
+      toast.error(tr("Ajoutez un fichier .docx (étape 1 ou 2)"));
+      return;
+    }
+    uploadFile(docxFile);
+  };
+
+  useEffect(() => {
+    if (!incomingFile) return;
+    setDocxFile(incomingFile);
+    uploadFile(incomingFile);
+    onConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingFile]);
+
   const run = async () => {
     if (!prepared) return;
     setBusy(true);
-    setCount(null);
+    setResult(null);
     setProgress(null);
     try {
       setPhase(tr("Lecture des questions"));
@@ -755,8 +930,7 @@ function Step3Panel() {
       const qs: ExtractedQ[] = parts.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
       const objects = toJsonObjects(qs);
-      downloadText(`questions_${Date.now()}.json`, JSON.stringify(objects, null, 2));
-      setCount(qs.length);
+      setResult({ objects, count: qs.length });
       toast.success(`${qs.length} ${tr("question(s) converties en JSON")}`);
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
@@ -781,8 +955,10 @@ function Step3Panel() {
             onChange={(e) => {
               setDocxFile(e.target.files?.[0] ?? null);
               setPrepared(null);
+              setResult(null);
             }}
           />
+          {docxFile && <p className="mt-1 text-xs text-muted-foreground">{docxFile.name}</p>}
         </div>
         <div className="flex items-center gap-2">
           <Switch id="step3-noai" checked={allowNoAi} onCheckedChange={setAllowNoAi} />
@@ -790,14 +966,12 @@ function Step3Panel() {
             {tr("Mode sans IA pour la lecture du .docx (gratuit, un seul fichier par rotation)")}
           </Label>
         </div>
-        <div>
-          <Label>{tr("Indication pour l'IA (optionnel)")}</Label>
-          <Input
-            value={hint}
-            onChange={(e) => setHint(e.target.value)}
-            placeholder={tr("ex: cardiologie, plusieurs rotations dans ce fichier")}
-          />
-        </div>
+        <HintField
+          hint={hint}
+          setHint={setHint}
+          saveHint={saveHint}
+          placeholder={tr("ex: cardiologie, plusieurs rotations dans ce fichier")}
+        />
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={upload} disabled={uploading || !docxFile}>
             {uploading ? (
@@ -819,15 +993,31 @@ function Step3Panel() {
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && !busy && !count && (
+        {prepared && !busy && !result && (
           <p className="text-sm text-muted-foreground">
             {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Convertir.")}
           </p>
         )}
-        {count != null && (
-          <p className="text-sm text-muted-foreground">
-            {count} {tr("question(s) écrites dans le fichier téléchargé.")}
-          </p>
+        {result && (
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+            <p className="text-sm font-medium">
+              {result.count} {tr("question(s) prêtes")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() =>
+                  downloadText(
+                    `questions_${Date.now()}.json`,
+                    JSON.stringify(result.objects, null, 2),
+                  )
+                }
+              >
+                <FileDown className="mr-1.5 h-4 w-4" />
+                {tr("Télécharger")}
+              </Button>
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
