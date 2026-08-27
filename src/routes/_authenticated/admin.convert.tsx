@@ -389,6 +389,10 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
 
   const run = async () => {
     if (!prepared) return;
+    if (!rotation.trim()) {
+      toast.error(tr("Indiquez la rotation et l'année (ex. P3 2010) avant de convertir"));
+      return;
+    }
     setBusy(true);
     setResult(null);
     setProgress(null);
@@ -458,14 +462,16 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           )}
         </div>
         <div>
-          <Label>{tr("Rotation (optionnel — appliquée à toutes les questions)")}</Label>
+          <Label>{tr("Rotation et année (appliquée à chaque question et cas clinique)")}</Label>
           <Input
             placeholder={tr("ex. P3 2010")}
             value={rotation}
             onChange={(e) => setRotation(e.target.value)}
           />
           <p className="mt-1 text-xs text-muted-foreground">
-            {tr("Laissez vide pour garder la rotation détectée automatiquement par question.")}
+            {tr(
+              'Requis : écrite automatiquement sur une ligne "Rotation : …" avant chaque question ou cas clinique dans le fichier généré.',
+            )}
           </p>
         </div>
         <HintField
@@ -485,7 +491,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             )}
             {tr("Charger les fichiers")}
           </Button>
-          <Button onClick={run} disabled={busy || !prepared}>
+          <Button onClick={run} disabled={busy || !prepared || !rotation.trim()}>
             {busy ? (
               <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
             ) : (
@@ -495,7 +501,12 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && !busy && !result && (
+        {prepared && !busy && !result && !rotation.trim() && (
+          <p className="text-sm text-destructive">
+            {tr("Indiquez la rotation et l'année ci-dessus pour activer la conversion.")}
+          </p>
+        )}
+        {prepared && !busy && !result && rotation.trim() && (
           <p className="text-sm text-muted-foreground">
             {prepared.length} {tr("page(s)/lot(s) prêt(s) — cliquez sur Convertir.")}
           </p>
