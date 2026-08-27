@@ -258,6 +258,7 @@ function Step1Panel() {
   const genDocx = useServerFn(generateQuestionsDocx);
   const [files, setFiles] = useState<File[]>([]);
   const [rotation, setRotation] = useState("");
+  const [hint, setHint] = useState("");
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PdfChunkJob[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -308,7 +309,12 @@ function Step1Panel() {
           (job) => () =>
             withRetry(() =>
               extractPdfChunk({
-                data: { pdfDataUrl: job.dataUrl, filename: job.filename, detectCases: true },
+                data: {
+                  pdfDataUrl: job.dataUrl,
+                  filename: job.filename,
+                  detectCases: true,
+                  hint: hint.trim() || undefined,
+                },
               }),
             ).then((r) => r.questions ?? []),
         ),
@@ -370,6 +376,14 @@ function Step1Panel() {
             {tr("Laissez vide pour garder la rotation détectée automatiquement par question.")}
           </p>
         </div>
+        <div>
+          <Label>{tr("Indication pour l'IA (optionnel)")}</Label>
+          <Input
+            value={hint}
+            onChange={(e) => setHint(e.target.value)}
+            placeholder={tr("ex: cardiologie, réponses cochées en vert")}
+          />
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={upload} disabled={uploading || !files.length}>
             {uploading ? (
@@ -420,6 +434,7 @@ function Step2Panel() {
   const [refMode, setRefMode] = useState<"pdf" | "docx" | "text">("text");
   const [refFile, setRefFile] = useState<File | null>(null);
   const [refText, setRefText] = useState("");
+  const [hint, setHint] = useState("");
   const [allowNoAi, setAllowNoAi] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
@@ -468,6 +483,7 @@ function Step2Panel() {
                   expected: c.expected,
                   allowNoAi,
                   detectCases: true,
+                  hint: hint.trim() || undefined,
                 },
               }),
             ).then((r) =>
@@ -527,6 +543,7 @@ function Step2Panel() {
                     model_answer: q.model_answer,
                   })),
                   referenceText,
+                  instructions: hint.trim() || undefined,
                 },
               }),
             ).then((r) => r.explanations),
@@ -616,6 +633,14 @@ function Step2Panel() {
             )}
           </p>
         </div>
+        <div>
+          <Label>{tr("Indication pour l'IA (optionnel)")}</Label>
+          <Input
+            value={hint}
+            onChange={(e) => setHint(e.target.value)}
+            placeholder={tr("ex: explications courtes, insister sur la physiopathologie")}
+          />
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={upload} disabled={uploading || !docxFile}>
             {uploading ? (
@@ -660,6 +685,7 @@ function Step3Panel() {
   const extractHtml = useServerFn(extractQuestionsFromHtmlChunk);
   const [docxFile, setDocxFile] = useState<File | null>(null);
   const [allowNoAi, setAllowNoAi] = useState(false);
+  const [hint, setHint] = useState("");
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -707,6 +733,7 @@ function Step3Panel() {
                   expected: c.expected,
                   allowNoAi,
                   detectCases: true,
+                  hint: hint.trim() || undefined,
                 },
               }),
             ).then((r) =>
@@ -762,6 +789,14 @@ function Step3Panel() {
           <Label htmlFor="step3-noai" className="cursor-pointer">
             {tr("Mode sans IA pour la lecture du .docx (gratuit, un seul fichier par rotation)")}
           </Label>
+        </div>
+        <div>
+          <Label>{tr("Indication pour l'IA (optionnel)")}</Label>
+          <Input
+            value={hint}
+            onChange={(e) => setHint(e.target.value)}
+            placeholder={tr("ex: cardiologie, plusieurs rotations dans ce fichier")}
+          />
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={upload} disabled={uploading || !docxFile}>

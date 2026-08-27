@@ -89,6 +89,7 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
           .min(1)
           .max(60),
         referenceText: z.string().max(200_000).optional(),
+        instructions: z.string().max(1000).optional(),
       })
       .parse(input),
   )
@@ -126,6 +127,7 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
       data.referenceText
         ? `Document de référence (source d'information) :\n${data.referenceText.slice(0, 150_000)}`
         : "Aucun document de référence fourni : base-toi sur tes connaissances médicales générales.",
+      data.instructions ? `\nInstructions supplémentaires de l'admin :\n${data.instructions}` : "",
     ].join("\n");
 
     try {
