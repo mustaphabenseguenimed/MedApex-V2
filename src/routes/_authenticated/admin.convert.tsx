@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
@@ -16,10 +17,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, ArrowRight, Loader2, FileDown, UploadCloud, Check, Save } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Loader2,
+  FileDown,
+  UploadCloud,
+  Check,
+  Save,
+  Eye,
+  EyeOff,
+  Trash2,
+  Sparkles,
+} from "lucide-react";
 import { toast } from "sonner";
 import { useAdminPermissions } from "@/hooks/use-permissions";
 import { useI18n } from "@/lib/i18n";
+import { RichText } from "@/components/RichText";
+import { RichTextEditor } from "@/components/RichTextEditor";
 import {
   prepareDocxChunks,
   extractQuestionsFromHtmlChunk,
@@ -263,6 +278,230 @@ function HintField({
   );
 }
 
+const PREVIEW_PROSE =
+  "prose prose-sm max-w-none dark:prose-invert break-words [&_pre]:overflow-x-auto [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full [&_img]:h-auto";
+
+/** Review/edit the AI-extracted questions before a step's file is generated —
+ *  lets the admin fix a garbled stem/choice, correct a wrong answer, adjust
+ *  rotation/year, or drop a hallucinated question, instead of only finding
+ *  out about a mistake after the .docx/.json is already downloaded. Mirrors
+ *  the review-card pattern from admin.index.tsx's ImportFromFiles tool (not
+ *  reusable directly there — DB-backed rotation selects, import-specific
+ *  state — so this is a fresh, lighter component for plain ExtractedQ[]). */
+function QuestionsPreviewEditor({
+  items,
+  onChange,
+  showExplanation,
+}: {
+  items: ExtractedQ[];
+  onChange: (items: ExtractedQ[]) => void;
+  showExplanation: boolean;
+}) {
+  const { tr } = useI18n();
+  const [editingIdx, setEditingIdx] = useState<Set<number>>(new Set());
+
+  const updateItem = (i: number, patch: Partial<ExtractedQ>) => {
+    onChange(items.map((it, k) => (k === i ? { ...it, ...patch } : it)));
+  };
+  const removeItem = (i: number) => {
+    onChange(items.filter((_, k) => k !== i));
+  };
+  const updateCaseStem = (key: string, html: string) => {
+    onChange(items.map((it) => (caseKey(it) === key ? { ...it, case_stem: html } : it)));
+  };
+  const toggleEdit = (i: number) => {
+    setEditingIdx((prev) => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+  };
+
+  return (
+    <div className="space-y-3">
+      {items.map((q, i) => {
+        const groupKey = caseKey(q);
+        const isNewCaseGroup = groupKey !== "" && (i === 0 || groupKey !== caseKey(items[i - 1]));
+        const editing = editingIdx.has(i);
+        return (
+          <div key={i}>
+            {isNewCaseGroup && (
+              <div className="mb-2 space-y-1.5 rounded-md border border-primary/40 bg-primary/5 p-3">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {tr("Cas clinique — énoncé partagé")}
+                </div>
+                <RichTextEditor
+                  value={q.case_stem ?? ""}
+                  onChange={(html) => updateCaseStem(groupKey, html)}
+                  placeholder={tr("Énoncé du cas clinique…")}
+                  minHeight={60}
+                />
+              </div>
+            )}
+            <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" className="text-[10px]">
+                  {q.type.toUpperCase()}
+                </Badge>
+                <span className="text-xs text-muted-foreground">Q{i + 1}</span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="ml-auto h-7 px-2 text-xs"
+                  onClick={() => toggleEdit(i)}
+                >
+                  {editing ? (
+                    <>
+                      <Eye className="mr-1 h-3.5 w-3.5" />
+                      {tr("Aperçu")}
+                    </>
+                  ) : (
+                    <>
+                      <EyeOff className="mr-1 h-3.5 w-3.5" />
+                      {tr("Éditer")}
+                    </>
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                  onClick={() => removeItem(i)}
+                >
+                  <Trash2 className="mr-1 h-3.5 w-3.5" />
+                  {tr("Supprimer")}
+                </Button>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Input
+                  className="h-8"
+                  placeholder={tr("Rotation")}
+                  value={q.rotation_hint ?? ""}
+                  onChange={(e) => updateItem(i, { rotation_hint: e.target.value || null })}
+                />
+                <Input
+                  className="h-8"
+                  placeholder={tr("Année")}
+                  value={q.year_hint ?? ""}
+                  onChange={(e) => updateItem(i, { year_hint: e.target.value || null })}
+                />
+              </div>
+              {!editing ? (
+                <div className="min-w-0 space-y-3 rounded-md border bg-background p-3">
+                  <div className="min-w-0">
+                    <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {tr("Énoncé")}
+                    </div>
+                    <RichText html={q.stem} className={PREVIEW_PROSE} />
+                  </div>
+                  {q.type !== "qroc" && q.choices && q.choices.length > 0 && (
+                    <div className="min-w-0">
+                      <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {tr("Propositions")}
+                      </div>
+                      <ol className="list-none space-y-1">
+                        {q.choices.map((c, k) => {
+                          const isCorrect = (q.correct_indices ?? []).includes(k);
+                          return (
+                            <li
+                              key={k}
+                              className={`flex min-w-0 gap-2 rounded px-2 py-1 text-sm ${isCorrect ? "bg-emerald-500/10 ring-1 ring-emerald-500/30" : ""}`}
+                            >
+                              <span className="shrink-0 pt-0.5 font-mono text-xs text-muted-foreground">
+                                {String.fromCharCode(65 + k)}.
+                              </span>
+                              <RichText html={c} className={`${PREVIEW_PROSE} min-w-0 flex-1`} />
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    </div>
+                  )}
+                  {q.type === "qroc" && q.model_answer && (
+                    <div className="min-w-0">
+                      <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {tr("Réponse modèle")}
+                      </div>
+                      <RichText autoColor html={q.model_answer} className={PREVIEW_PROSE} />
+                    </div>
+                  )}
+                  {showExplanation && q.explanation && (
+                    <div className="min-w-0">
+                      <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {tr("Explication")}
+                      </div>
+                      <RichText autoColor html={q.explanation} className={PREVIEW_PROSE} />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <Textarea
+                    rows={2}
+                    value={q.stem}
+                    onChange={(e) => updateItem(i, { stem: e.target.value })}
+                  />
+                  {q.type !== "qroc" && q.choices && q.choices.length > 0 && (
+                    <div className="space-y-1">
+                      {q.choices.map((c, k) => (
+                        <div key={k} className="flex items-center gap-2 text-sm">
+                          <input
+                            type={q.type === "qcs" ? "radio" : "checkbox"}
+                            name={`qpe-${i}`}
+                            checked={(q.correct_indices ?? []).includes(k)}
+                            onChange={() => {
+                              const cur = new Set(q.correct_indices ?? []);
+                              if (q.type === "qcs") {
+                                cur.clear();
+                                cur.add(k);
+                              } else {
+                                cur.has(k) ? cur.delete(k) : cur.add(k);
+                              }
+                              updateItem(i, { correct_indices: [...cur].sort((a, b) => a - b) });
+                            }}
+                          />
+                          <Input
+                            value={c}
+                            onChange={(e) => {
+                              const nc = [...(q.choices ?? [])];
+                              nc[k] = e.target.value;
+                              updateItem(i, { choices: nc });
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {q.type === "qroc" && (
+                    <Textarea
+                      rows={2}
+                      placeholder={tr("Réponse modèle")}
+                      value={q.model_answer ?? ""}
+                      onChange={(e) => updateItem(i, { model_answer: e.target.value })}
+                    />
+                  )}
+                  {showExplanation && (
+                    <div className="space-y-1">
+                      <Label className="text-xs">{tr("Explication")}</Label>
+                      <RichTextEditor
+                        value={q.explanation ?? ""}
+                        onChange={(html) => updateItem(i, { explanation: html })}
+                        placeholder={tr("Explication (optionnel)…")}
+                        minHeight={80}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ---- page shell -------------------------------------------------------------
 
 function ConvertAdmin() {
@@ -313,7 +552,7 @@ function ConvertTabs() {
         <TabsTrigger value="step2">{tr("2. + Explications")}</TabsTrigger>
         <TabsTrigger value="step3">{tr("3. → JSON")}</TabsTrigger>
       </TabsList>
-      <TabsContent value="step1" className="mt-6">
+      <TabsContent value="step1" className="mt-6 data-[state=inactive]:hidden" forceMount>
         <Step1Panel
           onContinue={(file) => {
             setStep2Incoming(file);
@@ -321,7 +560,7 @@ function ConvertTabs() {
           }}
         />
       </TabsContent>
-      <TabsContent value="step2" className="mt-6">
+      <TabsContent value="step2" className="mt-6 data-[state=inactive]:hidden" forceMount>
         <Step2Panel
           incomingFile={step2Incoming}
           onConsumed={() => setStep2Incoming(null)}
@@ -331,7 +570,7 @@ function ConvertTabs() {
           }}
         />
       </TabsContent>
-      <TabsContent value="step3" className="mt-6">
+      <TabsContent value="step3" className="mt-6 data-[state=inactive]:hidden" forceMount>
         <Step3Panel incomingFile={step3Incoming} onConsumed={() => setStep3Incoming(null)} />
       </TabsContent>
     </Tabs>
@@ -357,7 +596,9 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const { hint, setHint, saveHint } = useSavedHint("step1", tr);
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PdfChunkJob[] | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"extract" | "generate" | null>(null);
+  const [extracted, setExtracted] = useState<ExtractedQ[] | null>(null);
+  const [chunkWarnings, setChunkWarnings] = useState<{ filename: string; warning: string }[]>([]);
   const [result, setResult] = useState<DocxResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -369,6 +610,8 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     }
     setUploading(true);
     setPrepared(null);
+    setExtracted(null);
+    setChunkWarnings([]);
     setResult(null);
     try {
       const chunkJobs: PdfChunkJob[] = [];
@@ -395,9 +638,11 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     }
   };
 
-  const run = async () => {
+  const extract = async () => {
     if (!prepared) return;
-    setBusy(true);
+    setBusy("extract");
+    setExtracted(null);
+    setChunkWarnings([]);
     setResult(null);
     setProgress(null);
     try {
@@ -449,30 +694,45 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       // recovers most shortfalls — this only fires for whatever's left over
       // (e.g. a genuinely illegible single page), so the admin isn't ever
       // told a file is complete when a page may still be missing questions.
-      const chunkWarnings = prepared
+      const warnings = prepared
         .map((job, i) =>
           parts[i].warning ? { filename: job.filename, warning: parts[i].warning! } : null,
         )
         .filter((w): w is { filename: string; warning: string } => w != null);
-      setPhase(tr("Génération du fichier Word"));
-      setProgress(null);
-      const items = toDocxItems(all, rotation);
-      const { base64 } = await withRetry(() =>
-        genDocx({ data: { items, includeExplanations: false } }),
-      );
-      setResult({ base64, count: all.length, warnings: chunkWarnings });
-      toast.success(`${all.length} ${tr("question(s) converties")}`);
-      if (chunkWarnings.length) {
+      setExtracted(all);
+      setChunkWarnings(warnings);
+      toast.success(`${all.length} ${tr("question(s) extraites — vérifiez avant de générer.")}`);
+      if (warnings.length) {
         toast.warning(
-          `${chunkWarnings.length} ${tr("page(s)/lot(s) possiblement incomplet(s) — voir le détail ci-dessous.")}`,
+          `${warnings.length} ${tr("page(s)/lot(s) possiblement incomplet(s) — voir le détail ci-dessous.")}`,
         );
       }
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
     } finally {
-      setBusy(false);
+      setBusy(null);
       setPhase(null);
       setProgress(null);
+    }
+  };
+
+  const generate = async () => {
+    if (!extracted || !extracted.length) return;
+    setBusy("generate");
+    setResult(null);
+    try {
+      setPhase(tr("Génération du fichier Word"));
+      const items = toDocxItems(extracted, rotation);
+      const { base64 } = await withRetry(() =>
+        genDocx({ data: { items, includeExplanations: false } }),
+      );
+      setResult({ base64, count: extracted.length, warnings: chunkWarnings });
+      toast.success(`${extracted.length} ${tr("question(s) converties")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setBusy(null);
+      setPhase(null);
     }
   };
 
@@ -493,6 +753,9 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             onChange={(e) => {
               setFiles(Array.from(e.target.files ?? []));
               setPrepared(null);
+              setExtracted(null);
+              setChunkWarnings([]);
+              setResult(null);
             }}
           />
           {files.length > 0 && (
@@ -531,20 +794,53 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             )}
             {tr("Charger les fichiers")}
           </Button>
-          <Button onClick={run} disabled={busy || !prepared}>
-            {busy ? (
+          <Button onClick={extract} disabled={busy !== null || !prepared}>
+            {busy === "extract" ? (
               <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
             ) : (
               <FileDown className="mr-1.5 h-4 w-4" />
             )}
-            {tr("Convertir en .docx")}
+            {tr("Extraire les questions")}
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && !busy && !result && (
+        {prepared && busy === null && !extracted && (
           <p className="text-sm text-muted-foreground">
-            {prepared.length} {tr("page(s)/lot(s) prêt(s) — cliquez sur Convertir.")}
+            {prepared.length} {tr("page(s)/lot(s) prêt(s) — cliquez sur Extraire.")}
           </p>
+        )}
+        {extracted && busy !== "extract" && (
+          <div className="space-y-3">
+            {chunkWarnings.length > 0 && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                <p className="font-medium">
+                  {tr(
+                    "Certaines pages semblent incomplètes malgré une nouvelle tentative — vérifiez-les manuellement :",
+                  )}
+                </p>
+                <ul className="mt-1 list-disc pl-4">
+                  {chunkWarnings.map((w, i) => (
+                    <li key={i}>
+                      <span className="font-medium">{w.filename}</span> : {w.warning}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <QuestionsPreviewEditor
+              items={extracted}
+              onChange={setExtracted}
+              showExplanation={false}
+            />
+            <Button onClick={generate} disabled={busy !== null || !extracted.length}>
+              {busy === "generate" ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <FileDown className="mr-1.5 h-4 w-4" />
+              )}
+              {tr("Générer le fichier .docx")}
+            </Button>
+          </div>
         )}
         {result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
@@ -619,7 +915,8 @@ function Step2Panel({
   const [allowNoAi, setAllowNoAi] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"extract" | "explain" | "generate" | null>(null);
+  const [extracted, setExtracted] = useState<ExtractedQ[] | null>(null);
   const [result, setResult] = useState<DocxResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -627,6 +924,7 @@ function Step2Panel({
   const uploadFile = async (file: File) => {
     setUploading(true);
     setPrepared(null);
+    setExtracted(null);
     setResult(null);
     try {
       const dataUrl = await readAsDataUrl(file);
@@ -659,9 +957,10 @@ function Step2Panel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incomingFile]);
 
-  const run = async () => {
+  const extract = async () => {
     if (!prepared) return;
-    setBusy(true);
+    setBusy("extract");
+    setExtracted(null);
     setResult(null);
     setProgress(null);
     try {
@@ -698,9 +997,23 @@ function Step2Panel({
       );
       const qs: ExtractedQ[] = parts.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
-
-      setPhase(tr("Préparation du document de référence"));
+      setExtracted(qs);
+      toast.success(`${qs.length} ${tr("question(s) extraites — vérifiez avant de continuer.")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setBusy(null);
+      setPhase(null);
       setProgress(null);
+    }
+  };
+
+  const explain = async () => {
+    if (!extracted || !extracted.length) return;
+    setBusy("explain");
+    setProgress(null);
+    try {
+      setPhase(tr("Préparation du document de référence"));
       let referenceText: string | undefined;
       if (refMode === "text") {
         referenceText = refText.trim() || undefined;
@@ -721,8 +1034,8 @@ function Step2Panel({
       // for documents with more than EXPLAIN_BATCH_SIZE questions.
       setPhase(tr("Génération des explications"));
       const batches: ExtractedQ[][] = [];
-      for (let i = 0; i < qs.length; i += EXPLAIN_BATCH_SIZE) {
-        batches.push(qs.slice(i, i + EXPLAIN_BATCH_SIZE));
+      for (let i = 0; i < extracted.length; i += EXPLAIN_BATCH_SIZE) {
+        batches.push(extracted.slice(i, i + EXPLAIN_BATCH_SIZE));
       }
       const explanationParts = await withProgress(
         batches.map(
@@ -745,25 +1058,38 @@ function Step2Panel({
         setProgress,
       );
       const explanations = explanationParts.flat();
-      const withExplanations = qs.map((q, i) => ({
+      const withExplanations = extracted.map((q, i) => ({
         ...q,
         explanation: explanations[i] ?? q.explanation,
       }));
-
-      setPhase(tr("Génération du fichier Word"));
-      setProgress(null);
-      const items = toDocxItems(withExplanations);
-      const { base64 } = await withRetry(() =>
-        genDocx({ data: { items, includeExplanations: true } }),
-      );
-      setResult({ base64, count: qs.length });
-      toast.success(`${qs.length} ${tr("question(s) traitées")}`);
+      setExtracted(withExplanations);
+      toast.success(tr("Explications générées — vérifiez avant de générer le fichier."));
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
     } finally {
-      setBusy(false);
+      setBusy(null);
       setPhase(null);
       setProgress(null);
+    }
+  };
+
+  const generate = async () => {
+    if (!extracted || !extracted.length) return;
+    setBusy("generate");
+    setResult(null);
+    try {
+      setPhase(tr("Génération du fichier Word"));
+      const items = toDocxItems(extracted);
+      const { base64 } = await withRetry(() =>
+        genDocx({ data: { items, includeExplanations: true } }),
+      );
+      setResult({ base64, count: extracted.length });
+      toast.success(`${extracted.length} ${tr("question(s) traitées")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setBusy(null);
+      setPhase(null);
     }
   };
 
@@ -783,6 +1109,7 @@ function Step2Panel({
             onChange={(e) => {
               setDocxFile(e.target.files?.[0] ?? null);
               setPrepared(null);
+              setExtracted(null);
               setResult(null);
             }}
           />
@@ -845,20 +1172,47 @@ function Step2Panel({
             )}
             {tr("Charger le fichier")}
           </Button>
-          <Button onClick={run} disabled={busy || !prepared}>
-            {busy ? (
+          <Button onClick={extract} disabled={busy !== null || !prepared}>
+            {busy === "extract" ? (
               <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
             ) : (
               <FileDown className="mr-1.5 h-4 w-4" />
             )}
-            {tr("Convertir avec explications")}
+            {tr("Extraire les questions")}
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && !busy && !result && (
+        {prepared && busy === null && !extracted && (
           <p className="text-sm text-muted-foreground">
-            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Convertir.")}
+            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Extraire.")}
           </p>
+        )}
+        {extracted && busy !== "extract" && (
+          <div className="space-y-3">
+            <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={explain}
+                disabled={busy !== null || !extracted.length}
+              >
+                {busy === "explain" ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                )}
+                {tr("Générer les explications (IA)")}
+              </Button>
+              <Button onClick={generate} disabled={busy !== null || !extracted.length}>
+                {busy === "generate" ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                )}
+                {tr("Générer le fichier Word")}
+              </Button>
+            </div>
+          </div>
         )}
         {result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
@@ -920,7 +1274,8 @@ function Step3Panel({
   const { hint, setHint, saveHint } = useSavedHint("step3", tr);
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"extract" | "generate" | null>(null);
+  const [extracted, setExtracted] = useState<ExtractedQ[] | null>(null);
   const [result, setResult] = useState<JsonResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -928,6 +1283,7 @@ function Step3Panel({
   const uploadFile = async (file: File) => {
     setUploading(true);
     setPrepared(null);
+    setExtracted(null);
     setResult(null);
     try {
       const dataUrl = await readAsDataUrl(file);
@@ -960,9 +1316,10 @@ function Step3Panel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incomingFile]);
 
-  const run = async () => {
+  const extract = async () => {
     if (!prepared) return;
-    setBusy(true);
+    setBusy("extract");
+    setExtracted(null);
     setResult(null);
     setProgress(null);
     try {
@@ -999,16 +1356,22 @@ function Step3Panel({
       );
       const qs: ExtractedQ[] = parts.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
-      const objects = toJsonObjects(qs);
-      setResult({ objects, count: qs.length });
-      toast.success(`${qs.length} ${tr("question(s) converties en JSON")}`);
+      setExtracted(qs);
+      toast.success(`${qs.length} ${tr("question(s) extraites — vérifiez avant de générer.")}`);
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
     } finally {
-      setBusy(false);
+      setBusy(null);
       setPhase(null);
       setProgress(null);
     }
+  };
+
+  const generate = () => {
+    if (!extracted || !extracted.length) return;
+    const objects = toJsonObjects(extracted);
+    setResult({ objects, count: extracted.length });
+    toast.success(`${extracted.length} ${tr("question(s) converties en JSON")}`);
   };
 
   return (
@@ -1025,6 +1388,7 @@ function Step3Panel({
             onChange={(e) => {
               setDocxFile(e.target.files?.[0] ?? null);
               setPrepared(null);
+              setExtracted(null);
               setResult(null);
             }}
           />
@@ -1053,20 +1417,29 @@ function Step3Panel({
             )}
             {tr("Charger le fichier")}
           </Button>
-          <Button onClick={run} disabled={busy || !prepared}>
-            {busy ? (
+          <Button onClick={extract} disabled={busy !== null || !prepared}>
+            {busy === "extract" ? (
               <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
             ) : (
               <FileDown className="mr-1.5 h-4 w-4" />
             )}
-            {tr("Convertir en .json")}
+            {tr("Extraire les questions")}
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && !busy && !result && (
+        {prepared && busy === null && !extracted && (
           <p className="text-sm text-muted-foreground">
-            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Convertir.")}
+            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Extraire.")}
           </p>
+        )}
+        {extracted && busy !== "extract" && (
+          <div className="space-y-3">
+            <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
+            <Button onClick={generate} disabled={!extracted.length}>
+              <FileDown className="mr-1.5 h-4 w-4" />
+              {tr("Générer le fichier .json")}
+            </Button>
+          </div>
         )}
         {result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
