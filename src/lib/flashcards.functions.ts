@@ -28,7 +28,9 @@ export const listDueFlashcards = createServerFn({ method: "GET" })
     const nowIso = new Date().toISOString();
     const { data, error } = await supabase
       .from("flashcards")
-      .select("id, front, back, question_id, module_id, tags, due_at, ease, interval_days, repetitions, lapses")
+      .select(
+        "id, front, back, question_id, module_id, tags, due_at, ease, interval_days, repetitions, lapses",
+      )
       .eq("user_id", userId)
       .eq("suspended", false)
       .lte("due_at", nowIso)
@@ -143,9 +145,7 @@ export const deleteFlashcard = createServerFn({ method: "POST" })
 
 export const createFlashcardsFromSession = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((input: unknown) =>
-    z.object({ sessionId: z.string().uuid() }).parse(input),
-  )
+  .inputValidator((input: unknown) => z.object({ sessionId: z.string().uuid() }).parse(input))
   .handler(async ({ data, context }) => {
     const { supabase, userId } = context;
     const { data: session } = await supabase
@@ -159,7 +159,9 @@ export const createFlashcardsFromSession = createServerFn({ method: "POST" })
     if (ids.length === 0) return { created: 0 };
     const { data: questions } = await supabase
       .from("questions")
-      .select("id, type, stem, choices, correct_indices, polarity, model_answer, explanation, module_id")
+      .select(
+        "id, type, stem, choices, correct_indices, polarity, model_answer, explanation, module_id",
+      )
       .in("id", ids);
     const answers = (session.answers as Record<string, any>) ?? {};
     const grades = (session.grades as Record<string, any>) ?? {};
@@ -170,7 +172,9 @@ export const createFlashcardsFromSession = createServerFn({ method: "POST" })
       .select("question_id, choice_index")
       .eq("user_id", userId)
       .in("question_id", ids);
-    const exists = new Set((existing ?? []).map((r: any) => `${r.question_id}:${r.choice_index ?? "x"}`));
+    const exists = new Set(
+      (existing ?? []).map((r: any) => `${r.question_id}:${r.choice_index ?? "x"}`),
+    );
 
     const rows: any[] = [];
     for (const q of questions ?? []) {
@@ -191,7 +195,11 @@ export const createFlashcardsFromSession = createServerFn({ method: "POST" })
         const ans = answers[q.id];
         const picks: number[] = Array.isArray(ans) ? ans : ans != null ? [ans] : [];
         const target =
-          q.polarity === "correct" ? correct : ((q.choices as string[] | null) ?? []).map((_, i) => i).filter((i) => !correct.includes(i));
+          q.polarity === "correct"
+            ? correct
+            : ((q.choices as string[] | null) ?? [])
+                .map((_, i) => i)
+                .filter((i) => !correct.includes(i));
         const wrongPicked = picks.filter((i) => !target.includes(i));
         const missed = target.filter((i) => !picks.includes(i));
         for (const idx of [...wrongPicked, ...missed]) {
@@ -203,7 +211,9 @@ export const createFlashcardsFromSession = createServerFn({ method: "POST" })
             choice_index: idx,
             module_id: q.module_id,
             front: `${q.stem}\n\nOption ${String.fromCharCode(65 + idx)}: ${ch}`,
-            back: (target.includes(idx) ? "✓ Bonne réponse. " : "✗ Mauvaise réponse. ") + (q.explanation ?? ""),
+            back:
+              (target.includes(idx) ? "✓ Bonne réponse. " : "✗ Mauvaise réponse. ") +
+              (q.explanation ?? ""),
           });
           exists.add(`${q.id}:${idx}`);
         }
@@ -222,7 +232,7 @@ export const reportQuestion = createServerFn({ method: "POST" })
     z
       .object({
         questionId: z.string().uuid(),
-        reason: z.enum(["error", "typo", "ambiguous", "outdated", "other"]),
+        reason: z.enum(["missing_rotation", "wrong_answer", "wrong_vocabulary", "other"]),
         details: z.string().max(2000).optional(),
       })
       .parse(input),

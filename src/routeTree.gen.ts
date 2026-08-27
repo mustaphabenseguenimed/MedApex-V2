@@ -28,6 +28,7 @@ import { Route as AuthenticatedAdminPricingRouteImport } from './routes/_authent
 import { Route as AuthenticatedAdminReportsRouteImport } from './routes/_authenticated/admin.reports'
 import { Route as AuthenticatedModulesModuleIdRouteImport } from './routes/_authenticated/modules.$moduleId'
 import { Route as AuthenticatedQuestionsIndexRouteImport } from './routes/_authenticated/questions.index'
+import { Route as AuthenticatedQuestionsFlaggedRouteImport } from './routes/_authenticated/questions.flagged'
 import { Route as AuthenticatedQuestionsFlashcardsRouteImport } from './routes/_authenticated/questions.flashcards'
 import { Route as AuthenticatedQuestionsHistoryRouteImport } from './routes/_authenticated/questions.history'
 import { Route as AuthenticatedQuestionsNewRouteImport } from './routes/_authenticated/questions.new'
@@ -143,6 +144,12 @@ const AuthenticatedQuestionsIndexRoute =
     path: '/questions/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedQuestionsFlaggedRoute =
+  AuthenticatedQuestionsFlaggedRouteImport.update({
+    id: '/questions/flagged',
+    path: '/questions/flagged',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedQuestionsFlashcardsRoute =
   AuthenticatedQuestionsFlashcardsRouteImport.update({
     id: '/questions/flashcards',
@@ -232,6 +239,7 @@ export interface FileRoutesByFullPath {
   '/admin/pricing': typeof AuthenticatedAdminPricingRoute
   '/admin/reports': typeof AuthenticatedAdminReportsRoute
   '/modules/$moduleId': typeof AuthenticatedModulesModuleIdRouteWithChildren
+  '/questions/flagged': typeof AuthenticatedQuestionsFlaggedRoute
   '/questions/flashcards': typeof AuthenticatedQuestionsFlashcardsRoute
   '/questions/history': typeof AuthenticatedQuestionsHistoryRoute
   '/questions/new': typeof AuthenticatedQuestionsNewRoute
@@ -263,6 +271,7 @@ export interface FileRoutesByTo {
   '/admin/payments': typeof AuthenticatedAdminPaymentsRoute
   '/admin/pricing': typeof AuthenticatedAdminPricingRoute
   '/admin/reports': typeof AuthenticatedAdminReportsRoute
+  '/questions/flagged': typeof AuthenticatedQuestionsFlaggedRoute
   '/questions/flashcards': typeof AuthenticatedQuestionsFlashcardsRoute
   '/questions/history': typeof AuthenticatedQuestionsHistoryRoute
   '/questions/new': typeof AuthenticatedQuestionsNewRoute
@@ -297,6 +306,7 @@ export interface FileRoutesById {
   '/_authenticated/admin/pricing': typeof AuthenticatedAdminPricingRoute
   '/_authenticated/admin/reports': typeof AuthenticatedAdminReportsRoute
   '/_authenticated/modules/$moduleId': typeof AuthenticatedModulesModuleIdRouteWithChildren
+  '/_authenticated/questions/flagged': typeof AuthenticatedQuestionsFlaggedRoute
   '/_authenticated/questions/flashcards': typeof AuthenticatedQuestionsFlashcardsRoute
   '/_authenticated/questions/history': typeof AuthenticatedQuestionsHistoryRoute
   '/_authenticated/questions/new': typeof AuthenticatedQuestionsNewRoute
@@ -331,6 +341,7 @@ export interface FileRouteTypes {
     | '/admin/pricing'
     | '/admin/reports'
     | '/modules/$moduleId'
+    | '/questions/flagged'
     | '/questions/flashcards'
     | '/questions/history'
     | '/questions/new'
@@ -362,6 +373,7 @@ export interface FileRouteTypes {
     | '/admin/payments'
     | '/admin/pricing'
     | '/admin/reports'
+    | '/questions/flagged'
     | '/questions/flashcards'
     | '/questions/history'
     | '/questions/new'
@@ -395,6 +407,7 @@ export interface FileRouteTypes {
     | '/_authenticated/admin/pricing'
     | '/_authenticated/admin/reports'
     | '/_authenticated/modules/$moduleId'
+    | '/_authenticated/questions/flagged'
     | '/_authenticated/questions/flashcards'
     | '/_authenticated/questions/history'
     | '/_authenticated/questions/new'
@@ -556,6 +569,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQuestionsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/questions/flagged': {
+      id: '/_authenticated/questions/flagged'
+      path: '/questions/flagged'
+      fullPath: '/questions/flagged'
+      preLoaderRoute: typeof AuthenticatedQuestionsFlaggedRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/questions/flashcards': {
       id: '/_authenticated/questions/flashcards'
       path: '/questions/flashcards'
@@ -688,6 +708,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedAdminPricingRoute: typeof AuthenticatedAdminPricingRoute
   AuthenticatedAdminReportsRoute: typeof AuthenticatedAdminReportsRoute
   AuthenticatedModulesModuleIdRoute: typeof AuthenticatedModulesModuleIdRouteWithChildren
+  AuthenticatedQuestionsFlaggedRoute: typeof AuthenticatedQuestionsFlaggedRoute
   AuthenticatedQuestionsFlashcardsRoute: typeof AuthenticatedQuestionsFlashcardsRoute
   AuthenticatedQuestionsHistoryRoute: typeof AuthenticatedQuestionsHistoryRoute
   AuthenticatedQuestionsNewRoute: typeof AuthenticatedQuestionsNewRoute
@@ -709,6 +730,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAdminReportsRoute: AuthenticatedAdminReportsRoute,
   AuthenticatedModulesModuleIdRoute:
     AuthenticatedModulesModuleIdRouteWithChildren,
+  AuthenticatedQuestionsFlaggedRoute: AuthenticatedQuestionsFlaggedRoute,
   AuthenticatedQuestionsFlashcardsRoute: AuthenticatedQuestionsFlashcardsRoute,
   AuthenticatedQuestionsHistoryRoute: AuthenticatedQuestionsHistoryRoute,
   AuthenticatedQuestionsNewRoute: AuthenticatedQuestionsNewRoute,
