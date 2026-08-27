@@ -340,7 +340,7 @@ function ConvertTabs() {
 
 // ---- Step 1: PDF(s) → DOCX (no explanations) --------------------------------
 
-type PdfChunkJob = { dataUrl: string; filename: string };
+type PdfChunkJob = { dataUrl: string; filename: string; fileIndex: number };
 
 type DocxResult = { base64: string; count: number };
 
@@ -368,11 +368,15 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     setResult(null);
     try {
       const chunkJobs: PdfChunkJob[] = [];
-      for (const file of files) {
+      for (const [fileIndex, file] of files.entries()) {
         const bytes = await file.arrayBuffer();
         const chunks = await splitPdfIntoPageChunks(bytes, 3);
         for (const chunk of chunks) {
-          chunkJobs.push({ dataUrl: chunk.dataUrl, filename: `${file.name} (${chunk.label})` });
+          chunkJobs.push({
+            dataUrl: chunk.dataUrl,
+            filename: `${file.name} (${chunk.label})`,
+            fileIndex,
+          });
         }
       }
       if (!chunkJobs.length) throw new Error(tr("Fichier vide ou illisible"));
@@ -389,10 +393,6 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
 
   const run = async () => {
     if (!prepared) return;
-    if (!rotation.trim()) {
-      toast.error(tr("Indiquez la rotation et l'année (ex. P3 2010) avant de convertir"));
-      return;
-    }
     setBusy(true);
     setResult(null);
     setProgress(null);
@@ -417,7 +417,29 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         ),
         setProgress,
       );
-      const all: ExtractedQ[] = parts.flat();
+      // A rotation/year header is often shown once per file (e.g. a cover
+      // page) rather than repeated on every page — since each page is sent
+      // to the AI as a separate chunk, only the chunk that actually shows it
+      // gets a hint. Once any page of a file yields one, propagate it to the
+      // rest of that same file's questions that came back without one.
+      const fileFallback = new Map<number, string>();
+      prepared.forEach((job, i) => {
+        if (fileFallback.has(job.fileIndex)) return;
+        for (const q of parts[i]) {
+          const detected = combinedRotation(q);
+          if (detected) {
+            fileFallback.set(job.fileIndex, detected);
+            break;
+          }
+        }
+      });
+      const all: ExtractedQ[] = prepared.flatMap((job, i) =>
+        parts[i].map((q) => {
+          if (combinedRotation(q)) return q;
+          const fallback = fileFallback.get(job.fileIndex);
+          return fallback ? { ...q, rotation_hint: fallback, year_hint: null } : q;
+        }),
+      );
       if (!all.length) throw new Error(tr("Aucune question détectée"));
       setPhase(tr("Génération du fichier Word"));
       setProgress(null);
@@ -462,7 +484,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           )}
         </div>
         <div>
-          <Label>{tr("Rotation et année (appliquée à chaque question et cas clinique)")}</Label>
+          <Label>{tr("Rotation (optionnel — appliquée à toutes les questions)")}</Label>
           <Input
             placeholder={tr("ex. P3 2010")}
             value={rotation}
@@ -470,7 +492,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           />
           <p className="mt-1 text-xs text-muted-foreground">
             {tr(
-              'Requis : écrite automatiquement sur une ligne "Rotation : …" avant chaque question ou cas clinique dans le fichier généré.',
+              "Laissez vide pour que l'IA détecte automatiquement la rotation/année visible sur chaque page et l'écrive avant chaque question ou cas clinique.",
             )}
           </p>
         </div>
@@ -491,7 +513,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             )}
             {tr("Charger les fichiers")}
           </Button>
-          <Button onClick={run} disabled={busy || !prepared || !rotation.trim()}>
+          <Button onClick={run} disabled={busy || !prepared}>
             {busy ? (
               <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
             ) : (
@@ -501,12 +523,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && !busy && !result && !rotation.trim() && (
-          <p className="text-sm text-destructive">
-            {tr("Indiquez la rotation et l'année ci-dessus pour activer la conversion.")}
-          </p>
-        )}
-        {prepared && !busy && !result && rotation.trim() && (
+        {prepared && !busy && !result && (
           <p className="text-sm text-muted-foreground">
             {prepared.length} {tr("page(s)/lot(s) prêt(s) — cliquez sur Convertir.")}
           </p>
