@@ -342,7 +342,11 @@ function ConvertTabs() {
 
 type PdfChunkJob = { dataUrl: string; filename: string; fileIndex: number };
 
-type DocxResult = { base64: string; count: number };
+type DocxResult = {
+  base64: string;
+  count: number;
+  warnings?: { filename: string; warning: string }[];
+};
 
 function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const { tr } = useI18n();
@@ -413,7 +417,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
                   hint: hint.trim() || undefined,
                 },
               }),
-            ).then((r) => r.questions ?? []),
+            ),
         ),
         setProgress,
       );
@@ -425,7 +429,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       const fileFallback = new Map<number, string>();
       prepared.forEach((job, i) => {
         if (fileFallback.has(job.fileIndex)) return;
-        for (const q of parts[i]) {
+        for (const q of parts[i].questions) {
           const detected = combinedRotation(q);
           if (detected) {
             fileFallback.set(job.fileIndex, detected);
@@ -434,21 +438,35 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         }
       });
       const all: ExtractedQ[] = prepared.flatMap((job, i) =>
-        parts[i].map((q) => {
+        parts[i].questions.map((q) => {
           if (combinedRotation(q)) return q;
           const fallback = fileFallback.get(job.fileIndex);
           return fallback ? { ...q, rotation_hint: fallback, year_hint: null } : q;
         }),
       );
       if (!all.length) throw new Error(tr("Aucune question détectée"));
+      // A chunk's own self-check + automatic re-split (server-side) already
+      // recovers most shortfalls — this only fires for whatever's left over
+      // (e.g. a genuinely illegible single page), so the admin isn't ever
+      // told a file is complete when a page may still be missing questions.
+      const chunkWarnings = prepared
+        .map((job, i) =>
+          parts[i].warning ? { filename: job.filename, warning: parts[i].warning! } : null,
+        )
+        .filter((w): w is { filename: string; warning: string } => w != null);
       setPhase(tr("Génération du fichier Word"));
       setProgress(null);
       const items = toDocxItems(all, rotation);
       const { base64 } = await withRetry(() =>
         genDocx({ data: { items, includeExplanations: false } }),
       );
-      setResult({ base64, count: all.length });
+      setResult({ base64, count: all.length, warnings: chunkWarnings });
       toast.success(`${all.length} ${tr("question(s) converties")}`);
+      if (chunkWarnings.length) {
+        toast.warning(
+          `${chunkWarnings.length} ${tr("page(s)/lot(s) possiblement incomplet(s) — voir le détail ci-dessous.")}`,
+        );
+      }
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
     } finally {
@@ -552,6 +570,22 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
                 {tr("Continuer vers l'étape 2 (même fichier)")}
               </Button>
             </div>
+            {result.warnings && result.warnings.length > 0 && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                <p className="font-medium">
+                  {tr(
+                    "Certaines pages semblent incomplètes malgré une nouvelle tentative — vérifiez-les manuellement :",
+                  )}
+                </p>
+                <ul className="mt-1 list-disc pl-4">
+                  {result.warnings.map((w, i) => (
+                    <li key={i}>
+                      <span className="font-medium">{w.filename}</span> : {w.warning}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </CardContent>
