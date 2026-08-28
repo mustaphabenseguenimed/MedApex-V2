@@ -39,19 +39,26 @@ const wordVerdict = (text: string): "vrai" | "faux" | null => {
 };
 
 const EXPL_KEYS = [
-  "explanation", "explication", "explications", "correction", "rationale",
-  "commentaire", "justification", "why", "reason", "feedback", "note", "detail", "details",
+  "explanation",
+  "explication",
+  "explications",
+  "correction",
+  "rationale",
+  "commentaire",
+  "justification",
+  "why",
+  "reason",
+  "feedback",
+  "note",
+  "detail",
+  "details",
 ];
 
 /** Escape plain text (JSON explanations are usually not HTML). */
 const toHtml = (s: string): string =>
   /<[a-z][\s\S]*>/i.test(s)
     ? s
-    : s
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/\n/g, "<br />");
+    : s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br />");
 
 /** Letter/index key ("A", "a", "1", "0") -> zero-based option index. */
 const keyToIndex = (k: string, len: number): number | null => {
@@ -73,7 +80,12 @@ const keyToIndex = (k: string, len: number): number | null => {
  * objects, arrays, or letter-keyed maps) into a single HTML block, one line
  * per option, matching the AI extraction output.
  */
-const buildExplanation = (o: Raw, optObjs: any[], choicesLen: number, correct: number[] = []): string | null => {
+const buildExplanation = (
+  o: Raw,
+  optObjs: any[],
+  choicesLen: number,
+  correct: number[] = [],
+): string | null => {
   const globalRaw = pick(o, EXPL_KEYS);
   const perOption = new Map<number, string>();
   let global: string | null = null;
@@ -94,26 +106,44 @@ const buildExplanation = (o: Raw, optObjs: any[], choicesLen: number, correct: n
     global = str(globalRaw);
   } else if (Array.isArray(globalRaw)) {
     globalRaw.forEach((v, i) => {
-      if (v && typeof v === "object") addPer(i, str(pick(v as Raw, [...EXPL_KEYS, "text", "value", "label"])));
+      if (v && typeof v === "object")
+        addPer(i, str(pick(v as Raw, [...EXPL_KEYS, "text", "value", "label"])));
       else addPer(i, str(v));
     });
   } else if (globalRaw && typeof globalRaw === "object") {
     Object.entries(globalRaw as Raw).forEach(([k, v]) => {
       const idx = keyToIndex(k, Math.max(choicesLen, 1));
-      const text = str(v) ?? (v && typeof v === "object" ? str(pick(v as Raw, [...EXPL_KEYS, "text", "value"])) : null);
+      const text =
+        str(v) ??
+        (v && typeof v === "object" ? str(pick(v as Raw, [...EXPL_KEYS, "text", "value"])) : null);
       if (idx != null) addPer(idx, text);
       else if (text) global = global ? `${global} ${text}` : text;
     });
   }
 
   // 3) sibling maps like { explanations: {...} } / { justifications: [...] }
-  const extra = pick(o, ["explanations", "explications", "justifications", "corrections", "rationales", "option_explanations", "optionExplanations"]);
+  const extra = pick(o, [
+    "explanations",
+    "explications",
+    "justifications",
+    "corrections",
+    "rationales",
+    "option_explanations",
+    "optionExplanations",
+  ]);
   if (Array.isArray(extra)) {
-    extra.forEach((v, i) => addPer(i, typeof v === "object" && v ? str(pick(v as Raw, [...EXPL_KEYS, "text", "value"])) : str(v)));
+    extra.forEach((v, i) =>
+      addPer(
+        i,
+        typeof v === "object" && v ? str(pick(v as Raw, [...EXPL_KEYS, "text", "value"])) : str(v),
+      ),
+    );
   } else if (extra && typeof extra === "object") {
     Object.entries(extra as Raw).forEach(([k, v]) => {
       const idx = keyToIndex(k, Math.max(choicesLen, 1));
-      const text = str(v) ?? (v && typeof v === "object" ? str(pick(v as Raw, [...EXPL_KEYS, "text", "value"])) : null);
+      const text =
+        str(v) ??
+        (v && typeof v === "object" ? str(pick(v as Raw, [...EXPL_KEYS, "text", "value"])) : null);
       if (idx != null) addPer(idx, text);
     });
   } else if (typeof extra === "string") {
@@ -138,7 +168,11 @@ const buildExplanation = (o: Raw, optObjs: any[], choicesLen: number, correct: n
     .forEach((idx) => {
       const body = perOption.get(idx)!;
       const letter = LETTERS[idx] ?? String(idx + 1);
-      const verdict = correct.length ? (correct.includes(idx) ? "vrai" : "faux") : wordVerdict(body);
+      const verdict = correct.length
+        ? correct.includes(idx)
+          ? "vrai"
+          : "faux"
+        : wordVerdict(body);
       const color = verdict === "vrai" ? VRAI_COLOR : verdict === "faux" ? FAUX_COLOR : null;
       const head = color
         ? `<span data-vf="letter" style="color:${color};font-weight:700">${letter}.</span>`
@@ -203,7 +237,12 @@ const toIndex = (v: unknown, choicesLen: number, choices: string[]): number | nu
   }
   if (/^\d+$/.test(s)) return toIndex(Number(s), choicesLen, choices);
   // Match the literal choice text.
-  const norm = (x: string) => x.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  const norm = (x: string) =>
+    x
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
   const i = choices.findIndex((c) => norm(c) === norm(s));
   return i >= 0 ? i : null;
 };
@@ -226,7 +265,8 @@ const pick = (o: Raw, keys: string[]): any => {
  * marker at the start of a stem. Returns cleaned stem plus detected hints.
  * Tolerates separators - – : | / , and enclosing () [].
  */
-const ROT_RE = /^(?:(rotation|pôle|pole|rot)\.?\s*(?:n\s*°|n°|no\.?|n\.?)?\s*)?(p|r)?\s*([1-9]\d?)(?=20\d{2}|[^\dA-Za-z]|$)/i;
+const ROT_RE =
+  /^(?:(rotation|pôle|pole|rot)\.?\s*(?:n\s*°|n°|no\.?|n\.?)?\s*)?(p|r)?\s*([1-9]\d?)(?=20\d{2}|[^\dA-Za-z]|$)/i;
 /**
  * Session labels that are rotations but carry no pole digit. A calendar year
  * must follow, otherwise a normal sentence starting with "rattrapage" would be
@@ -235,13 +275,15 @@ const ROT_RE = /^(?:(rotation|pôle|pole|rot)\.?\s*(?:n\s*°|n°|no\.?|n\.?)?\s*
 const SESSION_RE =
   /^(rattrapages?|ratt\.?|rat\.?|session\s+normale|normale|émd|emd)(?=[\s\-–—/:.]*20\d{2})/i;
 const CAL_YEAR_RE = /^(20\d{2})(?!\d)/;
-const YEAR_TOKEN_RE = /^(20\d{2}|dcem\s*[1-3]|dfasm\s*[1-3]|dfgsm\s*[1-3]|pcem\s*[1-2]|[1-7]\s*(?:ère|ere|eme|ème|er)\s*(?:année|annee|an))\b/i;
+const YEAR_TOKEN_RE =
+  /^(20\d{2}|dcem\s*[1-3]|dfasm\s*[1-3]|dfgsm\s*[1-3]|pcem\s*[1-2]|[1-7]\s*(?:ère|ere|eme|ème|er)\s*(?:année|annee|an))\b/i;
 /** Separators allowed between / after markers (bullets, dashes, colons, slashes…). */
 const SEP_RE = /^[\s\-‐‑‒–—―:|/,.;+&·•●▪◦*\]\)]+/;
 /** Decoration allowed before a real marker (bullets, list dashes, checkmarks). */
 const DECORATION_RE = /^[\s•●▪◦*✓✔☑\-‐‑‒–—―]+/;
 /** A short lead-in that may precede the markers ("Externat Alger :", "QCM 12 -"). */
-const LEADIN_RE = /^(?:externat|faculte|faculté|fac|universite|université|univ|centre|chu|service|module|matiere|matière|cours|source|qcm|qcs|qroc|question|q)\b[^:\-–—\n]{0,40}[:\-–—]\s*/i;
+const LEADIN_RE =
+  /^(?:externat|faculte|faculté|fac|universite|université|univ|centre|chu|service|module|matiere|matière|cours|source|qcm|qcs|qroc|question|q)\b[^:\-–—\n]{0,40}[:\-–—]\s*/i;
 /** Leading numbering ("12.", "Q3)", "N°4 -"). */
 const NUMBERING_RE = /^(?:n\s*°\s*)?\d{1,3}\s*[).:\-–—]\s*/;
 
@@ -257,11 +299,19 @@ function toPlainWithMap(src: string): { plain: string; map: number[] } {
     const ch = src[i];
     if (ch === "<") {
       const end = src.indexOf(">", i);
-      if (end !== -1) { i = end + 1; continue; }
+      if (end !== -1) {
+        i = end + 1;
+        continue;
+      }
     }
     if (ch === "&") {
       const m = src.slice(i).match(/^&(nbsp|amp|#160|#xA0);/i);
-      if (m) { plain += " "; map.push(i); i += m[0].length; continue; }
+      if (m) {
+        plain += " ";
+        map.push(i);
+        i += m[0].length;
+        continue;
+      }
     }
     if (ch === "*" || ch === "_") {
       // markdown emphasis markers
@@ -269,7 +319,12 @@ function toPlainWithMap(src: string): { plain: string; map: number[] } {
       i += run.length;
       continue;
     }
-    if (ch === "\u00a0") { plain += " "; map.push(i); i++; continue; }
+    if (ch === "\u00a0") {
+      plain += " ";
+      map.push(i);
+      i++;
+      continue;
+    }
     plain += ch;
     map.push(i);
     i++;
@@ -302,7 +357,10 @@ function calendarYearMetadata(value: unknown): string | null {
 export function parseMarkerField(value: unknown): { rotation_hints: string[]; years: string[] } {
   const raw = str(value);
   if (!raw) return { rotation_hints: [], years: [] };
-  const text = raw.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  const text = raw
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   const scan = scanMarkers(text);
   const years = Array.from(new Set(scan.years));
   const latest = years.length ? String(Math.max(...years.map(Number))) : null;
@@ -318,7 +376,8 @@ function parseMarkerFields(value: unknown): { rotation_hints: string[]; years: s
   const years: string[] = [];
   for (const raw of metadataValues(value)) {
     const parsed = parseMarkerField(raw);
-    for (const hint of parsed.rotation_hints) if (!rotation_hints.includes(hint)) rotation_hints.push(hint);
+    for (const hint of parsed.rotation_hints)
+      if (!rotation_hints.includes(hint)) rotation_hints.push(hint);
     for (const year of parsed.years) if (!years.includes(year)) years.push(year);
   }
   return { rotation_hints, years };
@@ -345,7 +404,7 @@ function scanMarkers(head: string): {
     if (sMatch) {
       let len = sMatch[0].length;
       const after = rest.slice(len);
-       const gap = after.match(/^[\s\-‐‑‒–—―/:.]*/)?.[0] ?? "";
+      const gap = after.match(/^[\s\-‐‑‒–—―/:.]*/)?.[0] ?? "";
       const yMatch = after.slice(gap.length).match(CAL_YEAR_RE);
       let label = sessionLabel(sMatch[1]);
       if (yMatch) {
@@ -365,7 +424,7 @@ function scanMarkers(head: string): {
       let len = rMatch[0].length;
       const afterRot = rest.slice(len);
       // optional year glued to the pole ("P3 2022")
-       const gap = afterRot.match(/^[\s\-‐‑‒–—―:/(\[]*/)?.[0] ?? "";
+      const gap = afterRot.match(/^[\s\-‐‑‒–—―:/(\[]*/)?.[0] ?? "";
       const yMatch = afterRot.slice(gap.length).match(CAL_YEAR_RE);
       let label = `${(rMatch[2] ?? "P").toUpperCase()}${rMatch[3]}`;
       if (yMatch) {
@@ -417,7 +476,10 @@ export function detectStemMarkers(stemRaw: string): {
     let cursor = 0;
     for (let step = 0; step < 3; step++) {
       const rest = head.slice(cursor);
-      const skip = rest.match(DECORATION_RE)?.[0] ?? rest.match(LEADIN_RE)?.[0] ?? rest.match(NUMBERING_RE)?.[0];
+      const skip =
+        rest.match(DECORATION_RE)?.[0] ??
+        rest.match(LEADIN_RE)?.[0] ??
+        rest.match(NUMBERING_RE)?.[0];
       if (!skip) break;
       cursor += skip.length;
       const inner = scanMarkers(head.slice(cursor));
@@ -431,9 +493,8 @@ export function detectStemMarkers(stemRaw: string): {
   const { rotation_hints, years } = scan;
   let year_hint = scan.year_hint;
   const consumedPlain = scan.consumed ? headOffset + offset + scan.consumed : 0;
-  const detectionSnippet = consumedPlain > 0
-    ? plainFull.slice(0, consumedPlain).replace(/\s+/g, " ").trim()
-    : null;
+  const detectionSnippet =
+    consumedPlain > 0 ? plainFull.slice(0, consumedPlain).replace(/\s+/g, " ").trim() : null;
 
   // Most recent calendar year wins for exam_year.
   if (years.length) {
@@ -466,10 +527,31 @@ export function detectStemMarkers(stemRaw: string): {
 
 const STEM_KEYS = ["stem", "question", "enonce", "énoncé", "text", "title"];
 const CASE_STEM_KEYS = [
-  "case_stem", "cas_clinique", "cas", "case", "enonce_commun", "énoncé_commun",
-  "vignette", "observation", "contexte", "enonce", "énoncé", "stem", "text", "title",
+  "case_stem",
+  "cas clinique stem",
+  "cas_clinique",
+  "cas",
+  "case",
+  "enonce_commun",
+  "énoncé_commun",
+  "vignette",
+  "observation",
+  "contexte",
+  "enonce",
+  "énoncé",
+  "stem",
+  "text",
+  "title",
 ];
-const CASE_SUB_KEYS = ["questions", "sous_questions", "sub_questions", "subQuestions", "subquestions", "items", "children"];
+const CASE_SUB_KEYS = [
+  "questions",
+  "sous_questions",
+  "sub_questions",
+  "subQuestions",
+  "subquestions",
+  "items",
+  "children",
+];
 
 /** A JSON node describing a clinical case: a shared vignette + its questions. */
 function caseSubList(o: Raw): any[] | null {
@@ -503,10 +585,23 @@ function commonPrefix(a: string, b: string): string {
 function applyForcedCase(out: ExtractedQ[], record: Raw | null): void {
   if (!out.length) return;
   const explicit = record
-    ? str(pick(record, [
-        "case_stem", "cas_clinique", "cas", "case", "enonce_commun", "énoncé_commun",
-        "vignette", "observation", "contexte", "enonce", "énoncé", "intro", "introduction",
-      ]))
+    ? str(
+        pick(record, [
+          "case_stem",
+          "cas_clinique",
+          "cas",
+          "case",
+          "enonce_commun",
+          "énoncé_commun",
+          "vignette",
+          "observation",
+          "contexte",
+          "enonce",
+          "énoncé",
+          "intro",
+          "introduction",
+        ]),
+      )
     : null;
   let caseStem = explicit ? stripBold(stripImportedColors(explicit)) : "";
 
@@ -514,14 +609,25 @@ function applyForcedCase(out: ExtractedQ[], record: Raw | null): void {
   if (!caseStem && out.length > 1) {
     let shared = out[0]!.stem;
     for (let i = 1; i < out.length && shared; i++) shared = commonPrefix(shared, out[i]!.stem);
-    const plain = shared.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    const plain = shared
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
     if (plain.length >= 40) {
       // cut at the last sentence end so a half-sentence never leaks into the box
-      const cut = Math.max(shared.lastIndexOf("."), shared.lastIndexOf("?"), shared.lastIndexOf("!"), shared.lastIndexOf(">"));
+      const cut = Math.max(
+        shared.lastIndexOf("."),
+        shared.lastIndexOf("?"),
+        shared.lastIndexOf("!"),
+        shared.lastIndexOf(">"),
+      );
       const vignette = cut > 0 ? shared.slice(0, cut + 1) : shared;
       caseStem = vignette.trim();
       out.forEach((q) => {
-        const rest = q.stem.slice(vignette.length).replace(/^[\s:;,.–—-]+/, "").trim();
+        const rest = q.stem
+          .slice(vignette.length)
+          .replace(/^[\s:;,.–—-]+/, "")
+          .trim();
         if (rest.replace(/<[^>]*>/g, "").trim()) q.stem = rest;
       });
     }
@@ -533,7 +639,9 @@ function applyForcedCase(out: ExtractedQ[], record: Raw | null): void {
     out.splice(0, 1);
   }
   if (!caseStem) caseStem = out[0]!.stem;
-  out.forEach((q) => { q.case_stem = caseStem; });
+  out.forEach((q) => {
+    q.case_stem = caseStem;
+  });
 }
 
 /** Deterministic, zero-credit parsing of a questions JSON file. */
@@ -544,17 +652,39 @@ export function parseQuestionsJson(text: string, opts?: { forceCase?: boolean })
   } catch (e: any) {
     throw new Error(`JSON invalide : ${e?.message ?? "format illisible"}`);
   }
-  const record = data && typeof data === "object" && !Array.isArray(data) ? data as Raw : null;
+  const record = data && typeof data === "object" && !Array.isArray(data) ? (data as Raw) : null;
   const rootIsCase = !!record && isCaseNode(record);
-  const wrapped = record && !rootIsCase ? record.questions ?? record.items ?? record.data : null;
+  // A "question" key holding a nested OBJECT (not the stem string itself) wraps a
+  // single standalone question alongside outer rotation/year fields, e.g.
+  // { rotation, year, question: { stem, choices, correct_indices, explanation } }.
+  // Flatten outer + inner into one object so the field lookups below see both the
+  // question's own fields and the outer rotation/year — distinct from STEM_KEYS'
+  // flat "question" (a string stem field directly on the record).
+  const questionObj =
+    record &&
+    !rootIsCase &&
+    record.question &&
+    typeof record.question === "object" &&
+    !Array.isArray(record.question)
+      ? ({ ...record, ...(record.question as Raw) } as Raw)
+      : null;
+  const wrapped =
+    record && !rootIsCase && !questionObj
+      ? (record.questions ?? record.items ?? record.data)
+      : null;
   const list: any[] = Array.isArray(data)
     ? data
     : Array.isArray(wrapped)
       ? wrapped
-      : record && (rootIsCase || pick(record, STEM_KEYS))
-        ? [record]
-        : [];
-  if (!list.length) throw new Error("Aucune question trouvée dans le JSON (attendu : tableau ou { questions: [...] }).");
+      : questionObj
+        ? [questionObj]
+        : record && (rootIsCase || pick(record, STEM_KEYS))
+          ? [record]
+          : [];
+  if (!list.length)
+    throw new Error(
+      "Aucune question trouvée dans le JSON (attendu : tableau ou { questions: [...] }).",
+    );
 
   const out: ExtractedQ[] = [];
   const parseOne = (o: Raw, ctx?: { caseStem?: string | null; inherit?: Raw }): void => {
@@ -568,24 +698,44 @@ export function parseQuestionsJson(text: string, opts?: { forceCase?: boolean })
     // excluded because they commonly contain unrelated labels.
     // Explicit dedicated fields ("Rotation": "P3, 2026", "Year": "2026") are the
     // easiest and most reliable source, so they win over stem scanning.
-    const rotationField = pick(meta, ["rotation_hints", "rotation_hint", "rotations", "rotation", "pole", "pôle"]);
-    const yearField = pick(meta, ["year_hints", "year_hint", "years", "year", "annee", "année", "exam_year"]);
+    const rotationField = pick(meta, [
+      "rotation_hints",
+      "rotation_hint",
+      "rotations",
+      "rotation",
+      "pole",
+      "pôle",
+    ]);
+    const yearField = pick(meta, [
+      "year_hints",
+      "year_hint",
+      "years",
+      "year",
+      "annee",
+      "année",
+      "exam_year",
+    ]);
     const fromRotationField = parseMarkerFields(rotationField);
     const fromYearField = parseMarkerFields(yearField);
     const explicitYears = Array.from(new Set([...fromRotationField.years, ...fromYearField.years]));
     // "Rotation": "P3" + "Year": "2026" -> "P3 2026"
     const explicitRotations = fromRotationField.rotation_hints.length
-      ? Array.from(new Set(fromRotationField.rotation_hints.map((h) =>
-          /20\d{2}/.test(h) || !explicitYears.length
-            ? h
-            : `${h} ${String(Math.max(...explicitYears.map(Number)))}`)))
+      ? Array.from(
+          new Set(
+            fromRotationField.rotation_hints.map((h) =>
+              /20\d{2}/.test(h) || !explicitYears.length
+                ? h
+                : `${h} ${String(Math.max(...explicitYears.map(Number)))}`,
+            ),
+          ),
+        )
       : fromYearField.rotation_hints;
-    const jsonYearHint = metadataValues(yearField).map(calendarYearMetadata).find((value) => value != null) ?? (explicitYears.length
-      ? String(Math.max(...explicitYears.map(Number)))
-      : null);
-    const rotationHints = explicitRotations.length
-      ? explicitRotations
-      : detected.rotation_hints;
+    const jsonYearHint =
+      metadataValues(yearField)
+        .map(calendarYearMetadata)
+        .find((value) => value != null) ??
+      (explicitYears.length ? String(Math.max(...explicitYears.map(Number))) : null);
+    const rotationHints = explicitRotations.length ? explicitRotations : detected.rotation_hints;
     const yearHints = explicitYears.length
       ? explicitYears.slice().sort((a, b) => Number(a) - Number(b))
       : detected.year_hints;
@@ -594,13 +744,21 @@ export function parseQuestionsJson(text: string, opts?: { forceCase?: boolean })
       ? String(Math.max(...yearHints.map(Number)))
       : (detected.year_hint ?? jsonYearHint);
 
-    const choices = asArray(pick(o, ["choices", "options", "propositions", "answers", "reponses", "réponses"]))
-      .map((c) => (typeof c === "object" && c ? str(pick(c as Raw, ["text", "label", "value", "content"])) : str(c)))
+    const choices = asArray(
+      pick(o, ["choices", "options", "propositions", "answers", "reponses", "réponses"]),
+    )
+      .map((c) =>
+        typeof c === "object" && c
+          ? str(pick(c as Raw, ["text", "label", "value", "content"]))
+          : str(c),
+      )
       .filter((c): c is string => !!c);
 
     // correct answers can be flags on the option objects, or a separate field
     let correct: number[] = [];
-    const optObjs = asArray(pick(o, ["choices", "options", "propositions", "answers", "reponses", "réponses"]));
+    const optObjs = asArray(
+      pick(o, ["choices", "options", "propositions", "answers", "reponses", "réponses"]),
+    );
     optObjs.forEach((c, i) => {
       if (c && typeof c === "object") {
         const flag = pick(c as Raw, ["correct", "is_correct", "isCorrect", "vrai", "true"]);
@@ -609,8 +767,16 @@ export function parseQuestionsJson(text: string, opts?: { forceCase?: boolean })
     });
     if (!correct.length) {
       const rawCorrect = pick(o, [
-        "correct_indices", "correctIndices", "correct", "correct_answers", "correctAnswers",
-        "answer", "answers_correct", "bonnes_reponses", "reponse", "réponse",
+        "correct_indices",
+        "correctIndices",
+        "correct",
+        "correct_answers",
+        "correctAnswers",
+        "answer",
+        "answers_correct",
+        "bonnes_reponses",
+        "reponse",
+        "réponse",
       ]);
       const arr = Array.isArray(rawCorrect)
         ? rawCorrect
@@ -637,18 +803,35 @@ export function parseQuestionsJson(text: string, opts?: { forceCase?: boolean })
       stem: stripBold(stripImportedColors(stem)),
       choices: type === "qroc" ? null : choices.map((c) => stripBold(stripImportedColors(c))),
       correct_indices: type === "qroc" ? null : correct,
-      model_answer: type === "qroc"
-        ? str(pick(o, ["model_answer", "modelAnswer", "answer", "reponse", "réponse", "correction", "solution"]))
-        : null,
+      model_answer:
+        type === "qroc"
+          ? str(
+              pick(o, [
+                "model_answer",
+                "modelAnswer",
+                "answer",
+                "reponse",
+                "réponse",
+                "correction",
+                "solution",
+              ]),
+            )
+          : null,
       explanation: buildExplanation(o, optObjs, choices.length, type === "qroc" ? [] : correct),
-      course_hint: str(pick(meta, ["course_hint", "course", "cours", "lesson", "lecon", "leçon", "folder"])),
+      course_hint: str(
+        pick(meta, ["course_hint", "course", "cours", "lesson", "lecon", "leçon", "folder"]),
+      ),
       year_hint: yearHint,
       year_hints: yearHints.length ? yearHints : null,
       rotation_hint: rotationHint,
       rotation_hints: rotationHints.length ? rotationHints : null,
-      detection_snippet: metadataValues(rotationField).length || metadataValues(yearField).length
-        ? [...metadataValues(rotationField).map((value) => `Rotation: ${value}`), ...metadataValues(yearField).map((value) => `Year: ${value}`)].join(" · ")
-        : detected.detection_snippet,
+      detection_snippet:
+        metadataValues(rotationField).length || metadataValues(yearField).length
+          ? [
+              ...metadataValues(rotationField).map((value) => `Rotation: ${value}`),
+              ...metadataValues(yearField).map((value) => `Year: ${value}`),
+            ].join(" · ")
+          : detected.detection_snippet,
       case_stem: ctx?.caseStem ?? null,
     });
   };
@@ -668,7 +851,10 @@ export function parseQuestionsJson(text: string, opts?: { forceCase?: boolean })
     parseOne(o);
   });
 
-  if (!out.length) throw new Error("Aucune question exploitable dans le JSON (champ « stem »/« question » manquant).");
+  if (!out.length)
+    throw new Error(
+      "Aucune question exploitable dans le JSON (champ « stem »/« question » manquant).",
+    );
   if (opts?.forceCase && !out.some((q) => q.case_stem)) applyForcedCase(out, record);
   return out;
 }
