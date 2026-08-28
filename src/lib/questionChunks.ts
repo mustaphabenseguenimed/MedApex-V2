@@ -92,12 +92,15 @@ const ANSWER_OR_EXPLANATION_LINE =
 
 /**
  * An EXPLICIT clinical-case marker line, e.g. "Cas clinique n°1", "Cas clinique 2 :",
- * "Observation :", "Vignette :". Deliberately narrow (never a bare "Cas 1.") so a
- * vignette is only ever attached when the source unambiguously labels it as one —
- * silence is safer than a wrong guess.
+ * "Observation clinique n°1", "Observation :", "Vignette :", "Cas clinique n°1 :
+ * Douleur thoracique". Deliberately narrow (never a bare "Cas 1.") so a vignette is
+ * only ever attached when the source unambiguously labels it as one — silence is
+ * safer than a wrong guess. A short trailing title is allowed after the marker
+ * (real documents often name the case), but it's capped at 80 chars and cut off at
+ * the first sentence-ending punctuation so a full prose paragraph never matches.
  */
 const CASE_MARKER_LINE =
-  /^\s*(?:cas\s+clinique|cas\s+n°|observation|vignette|énoncé\s+commun|enonce\s+commun)\b\s*(?:n°|no|numero|#)?\s*\d{0,3}\s*[.):\-–]?\s*$/i;
+  /^\s*(?:cas\s+clinique|cas\s+n°|observation(?:\s+clinique)?|vignette(?:\s+clinique)?|énoncé\s+commun|enonce\s+commun)\b\s*(?:n°|no|numero|#)?\s*\d{0,3}\s*(?:[.):\-–]\s*[^.!?]{0,80})?\s*$/i;
 
 export function isCaseMarkerLine(text: string): boolean {
   return CASE_MARKER_LINE.test(text.trim());
@@ -347,6 +350,11 @@ export function buildQuestionUnits(html: string, detectCases = true): QuestionUn
     }
     ctxLines.push(texts[from]);
     const header = mergeHeader(docHeader, parseContextHints(ctxLines));
+    // doc_intro describes the paragraph before the FIRST question only — without
+    // this, mergeHeader falls through to docHeader.doc_intro for every unit (since
+    // parseContextHints never sets it), leaking the same "implicit vignette" text
+    // into every later question and risking false-positive case grouping.
+    if (s !== 0) header.doc_intro = null;
     // Attach the vignette that explicitly covers this question start, if any.
     const owningVignette = vignettes.find((v) => v.coveredStarts.has(from));
     if (owningVignette) header.case_stem = owningVignette.text;
