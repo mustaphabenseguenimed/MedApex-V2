@@ -350,6 +350,10 @@ function QcmRunner() {
     setAnswers(updated);
   };
 
+  const validate = (q: Question) => {
+    setRevealed((prev) => new Set(prev).add(q.id));
+  };
+
   const submitQroc = async (q: Question) => {
     const text = String(answers[q.id] ?? "").trim();
     if (!text) {
@@ -445,6 +449,70 @@ function QcmRunner() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeLeft, isExam, reviewing]);
+
+  // Keyboard navigation for the live session: ← → to move between
+  // questions, letters matching the on-screen A/B/C… labels to answer,
+  // Enter to validate. Never fires while the user is typing (QROC answer,
+  // note, report dialog, "ask AI" inputs) or has a modifier held.
+  useEffect(() => {
+    if (reviewing) return;
+    const step = steps[idx];
+    if (!step) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      const isTyping =
+        !!el &&
+        (["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) ||
+          el.isContentEditable ||
+          !!el.closest('[role="dialog"], [role="listbox"]'));
+      if (isTyping) return;
+
+      if (e.key === "ArrowLeft") {
+        if (idx > 0) {
+          e.preventDefault();
+          setIdx(idx - 1);
+        }
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        if (idx < steps.length - 1) {
+          e.preventDefault();
+          setIdx(idx + 1);
+        }
+        return;
+      }
+      if (step.kind !== "single") return;
+      const q = step.q;
+      if (
+        e.key === "Enter" &&
+        !isExam &&
+        !revealed.has(q.id) &&
+        (q.type === "qcm" || q.type === "qcs") &&
+        answers[q.id] != null &&
+        (!Array.isArray(answers[q.id]) || answers[q.id].length > 0)
+      ) {
+        e.preventDefault();
+        validate(q);
+        return;
+      }
+      if (
+        (q.type === "qcm" || q.type === "qcs") &&
+        q.choices &&
+        !(!isExam && revealed.has(q.id)) &&
+        /^[a-zA-Z]$/.test(e.key)
+      ) {
+        const j = e.key.toUpperCase().charCodeAt(0) - 65;
+        if (j >= 0 && j < q.choices.length) {
+          e.preventDefault();
+          setChoice(q, j);
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewing, idx, steps, isExam, revealed, answers]);
 
   const doFlag = async (q: Question) => {
     try {
@@ -615,6 +683,9 @@ function QcmRunner() {
               flagged={flagged}
               onGo={setIdx}
             />
+            <p className="text-center text-xs text-muted-foreground">
+              {tr("Raccourcis : ← → pour naviguer, lettres pour répondre, Entrée pour valider")}
+            </p>
           </>
         ) : q ? (
           <>
@@ -864,7 +935,7 @@ function QcmRunner() {
                           answers[q.id] == null ||
                           (Array.isArray(answers[q.id]) && answers[q.id].length === 0)
                         }
-                        onClick={() => setRevealed((prev) => new Set(prev).add(q.id))}
+                        onClick={() => validate(q)}
                       >
                         {tr("Valider")}
                       </Button>
@@ -885,6 +956,9 @@ function QcmRunner() {
               flagged={flagged}
               onGo={setIdx}
             />
+            <p className="text-center text-xs text-muted-foreground">
+              {tr("Raccourcis : ← → pour naviguer, lettres pour répondre, Entrée pour valider")}
+            </p>
           </>
         ) : null}
       </main>
