@@ -205,12 +205,20 @@ function friendlyError(e: any, tr: (s: string) => string): string {
 
 type Progress = { done: number; total: number };
 
+function isRateLimit(e: any): boolean {
+  return /429|quota|rate.?limit|RESOURCE_EXHAUSTED|trop de requêtes/i.test(
+    String(e?.message ?? e ?? ""),
+  );
+}
+
 /** Run jobs with a bounded number in flight at once (unlike a bare
  *  Promise.all, which fires everything simultaneously and can blow past the
  *  Gemini free tier's ~20 requests/minute cap on a large batch), reporting
  *  live progress as each one completes. Each job already retries its own
- *  429/quota errors with backoff, so this just keeps the burst small enough
- *  not to trigger them in the first place. */
+ *  429/quota errors with backoff server-side, but once the whole account is
+ *  rate-limited, several concurrent workers retrying independently just
+ *  keeps hammering the wall — so on a rate-limit error every worker pauses
+ *  together via a shared cooldown before the failed job gets one more try. */
 async function withProgress<T>(
   jobs: Array<() => Promise<T>>,
   onProgress: (p: Progress) => void,
@@ -221,10 +229,24 @@ async function withProgress<T>(
   onProgress({ done, total });
   const results: T[] = new Array(total);
   let next = 0;
+  let cooldownUntil = 0;
+  const waitForCooldown = async () => {
+    const wait = cooldownUntil - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  };
   async function worker() {
     while (next < jobs.length) {
       const i = next++;
-      results[i] = await jobs[i]();
+      await waitForCooldown();
+      try {
+        results[i] = await jobs[i]();
+      } catch (e: any) {
+        if (!isRateLimit(e)) throw e;
+        // Rate limited: pause every worker, then give this job one more try.
+        cooldownUntil = Date.now() + 20_000;
+        await waitForCooldown();
+        results[i] = await jobs[i]();
+      }
       done++;
       onProgress({ done, total });
     }
