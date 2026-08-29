@@ -871,65 +871,52 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
     );
   });
 
-const RotationYearPage = z.object({
+const RotationYearSchema = z.object({
   rotation: z.string().nullable().optional(),
   year: z.string().nullable().optional(),
 });
-const RotationYearPageSchema = z.object({
-  pages: z.array(RotationYearPage),
-});
 
-/** Read only the rotation/année header shown at the top of each screenshot in
- *  a PDF chunk (one page = one screenshot) — a narrower, cheaper task than
- *  full question extraction, meant to be reviewed/corrected before being
- *  applied in bulk onto already-extracted questions. */
-export const extractRotationYearFromPdfChunk = createServerFn({ method: "POST" })
+/** Read only the rotation/année header shown at the top of a screenshot —
+ *  a narrower, cheaper task than full question extraction, meant to be
+ *  reviewed/corrected before being applied in bulk onto already-extracted
+ *  questions. Takes a pre-cropped image of just the top of the page (see
+ *  `renderPdfPageTopImages` in `src/lib/pdfText.ts`) rather than the whole
+ *  PDF page — a whole-page render makes the small header text illegible to
+ *  the model, while a cropped, high-resolution top strip reads reliably. */
+export const extractRotationYearFromImage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) =>
     z
       .object({
-        pdfDataUrl: z
+        imageDataUrl: z
           .string()
-          .max(15_000_000)
-          .regex(/^data:application\/pdf;base64,/i, "PDF invalide"),
-        pageCount: z.number().int().min(1).max(60),
-        filename: z.string().max(200).optional(),
+          .max(5_000_000)
+          .regex(/^data:image\//i, "Image invalide"),
       })
       .parse(input),
   )
   .handler(async ({ data, context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
-    const base64 = data.pdfDataUrl.replace(/^data:application\/pdf;base64,/i, "");
     const { output } = await generateWithFallback(
-      RotationYearPageSchema,
+      RotationYearSchema,
       [
         {
           type: "text",
           text:
-            `Ce PDF contient exactement ${data.pageCount} page(s), chacune une capture ` +
-            `d'écran d'une question médicale. En haut de CHAQUE capture se trouve un ` +
-            `en-tête indiquant la rotation et/ou l'année (ex: "P3 2024", "Rotation 2 - ` +
-            `2023/2024", "R4"). Lis UNIQUEMENT cet en-tête pour chaque page — ne lis pas ` +
-            `le contenu de la question elle-même. Renvoie exactement ${data.pageCount} ` +
-            `entrées dans "pages", une par page et DANS L'ORDRE des pages (pages[0] = ` +
-            `page 1, pages[1] = page 2, etc.). Si une page n'a pas d'en-tête visible, mets ` +
-            `rotation et year à null pour cette page — ne devine jamais.`,
+            `Voici le haut d'une capture d'écran de question médicale (recadré). Il ` +
+            `contient normalement un en-tête indiquant la rotation et/ou l'année (ex: ` +
+            `"P3 2024", "Rotation 2 - 2023/2024", "R4"). Lis UNIQUEMENT cet en-tête. Si ` +
+            `l'en-tête n'est pas visible sur cette image, renvoie rotation et year à ` +
+            `null — ne devine jamais.`,
         },
-        {
-          type: "file",
-          data: base64,
-          mediaType: "application/pdf",
-          filename: data.filename ?? "chunk.pdf",
-        },
+        { type: "image", image: data.imageDataUrl },
       ],
-      { temperature: 0.1, timeoutMs: 90_000 },
+      { temperature: 0.1, timeoutMs: 60_000 },
     );
-    const pages = (output.pages ?? []).map((p) => ({
-      rotation: p.rotation?.trim() || null,
-      year: p.year?.trim() || null,
-    }));
-    while (pages.length < data.pageCount) pages.push({ rotation: null, year: null });
-    return { pages: pages.slice(0, data.pageCount) };
+    return {
+      rotation: output.rotation?.trim() || null,
+      year: output.year?.trim() || null,
+    };
   });
 
 /** Health check for the admin panel: pings each built-in model candidate. */
