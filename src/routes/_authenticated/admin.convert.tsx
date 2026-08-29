@@ -40,7 +40,7 @@ import {
   prepareDocxChunks,
   extractQuestionsFromHtmlChunk,
   extractQuestionsFromPdfChunk,
-  extractRotationYearFromPdfChunk,
+  extractRotationYearFromImage,
   type ExtractedQ,
 } from "@/lib/questions.functions";
 import {
@@ -92,13 +92,6 @@ function groupIndexRanges(items: ExtractedQ[]): [number, number][] {
     i = j;
   }
   return ranges;
-}
-
-/** Parse a "p{start}-{end}" chunk label (from splitPdfIntoPageChunks) back
- *  into a page count. */
-function pagesInChunkLabel(label: string): number {
-  const m = label.match(/^p(\d+)-(\d+)$/);
-  return m ? Number(m[2]) - Number(m[1]) + 1 : 1;
 }
 
 function stripHtml(html: string | null | undefined): string {
@@ -343,6 +336,9 @@ function QuestionsPreviewEditor({
   const updateCaseStem = (key: string, html: string) => {
     onChange(items.map((it) => (caseKey(it) === key ? { ...it, case_stem: html } : it)));
   };
+  const updateCaseRotationYear = (key: string, patch: Partial<ExtractedQ>) => {
+    onChange(items.map((it) => (caseKey(it) === key ? { ...it, ...patch } : it)));
+  };
   const toggleEdit = (i: number) => {
     setEditingIdx((prev) => {
       const next = new Set(prev);
@@ -371,6 +367,24 @@ function QuestionsPreviewEditor({
                   placeholder={tr("Énoncé du cas clinique…")}
                   minHeight={60}
                 />
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Input
+                    className="h-8"
+                    placeholder={tr("Rotation")}
+                    value={q.rotation_hint ?? ""}
+                    onChange={(e) =>
+                      updateCaseRotationYear(groupKey, { rotation_hint: e.target.value || null })
+                    }
+                  />
+                  <Input
+                    className="h-8"
+                    placeholder={tr("Année")}
+                    value={q.year_hint ?? ""}
+                    onChange={(e) =>
+                      updateCaseRotationYear(groupKey, { year_hint: e.target.value || null })
+                    }
+                  />
+                </div>
               </div>
             )}
             <div className="space-y-2 rounded-md border bg-muted/30 p-3">
@@ -407,20 +421,22 @@ function QuestionsPreviewEditor({
                   {tr("Supprimer")}
                 </Button>
               </div>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Input
-                  className="h-8"
-                  placeholder={tr("Rotation")}
-                  value={q.rotation_hint ?? ""}
-                  onChange={(e) => updateItem(i, { rotation_hint: e.target.value || null })}
-                />
-                <Input
-                  className="h-8"
-                  placeholder={tr("Année")}
-                  value={q.year_hint ?? ""}
-                  onChange={(e) => updateItem(i, { year_hint: e.target.value || null })}
-                />
-              </div>
+              {!groupKey && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Input
+                    className="h-8"
+                    placeholder={tr("Rotation")}
+                    value={q.rotation_hint ?? ""}
+                    onChange={(e) => updateItem(i, { rotation_hint: e.target.value || null })}
+                  />
+                  <Input
+                    className="h-8"
+                    placeholder={tr("Année")}
+                    value={q.year_hint ?? ""}
+                    onChange={(e) => updateItem(i, { year_hint: e.target.value || null })}
+                  />
+                </div>
+              )}
               {!editing ? (
                 <div className="min-w-0 space-y-3 rounded-md border bg-background p-3">
                   <div className="min-w-0">
@@ -556,7 +572,7 @@ function RotationYearDetector({
   yearOptions: string[];
 }) {
   const { tr } = useI18n();
-  const extractRotYear = useServerFn(extractRotationYearFromPdfChunk);
+  const extractRotYear = useServerFn(extractRotationYearFromImage);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -571,26 +587,19 @@ function RotationYearDetector({
     setProgress(null);
     try {
       const bytes = await file.arrayBuffer();
-      const chunks = await splitPdfIntoPageChunks(bytes, 1);
-      if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
+      const { renderPdfPageTopImages } = await import("@/lib/pdfText");
+      const images = await renderPdfPageTopImages(bytes);
+      if (!images.length) throw new Error(tr("Fichier vide ou illisible"));
       const results = await withProgress(
-        chunks.map(
-          (c) => () =>
-            withRetry(() =>
-              extractRotYear({
-                data: {
-                  pdfDataUrl: c.dataUrl,
-                  pageCount: pagesInChunkLabel(c.label),
-                  filename: `${file.name} (${c.label})`,
-                },
-              }),
-            ),
+        images.map(
+          (imageDataUrl) => () => withRetry(() => extractRotYear({ data: { imageDataUrl } })),
         ),
         setProgress,
       );
-      const flat: PageEntry[] = results.flatMap((r) =>
-        r.pages.map((p) => ({ rotation: p.rotation ?? "", year: p.year ?? "" })),
-      );
+      const flat: PageEntry[] = results.map((r) => ({
+        rotation: r.rotation ?? "",
+        year: r.year ?? "",
+      }));
       onEntriesChange(flat);
       toast.success(`${flat.length} ${tr("page(s) analysée(s)")}`);
     } catch (e: any) {
@@ -1155,6 +1164,11 @@ function ImportReviewPanel({
   const updateReviewItem = (i: number, patch: Partial<ImportableQuestion>) => {
     setReview((prev) => (prev ? prev.map((it, k) => (k === i ? { ...it, ...patch } : it)) : prev));
   };
+  const updateCaseGroup = (key: string, patch: Partial<ImportableQuestion>) => {
+    setReview((prev) =>
+      prev ? prev.map((it) => (caseKey(it) === key ? { ...it, ...patch } : it)) : prev,
+    );
+  };
 
   const applyBulk = () => {
     if (!bulkRotationIds.length && !bulkYearValues.length) return;
@@ -1263,11 +1277,42 @@ function ImportReviewPanel({
               return (
                 <div key={i}>
                   {isNewCaseGroup && (
-                    <div className="mb-1.5 flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/5 p-2 text-xs font-semibold text-primary">
-                      <Sparkles className="h-3.5 w-3.5 shrink-0" />
-                      <span className="truncate">
-                        {stripHtml(q.case_stem) || tr("Cas clinique")}
-                      </span>
+                    <div className="mb-1.5 space-y-1.5 rounded-md border border-primary/40 bg-primary/5 p-2">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+                        <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">
+                          {stripHtml(q.case_stem) || tr("Cas clinique")}
+                        </span>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <MultiSearchableSelect
+                          values={(q.rotation_ids ?? []).filter((r) => r && r !== "__none")}
+                          onValuesChange={(vals) => {
+                            updateCaseGroup(groupKey, {
+                              rotation_ids: vals,
+                              rotation_id: primaryRotation(vals, rotations) ?? "__none",
+                            });
+                          }}
+                          options={rotationImportOptions(rotations)}
+                          placeholder={tr("Rotations")}
+                          searchPlaceholder={tr("Rechercher une rotation…")}
+                          triggerClassName="h-8"
+                        />
+                        <MultiSearchableSelect
+                          values={q.exam_years ?? []}
+                          onValuesChange={(vals) => {
+                            const latest = vals.length ? Math.max(...vals.map(Number)) : null;
+                            updateCaseGroup(groupKey, {
+                              exam_years: vals,
+                              exam_year: latest != null ? String(latest) : "__none",
+                            });
+                          }}
+                          options={yearImportOptions(selectedModule.year)}
+                          placeholder={tr("Années")}
+                          searchPlaceholder={tr("Rechercher une année…")}
+                          triggerClassName="h-8"
+                        />
+                      </div>
                     </div>
                   )}
                   <div className="rounded-md border p-2.5 space-y-1.5 bg-muted/30">
@@ -1277,35 +1322,37 @@ function ImportReviewPanel({
                       </Badge>
                       <span className="min-w-0 flex-1 truncate text-xs">{stripHtml(q.stem)}</span>
                     </div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <MultiSearchableSelect
-                        values={(q.rotation_ids ?? []).filter((r) => r && r !== "__none")}
-                        onValuesChange={(vals) => {
-                          updateReviewItem(i, {
-                            rotation_ids: vals,
-                            rotation_id: primaryRotation(vals, rotations) ?? "__none",
-                          });
-                        }}
-                        options={rotationImportOptions(rotations)}
-                        placeholder={tr("Rotations")}
-                        searchPlaceholder={tr("Rechercher une rotation…")}
-                        triggerClassName="h-8"
-                      />
-                      <MultiSearchableSelect
-                        values={q.exam_years ?? []}
-                        onValuesChange={(vals) => {
-                          const latest = vals.length ? Math.max(...vals.map(Number)) : null;
-                          updateReviewItem(i, {
-                            exam_years: vals,
-                            exam_year: latest != null ? String(latest) : "__none",
-                          });
-                        }}
-                        options={yearImportOptions(selectedModule.year)}
-                        placeholder={tr("Années")}
-                        searchPlaceholder={tr("Rechercher une année…")}
-                        triggerClassName="h-8"
-                      />
-                    </div>
+                    {!groupKey && (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <MultiSearchableSelect
+                          values={(q.rotation_ids ?? []).filter((r) => r && r !== "__none")}
+                          onValuesChange={(vals) => {
+                            updateReviewItem(i, {
+                              rotation_ids: vals,
+                              rotation_id: primaryRotation(vals, rotations) ?? "__none",
+                            });
+                          }}
+                          options={rotationImportOptions(rotations)}
+                          placeholder={tr("Rotations")}
+                          searchPlaceholder={tr("Rechercher une rotation…")}
+                          triggerClassName="h-8"
+                        />
+                        <MultiSearchableSelect
+                          values={q.exam_years ?? []}
+                          onValuesChange={(vals) => {
+                            const latest = vals.length ? Math.max(...vals.map(Number)) : null;
+                            updateReviewItem(i, {
+                              exam_years: vals,
+                              exam_year: latest != null ? String(latest) : "__none",
+                            });
+                          }}
+                          options={yearImportOptions(selectedModule.year)}
+                          placeholder={tr("Années")}
+                          searchPlaceholder={tr("Rechercher une année…")}
+                          triggerClassName="h-8"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               );

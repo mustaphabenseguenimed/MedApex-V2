@@ -67,3 +67,48 @@ export async function extractPdfText(file: File | ArrayBuffer): Promise<PdfTextR
   }
   return { pages, scannedPages, totalPages: doc.numPages };
 }
+
+/**
+ * Render just the top strip of each page as a high-resolution PNG data URL —
+ * used to read a small header (e.g. a rotation/année banner) reliably: a
+ * whole-page render/downsample by the AI provider makes small header text
+ * illegible, but cropping to the top fraction before sending gives the model
+ * a much larger effective view of the same text.
+ */
+export async function renderPdfPageTopImages(
+  bytes: ArrayBuffer,
+  opts?: { scale?: number; cropTop?: number },
+): Promise<string[]> {
+  const pdfjs = await getPdfjs();
+  const doc = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
+  const scale = opts?.scale ?? 2.5;
+  const cropTop = opts?.cropTop ?? 0.18;
+  const images: string[] = [];
+
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas non supporté par ce navigateur");
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    const cropHeight = Math.max(1, Math.round(canvas.height * cropTop));
+    const cropCanvas = document.createElement("canvas");
+    cropCanvas.width = canvas.width;
+    cropCanvas.height = cropHeight;
+    const cropCtx = cropCanvas.getContext("2d");
+    if (!cropCtx) throw new Error("Canvas non supporté par ce navigateur");
+    cropCtx.drawImage(canvas, 0, 0, canvas.width, cropHeight, 0, 0, canvas.width, cropHeight);
+    images.push(cropCanvas.toDataURL("image/png"));
+  }
+
+  try {
+    await doc.destroy();
+  } catch {
+    /* ignore */
+  }
+  return images;
+}
