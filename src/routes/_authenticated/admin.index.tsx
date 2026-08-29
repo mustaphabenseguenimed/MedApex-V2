@@ -71,7 +71,14 @@ import {
 } from "@/lib/questions.functions";
 import { parseQuestionsJson } from "@/lib/structuredImport";
 import { extractLessonsFromProgram } from "@/lib/program.functions";
-import { matchRotations, matchFolder, parseYears } from "@/lib/importMatch";
+import {
+  matchRotations,
+  matchFolder,
+  parseYears,
+  primaryRotation,
+  resolveImportAssignments,
+} from "@/lib/importMatch";
+import { caseKey, importQuestionsToModule } from "@/lib/importQuestions";
 import {
   Dialog,
   DialogContent,
@@ -180,13 +187,6 @@ function yearMultiOptions(
 /** Rotations for a multi-select (clearing happens by deselecting everything). */
 function rotationMultiOptions(rotations: Rotation[]): SearchableOption[] {
   return rotations.map((r) => ({ value: r.id, label: r.label }));
-}
-/** The displayed rotation is the last one in the module's rotation order. */
-function primaryRotation(ids: string[] | null | undefined, rotations: Rotation[]): string | null {
-  const set = new Set(ids ?? []);
-  let last: string | null = null;
-  for (const r of rotations) if (set.has(r.id)) last = r.id;
-  return last ?? (ids && ids.length ? ids[ids.length - 1] : null);
 }
 /** The displayed year is always the most recent one assigned. */
 function latestYear(years: (string | number)[] | null | undefined): number | null {
@@ -1115,20 +1115,6 @@ type ReviewItem = ExtractedQ & {
   _order?: number;
 };
 
-function resolveImportAssignments(q: ExtractedQ, rotations: Rotation[]) {
-  const years = parseYears(q.year_hints ?? [q.year_hint], q.year_hint);
-  const rotationIds = matchRotations(q.rotation_hints ?? [q.rotation_hint], rotations, { years });
-  const rotationId = primaryRotation(rotationIds, rotations);
-  const latest = years.length ? Math.max(...years) : null;
-  return {
-    rotation_id: rotationId ?? "__none",
-    rotation_ids: rotationIds,
-    exam_year: latest != null ? String(latest) : "__none",
-    exam_years: years.map(String),
-    year_detected: latest,
-  };
-}
-
 type GoogleAiCheck = {
   ok: boolean;
   message: string;
@@ -1908,80 +1894,13 @@ function ImportFromFiles({
     }
     setBusy(true);
     try {
-      // Find current max sort_order for this module so imports append after existing questions.
-      const { data: maxRow } = await (supabase as any)
-        .from("questions")
-        .select("sort_order")
-        .eq("module_id", moduleId)
-        .order("sort_order", { ascending: false, nullsFirst: false })
-        .limit(1)
-        .maybeSingle();
-      const base = Number(maxRow?.sort_order ?? 0);
-      const rowFor = (q: ReviewItem, order: number) => ({
-        module_id: moduleId,
-        year,
-        rotation_id: q.rotation_id === "__none" ? null : q.rotation_id,
-        rotation_ids: (q.rotation_ids ?? []).filter((r) => r && r !== "__none"),
-        folder_id: q.folder_id === "__none" ? null : q.folder_id,
-        exam_year: q.exam_year === "__none" ? null : Number(q.exam_year),
-        exam_years: (q.exam_years ?? []).map(Number).filter((n) => Number.isFinite(n)),
-        type: q.type,
-        polarity: "correct",
-        stem: q.stem,
-        choices: q.type === "qroc" ? null : (q.choices ?? []),
-        correct_indices: q.type === "qroc" ? null : (q.correct_indices ?? []),
-        model_answer: q.type === "qroc" ? (q.model_answer ?? "") : null,
-        explanation: q.explanation,
-        parent_id: null,
-        sort_order: base + order * 10,
+      const { count, caseCount } = await importQuestionsToModule(supabase, {
+        moduleId,
+        moduleYear: year,
+        items: kept,
       });
-      const fail = (error: any, sampleRow: any, rowCount: number) => {
-        console.error("[importAll] insert failed", { error, sampleRow, rowCount });
-        const detail = [error.message, error.details, error.hint, error.code]
-          .filter(Boolean)
-          .join(" — ");
-        throw new Error(detail || tr("Insert failed"));
-      };
-
-      // Clinical cases: questions sharing a `case_stem` become sub-questions of
-      // a single `cas_clinique` parent inserted first.
-      const caseParentId = new Map<string, string>();
-      const caseKeys: string[] = [];
-      for (const q of kept) {
-        const k = caseKey(q);
-        if (k && !caseKeys.includes(k)) caseKeys.push(k);
-      }
-      let order = 0;
-      if (caseKeys.length) {
-        const parentRows = caseKeys.map((k) => {
-          const first = kept.find((q) => caseKey(q) === k)!;
-          return {
-            ...rowFor(first, ++order),
-            type: "cas_clinique",
-            stem: first.case_stem ?? k,
-            choices: null,
-            correct_indices: null,
-            model_answer: null,
-            explanation: null,
-          };
-        });
-        const { data: inserted, error: perr } = await (supabase as any)
-          .from("questions")
-          .insert(parentRows)
-          .select("id");
-        if (perr) fail(perr, parentRows[0], parentRows.length);
-        (inserted ?? []).forEach((r: any, i: number) => caseParentId.set(caseKeys[i], r.id));
-      }
-
-      const rows = kept.map((q) => {
-        const k = caseKey(q);
-        const parentId = k ? (caseParentId.get(k) ?? null) : null;
-        return { ...rowFor(q, ++order), parent_id: parentId };
-      });
-      const { error } = await (supabase as any).from("questions").insert(rows);
-      if (error) fail(error, rows[0], rows.length);
       toast.success(
-        `${rows.length} ${tr("question(s) importée(s)")}${caseKeys.length ? ` · ${caseKeys.length} ${tr("cas clinique(s)")}` : ""}`,
+        `${count} ${tr("question(s) importée(s)")}${caseCount ? ` · ${caseCount} ${tr("cas clinique(s)")}` : ""}`,
       );
       onImported();
       setOpen(false);
@@ -1996,15 +1915,6 @@ function ImportFromFiles({
   const updateItem = (i: number, patch: Partial<ReviewItem>) => {
     setItems((prev) => prev.map((it, k) => (k === i ? { ...it, ...patch } : it)));
   };
-
-  // Normalized grouping key for "questions sharing a cas-clinique énoncé" —
-  // shared with _importAll so the review list and the actual import agree on
-  // which questions belong together.
-  const caseKey = (q: ReviewItem) =>
-    (q.case_stem ?? "")
-      .replace(/<[^>]*>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
 
   /** Editing a shared case_stem updates every question in that case at once,
    *  so they stay byte-identical (required for the grouping above to hold). */

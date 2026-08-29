@@ -8,10 +8,20 @@ const norm = (s: string) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
-const tokens = (s: string) => norm(s).split(" ").filter((t) => t.length >= 3);
+const tokens = (s: string) =>
+  norm(s)
+    .split(" ")
+    .filter((t) => t.length >= 3);
 
 type Rotation = { id: string; label: string };
 type Folder = { id: string; name: string; kind: string };
+
+type HintedQuestion = {
+  year_hint?: string | null;
+  year_hints?: (string | null | undefined)[] | null;
+  rotation_hint?: string | null;
+  rotation_hints?: (string | null | undefined)[] | null;
+};
 
 /** Extract the pole number (P3/R3/Rotation 3) and calendar year from a label. */
 function poleYear(s: string): { pole: number | null; year: number | null } {
@@ -78,14 +88,18 @@ export function matchRotation(
   const h = norm(hint);
   if (!h) return null;
   const ctxYears = Array.from(
-    new Set((opts.years ?? []).map((y) => Number(y)).filter((y) => Number.isFinite(y) && y >= 2000)),
+    new Set(
+      (opts.years ?? []).map((y) => Number(y)).filter((y) => Number.isFinite(y) && y >= 2000),
+    ),
   ).sort((a, b) => b - a);
 
   // Imported stem markers with a year are exact identities. Never silently
   // assign them to a different stored year or pole.
   const exactKey = canonicalRotationKey(hint);
   if (exactKey) {
-    return rotations.find((rotation) => canonicalRotationKey(rotation.label) === exactKey)?.id ?? null;
+    return (
+      rotations.find((rotation) => canonicalRotationKey(rotation.label) === exactKey)?.id ?? null
+    );
   }
 
   // 1. exact normalized equality
@@ -148,6 +162,32 @@ export function matchRotation(
     }
   }
   return null;
+}
+
+/** The displayed rotation is the last one in the module's rotation order. */
+export function primaryRotation(
+  ids: string[] | null | undefined,
+  rotations: Rotation[],
+): string | null {
+  const set = new Set(ids ?? []);
+  let last: string | null = null;
+  for (const r of rotations) if (set.has(r.id)) last = r.id;
+  return last ?? (ids && ids.length ? ids[ids.length - 1] : null);
+}
+
+/** Auto-fill rotation(s)/year(s) for an extracted question from its hints. */
+export function resolveImportAssignments(q: HintedQuestion, rotations: Rotation[]) {
+  const years = parseYears(q.year_hints ?? [q.year_hint], q.year_hint);
+  const rotationIds = matchRotations(q.rotation_hints ?? [q.rotation_hint], rotations, { years });
+  const rotationId = primaryRotation(rotationIds, rotations);
+  const latest = years.length ? Math.max(...years) : null;
+  return {
+    rotation_id: rotationId ?? "__none",
+    rotation_ids: rotationIds,
+    exam_year: latest != null ? String(latest) : "__none",
+    exam_years: years.map(String),
+    year_detected: latest,
+  };
 }
 
 /** Match several rotation hints ("P3 2022", "P6 2026") to rotation ids, deduped. */
@@ -214,7 +254,10 @@ export function matchFolder(
     const b = norm(hint);
     let prefix = 0;
     while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
-    if (score >= threshold && (!best || score > best.score || (score === best.score && prefix > best.prefix))) {
+    if (
+      score >= threshold &&
+      (!best || score > best.score || (score === best.score && prefix > best.prefix))
+    ) {
       best = { id: f.id, score, prefix };
     }
   }
