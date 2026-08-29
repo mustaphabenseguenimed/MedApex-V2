@@ -50,6 +50,11 @@ import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
 import type { PreparedChunk } from "@/lib/questionChunks";
 import { readAsDataUrl, splitPdfIntoPageChunks } from "@/lib/fileUtils";
 import { downloadBase64, downloadText, base64ToFile } from "@/lib/download";
+import { supabase } from "@/integrations/supabase/client";
+import { resolveImportAssignments, primaryRotation } from "@/lib/importMatch";
+import { importQuestionsToModule, type ImportableQuestion } from "@/lib/importQuestions";
+import { MultiSearchableSelect } from "@/components/ui/multi-searchable-select";
+import type { SearchableOption } from "@/components/ui/searchable-select";
 
 export const Route = createFileRoute("/_authenticated/admin/convert")({
   head: () => ({ meta: [{ title: "Conversion — Admin" }] }),
@@ -804,44 +809,6 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && busy === null && !extracted && (
-          <p className="text-sm text-muted-foreground">
-            {prepared.length} {tr("page(s)/lot(s) prêt(s) — cliquez sur Extraire.")}
-          </p>
-        )}
-        {extracted && busy !== "extract" && (
-          <div className="space-y-3">
-            {chunkWarnings.length > 0 && (
-              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                <p className="font-medium">
-                  {tr(
-                    "Certaines pages semblent incomplètes malgré une nouvelle tentative — vérifiez-les manuellement :",
-                  )}
-                </p>
-                <ul className="mt-1 list-disc pl-4">
-                  {chunkWarnings.map((w, i) => (
-                    <li key={i}>
-                      <span className="font-medium">{w.filename}</span> : {w.warning}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <QuestionsPreviewEditor
-              items={extracted}
-              onChange={setExtracted}
-              showExplanation={false}
-            />
-            <Button onClick={generate} disabled={busy !== null || !extracted.length}>
-              {busy === "generate" ? (
-                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              ) : (
-                <FileDown className="mr-1.5 h-4 w-4" />
-              )}
-              {tr("Générer le fichier .docx")}
-            </Button>
-          </div>
-        )}
         {result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
             <p className="text-sm font-medium">
@@ -884,8 +851,288 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             )}
           </div>
         )}
+        {prepared && busy === null && !extracted && (
+          <p className="text-sm text-muted-foreground">
+            {prepared.length} {tr("page(s)/lot(s) prêt(s) — cliquez sur Extraire.")}
+          </p>
+        )}
+        {extracted && busy !== "extract" && (
+          <div className="space-y-3">
+            {chunkWarnings.length > 0 && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                <p className="font-medium">
+                  {tr(
+                    "Certaines pages semblent incomplètes malgré une nouvelle tentative — vérifiez-les manuellement :",
+                  )}
+                </p>
+                <ul className="mt-1 list-disc pl-4">
+                  {chunkWarnings.map((w, i) => (
+                    <li key={i}>
+                      <span className="font-medium">{w.filename}</span> : {w.warning}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <QuestionsPreviewEditor
+              items={extracted}
+              onChange={setExtracted}
+              showExplanation={false}
+            />
+            <Button onClick={generate} disabled={busy !== null || !extracted.length}>
+              {busy === "generate" ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <FileDown className="mr-1.5 h-4 w-4" />
+              )}
+              {tr("Générer le fichier .docx")}
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+// ---- Direct import into a module (Steps 2 & 3) -------------------------------
+
+type ImportModule = { id: string; title: string; year: number };
+type ImportRotation = { id: string; label: string };
+
+function rotationImportOptions(rotations: ImportRotation[]): SearchableOption[] {
+  return rotations.map((r) => ({ value: r.id, label: r.label }));
+}
+function yearImportOptions(anchorYear?: number | null): SearchableOption[] {
+  const now = new Date().getFullYear();
+  const set = new Set<number>();
+  for (let y = now - 8; y <= now + 1; y++) set.add(y);
+  if (anchorYear && Number.isFinite(anchorYear)) set.add(anchorYear);
+  return [...set].sort((a, b) => b - a).map((y) => ({ value: String(y), label: String(y) }));
+}
+
+function ImportReviewPanel({
+  questions,
+  onImported,
+}: {
+  questions: ExtractedQ[];
+  onImported: () => void;
+}) {
+  const { tr } = useI18n();
+  const [modules, setModules] = useState<ImportModule[] | null>(null);
+  const [moduleId, setModuleId] = useState<string>("");
+  const [rotations, setRotations] = useState<ImportRotation[]>([]);
+  const [review, setReview] = useState<ImportableQuestion[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [bulkRotationIds, setBulkRotationIds] = useState<string[]>([]);
+  const [bulkYearValues, setBulkYearValues] = useState<string[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("modules")
+        .select("id,title,year")
+        .order("year")
+        .order("sort_order");
+      setModules((data as ImportModule[]) ?? []);
+    })();
+  }, []);
+
+  const selectedModule = modules?.find((m) => m.id === moduleId) ?? null;
+
+  useEffect(() => {
+    if (!moduleId) {
+      setRotations([]);
+      setReview(null);
+      return;
+    }
+    (async () => {
+      const { data } = await supabase
+        .from("module_rotations")
+        .select("id,label")
+        .eq("module_id", moduleId)
+        .order("sort_order");
+      const rots = (data as ImportRotation[]) ?? [];
+      setRotations(rots);
+      setReview(
+        questions.map((q) => ({
+          ...q,
+          ...resolveImportAssignments(q, rots),
+        })),
+      );
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moduleId]);
+
+  const updateReviewItem = (i: number, patch: Partial<ImportableQuestion>) => {
+    setReview((prev) => (prev ? prev.map((it, k) => (k === i ? { ...it, ...patch } : it)) : prev));
+  };
+
+  const applyBulk = () => {
+    if (!bulkRotationIds.length && !bulkYearValues.length) return;
+    setReview((prev) =>
+      prev
+        ? prev.map((it) => ({
+            ...it,
+            ...(bulkRotationIds.length
+              ? {
+                  rotation_ids: bulkRotationIds,
+                  rotation_id: primaryRotation(bulkRotationIds, rotations) ?? "__none",
+                }
+              : {}),
+            ...(bulkYearValues.length
+              ? {
+                  exam_years: bulkYearValues,
+                  exam_year: String(Math.max(...bulkYearValues.map(Number))),
+                }
+              : {}),
+          }))
+        : prev,
+    );
+  };
+
+  const confirmImport = async () => {
+    if (!review || !selectedModule) return;
+    setBusy(true);
+    try {
+      const { count, caseCount } = await importQuestionsToModule(supabase, {
+        moduleId: selectedModule.id,
+        moduleYear: selectedModule.year,
+        items: review,
+      });
+      toast.success(
+        `${count} ${tr("question(s) importée(s)")}${caseCount ? ` · ${caseCount} ${tr("cas clinique(s)")}` : ""}`,
+      );
+      onImported();
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3 rounded-lg border bg-background p-4">
+      <p className="text-sm font-medium">{tr("Importer directement dans un module")}</p>
+      <div>
+        <Label className="text-xs">{tr("Module")}</Label>
+        <Select value={moduleId} onValueChange={setModuleId}>
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder={tr("Choisir un module")} />
+          </SelectTrigger>
+          <SelectContent>
+            {(modules ?? []).map((m) => (
+              <SelectItem key={m.id} value={m.id}>
+                {m.year} · {m.title}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {review && selectedModule && (
+        <>
+          <div className="flex flex-wrap items-end gap-2 rounded-md border bg-muted/40 p-2">
+            <div className="space-y-1">
+              <Label className="text-xs">{tr("Rotations (masse)")}</Label>
+              <div className="w-52">
+                <MultiSearchableSelect
+                  values={bulkRotationIds}
+                  onValuesChange={setBulkRotationIds}
+                  options={rotationImportOptions(rotations)}
+                  placeholder={tr("Ne pas changer")}
+                  searchPlaceholder={tr("Rechercher une rotation…")}
+                  triggerClassName="h-8"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">{tr("Années (masse)")}</Label>
+              <div className="w-48">
+                <MultiSearchableSelect
+                  values={bulkYearValues}
+                  onValuesChange={setBulkYearValues}
+                  options={yearImportOptions(selectedModule.year)}
+                  placeholder={tr("Ne pas changer")}
+                  searchPlaceholder={tr("Rechercher une année…")}
+                  triggerClassName="h-8"
+                />
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={applyBulk}
+              disabled={!bulkRotationIds.length && !bulkYearValues.length}
+            >
+              {tr("Appliquer à toutes les questions")}
+            </Button>
+          </div>
+          <div className="max-h-[28rem] space-y-2 overflow-y-auto">
+            {review.map((q, i) => {
+              const groupKey = caseKey(q);
+              const isNewCaseGroup =
+                groupKey !== "" && (i === 0 || groupKey !== caseKey(review[i - 1]));
+              return (
+                <div key={i}>
+                  {isNewCaseGroup && (
+                    <div className="mb-1.5 flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/5 p-2 text-xs font-semibold text-primary">
+                      <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">
+                        {stripHtml(q.case_stem) || tr("Cas clinique")}
+                      </span>
+                    </div>
+                  )}
+                  <div className="rounded-md border p-2.5 space-y-1.5 bg-muted/30">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary" className="text-[10px]">
+                        {q.type.toUpperCase()}
+                      </Badge>
+                      <span className="min-w-0 flex-1 truncate text-xs">{stripHtml(q.stem)}</span>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <MultiSearchableSelect
+                        values={(q.rotation_ids ?? []).filter((r) => r && r !== "__none")}
+                        onValuesChange={(vals) => {
+                          updateReviewItem(i, {
+                            rotation_ids: vals,
+                            rotation_id: primaryRotation(vals, rotations) ?? "__none",
+                          });
+                        }}
+                        options={rotationImportOptions(rotations)}
+                        placeholder={tr("Rotations")}
+                        searchPlaceholder={tr("Rechercher une rotation…")}
+                        triggerClassName="h-8"
+                      />
+                      <MultiSearchableSelect
+                        values={q.exam_years ?? []}
+                        onValuesChange={(vals) => {
+                          const latest = vals.length ? Math.max(...vals.map(Number)) : null;
+                          updateReviewItem(i, {
+                            exam_years: vals,
+                            exam_year: latest != null ? String(latest) : "__none",
+                          });
+                        }}
+                        options={yearImportOptions(selectedModule.year)}
+                        placeholder={tr("Années")}
+                        searchPlaceholder={tr("Rechercher une année…")}
+                        triggerClassName="h-8"
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <Button onClick={confirmImport} disabled={busy || !review.length}>
+            {busy ? (
+              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            ) : (
+              <Check className="mr-1.5 h-4 w-4" />
+            )}
+            {tr("Confirmer l'import")}
+          </Button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -920,12 +1167,14 @@ function Step2Panel({
   const [result, setResult] = useState<DocxResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [showImport, setShowImport] = useState(false);
 
   const uploadFile = async (file: File) => {
     setUploading(true);
     setPrepared(null);
     setExtracted(null);
     setResult(null);
+    setShowImport(false);
     try {
       const dataUrl = await readAsDataUrl(file);
       const { chunks } = await withRetry(() =>
@@ -962,6 +1211,7 @@ function Step2Panel({
     setBusy("extract");
     setExtracted(null);
     setResult(null);
+    setShowImport(false);
     setProgress(null);
     try {
       setPhase(tr("Lecture des questions"));
@@ -1077,6 +1327,7 @@ function Step2Panel({
     if (!extracted || !extracted.length) return;
     setBusy("generate");
     setResult(null);
+    setShowImport(false);
     try {
       setPhase(tr("Génération du fichier Word"));
       const items = toDocxItems(extracted);
@@ -1111,6 +1362,7 @@ function Step2Panel({
               setPrepared(null);
               setExtracted(null);
               setResult(null);
+              setShowImport(false);
             }}
           />
           {docxFile && <p className="mt-1 text-xs text-muted-foreground">{docxFile.name}</p>}
@@ -1182,38 +1434,6 @@ function Step2Panel({
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && busy === null && !extracted && (
-          <p className="text-sm text-muted-foreground">
-            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Extraire.")}
-          </p>
-        )}
-        {extracted && busy !== "extract" && (
-          <div className="space-y-3">
-            <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                onClick={explain}
-                disabled={busy !== null || !extracted.length}
-              >
-                {busy === "explain" ? (
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                ) : (
-                  <FileDown className="mr-1.5 h-4 w-4" />
-                )}
-                {tr("Générer les explications (IA)")}
-              </Button>
-              <Button onClick={generate} disabled={busy !== null || !extracted.length}>
-                {busy === "generate" ? (
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                ) : (
-                  <FileDown className="mr-1.5 h-4 w-4" />
-                )}
-                {tr("Générer le fichier Word")}
-              </Button>
-            </div>
-          </div>
-        )}
         {result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
             <p className="text-sm font-medium">
@@ -1247,6 +1467,47 @@ function Step2Panel({
                 <ArrowRight className="mr-1.5 h-4 w-4" />
                 {tr("Continuer vers l'étape 3 (même fichier)")}
               </Button>
+              {extracted && (
+                <Button variant="outline" onClick={() => setShowImport((v) => !v)}>
+                  <UploadCloud className="mr-1.5 h-4 w-4" />
+                  {tr("Importer directement")}
+                </Button>
+              )}
+            </div>
+            {showImport && extracted && (
+              <ImportReviewPanel questions={extracted} onImported={() => setShowImport(false)} />
+            )}
+          </div>
+        )}
+        {prepared && busy === null && !extracted && (
+          <p className="text-sm text-muted-foreground">
+            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Extraire.")}
+          </p>
+        )}
+        {extracted && busy !== "extract" && (
+          <div className="space-y-3">
+            <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={explain}
+                disabled={busy !== null || !extracted.length}
+              >
+                {busy === "explain" ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                )}
+                {tr("Générer les explications (IA)")}
+              </Button>
+              <Button onClick={generate} disabled={busy !== null || !extracted.length}>
+                {busy === "generate" ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                )}
+                {tr("Générer le fichier Word")}
+              </Button>
             </div>
           </div>
         )}
@@ -1279,12 +1540,14 @@ function Step3Panel({
   const [result, setResult] = useState<JsonResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [showImport, setShowImport] = useState(false);
 
   const uploadFile = async (file: File) => {
     setUploading(true);
     setPrepared(null);
     setExtracted(null);
     setResult(null);
+    setShowImport(false);
     try {
       const dataUrl = await readAsDataUrl(file);
       const { chunks } = await withRetry(() =>
@@ -1321,6 +1584,7 @@ function Step3Panel({
     setBusy("extract");
     setExtracted(null);
     setResult(null);
+    setShowImport(false);
     setProgress(null);
     try {
       setPhase(tr("Lecture des questions"));
@@ -1371,6 +1635,7 @@ function Step3Panel({
     if (!extracted || !extracted.length) return;
     const objects = toJsonObjects(extracted);
     setResult({ objects, count: extracted.length });
+    setShowImport(false);
     toast.success(`${extracted.length} ${tr("question(s) converties en JSON")}`);
   };
 
@@ -1390,6 +1655,7 @@ function Step3Panel({
               setPrepared(null);
               setExtracted(null);
               setResult(null);
+              setShowImport(false);
             }}
           />
           {docxFile && <p className="mt-1 text-xs text-muted-foreground">{docxFile.name}</p>}
@@ -1427,20 +1693,6 @@ function Step3Panel({
           </Button>
         </div>
         <StepProgress phase={phase} progress={progress} />
-        {prepared && busy === null && !extracted && (
-          <p className="text-sm text-muted-foreground">
-            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Extraire.")}
-          </p>
-        )}
-        {extracted && busy !== "extract" && (
-          <div className="space-y-3">
-            <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
-            <Button onClick={generate} disabled={!extracted.length}>
-              <FileDown className="mr-1.5 h-4 w-4" />
-              {tr("Générer le fichier .json")}
-            </Button>
-          </div>
-        )}
         {result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
             <p className="text-sm font-medium">
@@ -1459,7 +1711,30 @@ function Step3Panel({
                 <FileDown className="mr-1.5 h-4 w-4" />
                 {tr("Télécharger")}
               </Button>
+              {extracted && (
+                <Button variant="outline" onClick={() => setShowImport((v) => !v)}>
+                  <UploadCloud className="mr-1.5 h-4 w-4" />
+                  {tr("Importer directement")}
+                </Button>
+              )}
             </div>
+            {showImport && extracted && (
+              <ImportReviewPanel questions={extracted} onImported={() => setShowImport(false)} />
+            )}
+          </div>
+        )}
+        {prepared && busy === null && !extracted && (
+          <p className="text-sm text-muted-foreground">
+            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Extraire.")}
+          </p>
+        )}
+        {extracted && busy !== "extract" && (
+          <div className="space-y-3">
+            <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
+            <Button onClick={generate} disabled={!extracted.length}>
+              <FileDown className="mr-1.5 h-4 w-4" />
+              {tr("Générer le fichier .json")}
+            </Button>
           </div>
         )}
       </CardContent>
