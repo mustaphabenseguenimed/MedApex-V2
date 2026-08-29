@@ -454,16 +454,18 @@ const INSTRUCTIONS = (hint?: string, detectCases = true, askTotalVisible = false
     "- type: 'qcs' si une seule bonne réponse, 'qcm' si plusieurs, 'qroc' si question ouverte sans choix.",
     "- stem: l'énoncé exact.",
     "- choices: la liste des propositions (A, B, C, ...) SANS la lettre en préfixe. null pour qroc.",
-    "- correct_indices: indices (0-based) des bonnes réponses si visibles/soulignées/cochées/indiquées comme correction, sinon null.",
+    "- correct_indices: indices (0-based) des bonnes réponses si visibles/soulignées/cochées/indiquées comme correction, sinon null. Dans une capture d'écran de quiz, la bonne réponse est souvent toute la ligne surlignée (ex: en vert), parfois accompagnée d'un pourcentage de réponses (ex: '73%') à côté — ce pourcentage est une statistique d'interface: ignore-le, ne l'inclus jamais dans le texte d'une proposition, et ne l'utilise que le surlignage/couleur comme signal de bonne réponse.",
+    "- Certains QCM affichent d'abord une liste NUMÉROTÉE d'items (1, 2, 3…) puis des propositions LETTRÉES qui combinent ces numéros (ex: A. '1+2', B. '3+4'). Dans ce cas: garde la liste numérotée dans stem (à la suite de l'énoncé), et mets dans choices le texte EXACT de chaque combinaison lettrée (ex: '1+2', '3+4') sans l'expliciter ni la reformuler.",
     "- model_answer: réponse attendue pour qroc, sinon null.",
-    "- explanation: correction/justification si présente, sinon null. Renvoie du HTML si la source contient de la mise en forme: conserve <strong>, <em>, <u>, listes <ul>/<ol>/<li>, titres <h3>/<h4>, tableaux <table><tr><td>…</td></tr></table>, images <img src=\"…\"> (recopie l'URL exacte, ne l'invente pas). Ne renvoie PAS de balises <html>, <body>, <script>, <style>, ni d'attributs onclick.",
+    "- explanation: correction/justification si présente, sinon null. Si la zone de correction n'affiche qu'un texte de remplacement générique sans contenu réel (ex: 'Corrigé type') et rien d'autre après, c'est qu'il n'y a pas d'explication: explanation = null, ne recopie jamais ce texte de remplacement. Renvoie du HTML si la source contient de la mise en forme: conserve <strong>, <em>, <u>, listes <ul>/<ol>/<li>, titres <h3>/<h4>, tableaux <table><tr><td>…</td></tr></table>, images <img src=\"…\"> (recopie l'URL exacte, ne l'invente pas). Ne renvoie PAS de balises <html>, <body>, <script>, <style>, ni d'attributs onclick.",
     "- MISE EN FORME OBLIGATOIRE de explanation quand elle couvre plusieurs propositions: retourne une liste HTML <ul><li><strong>A.</strong> …</li><li><strong>B.</strong> …</li>…</ul>, une <li> par proposition, JAMAIS plusieurs justifications collées dans un même <p>. Si l'explication est unique et globale (pas ventilée par option), garde un simple <p>.",
     "- Dans stem et choices, N'UTILISE JAMAIS de gras: pas de <strong>, pas de <b>, pas de font-weight. Tu peux conserver <em>, <u>, tableaux <table>, images <img src=\"…\"> si présents dans la source. Ne modifie JAMAIS l'URL d'une <img>: recopie l'attribut src verbatim (y compris les URLs commençant par storage://).",
     "Pour les PDF et les images: encode l'italique, le souligné et les listes en HTML (<em>, <u>, <ul>/<ol>/<li>), mais jamais le gras dans stem/choices. Conserve la structure des tableaux avec <table><tr><td>. Ne produis aucune balise <html>, <body>, <script>, <style>, ni d'attribut onclick.",
     "- Si une image ou un tableau se trouve à l'intérieur d'un énoncé, d'une proposition ou d'une explication, place-le dans le champ correspondant (stem/choices[i]/explanation) au bon endroit.",
     "- course_hint: nom du cours/chapitre visible en en-tête ou dans un titre (ex: 'Cardiologie – Insuffisance cardiaque'), sinon null.",
-    "- year_hint: année d'études visible sur le document (ex: '3ème année', 'DCEM2', '4A'), sinon null.",
-    "- rotation_hint: période/rotation visible (ex: 'P1 2026', 'Résidanat 2024', 'Rotation 2'), sinon null.",
+    "- year_hint: année d'études visible sur le document (ex: '3ème année', 'DCEM2', '4A', 'PS 2020'), sinon null.",
+    "- rotation_hint: période/rotation visible (ex: 'P1 2026', 'Résidanat 2024', 'Rotation 2', 'Externat Alger'), sinon null.",
+    "Ces métadonnées (cours, rotation, année) apparaissent parfois sous forme de plusieurs petites étiquettes/badges courts en haut de la capture (ex: 'Pneumologie', 'Externat Alger', 'PS 2020') plutôt que dans une phrase — lis-les telles quelles et associe chacune au champ approprié (course_hint pour le cours/sujet, rotation_hint pour la session/cohorte, year_hint pour l'année).",
     detectCases
       ? "- case_stem: CAS CLINIQUES. Si plusieurs questions consécutives partagent un même énoncé/vignette clinique (observation d'un patient suivie de plusieurs questions), recopie ce texte commun À L'IDENTIQUE dans case_stem pour CHACUNE de ces questions, et NE le répète PAS dans leur champ stem (stem = uniquement la question elle-même). Pour une question isolée, case_stem = null."
       : "- case_stem: laisse TOUJOURS ce champ à null. Ne détecte ni ne regroupe aucun cas clinique, même si plusieurs questions semblent partager un énoncé commun — traite chaque question comme indépendante.",
@@ -904,10 +906,11 @@ export const extractRotationYearFromImage = createServerFn({ method: "POST" })
           type: "text",
           text:
             `Voici le haut d'une capture d'écran de question médicale (recadré). Il ` +
-            `contient normalement un en-tête indiquant la rotation et/ou l'année (ex: ` +
-            `"P3 2024", "Rotation 2 - 2023/2024", "R4"). Lis UNIQUEMENT cet en-tête. Si ` +
-            `l'en-tête n'est pas visible sur cette image, renvoie rotation et year à ` +
-            `null — ne devine jamais.`,
+            `contient normalement un en-tête indiquant la rotation et/ou l'année, sous ` +
+            `forme d'une ligne de texte (ex: "P3 2024", "Rotation 2 - 2023/2024", "R4") ` +
+            `ou de petites étiquettes/badges séparés (ex: "Externat Alger", "PS 2020"). ` +
+            `Lis UNIQUEMENT cet en-tête. Si l'en-tête n'est pas visible sur cette image, ` +
+            `renvoie rotation et year à null — ne devine jamais.`,
         },
         { type: "image", image: data.imageDataUrl },
       ],

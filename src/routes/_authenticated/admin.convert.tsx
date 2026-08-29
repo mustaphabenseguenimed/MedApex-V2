@@ -818,7 +818,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       const chunkJobs: PdfChunkJob[] = [];
       for (const [fileIndex, file] of files.entries()) {
         const bytes = await file.arrayBuffer();
-        const chunks = await splitPdfIntoPageChunks(bytes, 3);
+        const chunks = await splitPdfIntoPageChunks(bytes, 1);
         for (const chunk of chunks) {
           chunkJobs.push({
             dataUrl: chunk.dataUrl,
