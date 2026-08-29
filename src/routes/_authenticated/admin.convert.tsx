@@ -29,6 +29,7 @@ import {
   EyeOff,
   Trash2,
   Sparkles,
+  Plus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAdminPermissions } from "@/hooks/use-permissions";
@@ -546,9 +547,13 @@ type PageEntry = { rotation: string; year: string };
 function RotationYearDetector({
   entries,
   onEntriesChange,
+  rotationOptions,
+  yearOptions,
 }: {
   entries: PageEntry[] | null;
   onEntriesChange: (entries: PageEntry[] | null) => void;
+  rotationOptions: string[];
+  yearOptions: string[];
 }) {
   const { tr } = useI18n();
   const extractRotYear = useServerFn(extractRotationYearFromPdfChunk);
@@ -566,7 +571,7 @@ function RotationYearDetector({
     setProgress(null);
     try {
       const bytes = await file.arrayBuffer();
-      const chunks = await splitPdfIntoPageChunks(bytes, 5);
+      const chunks = await splitPdfIntoPageChunks(bytes, 1);
       if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
       const results = await withProgress(
         chunks.map(
@@ -600,6 +605,14 @@ function RotationYearDetector({
     onEntriesChange(entries ? entries.map((e, k) => (k === i ? { ...e, ...patch } : e)) : entries);
   };
 
+  const removeEntry = (i: number) => {
+    onEntriesChange((entries ?? []).filter((_, k) => k !== i));
+  };
+
+  const addEntry = () => {
+    onEntriesChange([...(entries ?? []), { rotation: "", year: "" }]);
+  };
+
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
@@ -607,6 +620,16 @@ function RotationYearDetector({
           "PDF où chaque page est une capture d'écran de cas clinique ou de question avec un en-tête rotation/année en haut.",
         )}
       </p>
+      <datalist id="step4-rotation-options">
+        {rotationOptions.map((r) => (
+          <option key={r} value={r} />
+        ))}
+      </datalist>
+      <datalist id="step4-year-options">
+        {yearOptions.map((y) => (
+          <option key={y} value={y} />
+        ))}
+      </datalist>
       <div className="flex flex-wrap items-center gap-2">
         <Input
           type="file"
@@ -627,27 +650,42 @@ function RotationYearDetector({
         </Button>
       </div>
       <StepProgress phase={busy ? tr("Lecture des en-têtes") : null} progress={progress} />
-      {entries && (
+      {entries && entries.length > 0 && (
         <div className="max-h-72 space-y-1.5 overflow-y-auto">
           {entries.map((e, i) => (
             <div key={i} className="flex items-center gap-2">
               <span className="w-8 shrink-0 text-xs text-muted-foreground">#{i + 1}</span>
               <Input
                 className="h-8"
+                list="step4-rotation-options"
                 placeholder={tr("Rotation")}
                 value={e.rotation}
                 onChange={(ev) => updateEntry(i, { rotation: ev.target.value })}
               />
               <Input
                 className="h-8"
+                list="step4-year-options"
                 placeholder={tr("Année")}
                 value={e.year}
                 onChange={(ev) => updateEntry(i, { year: ev.target.value })}
               />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2 text-destructive hover:text-destructive"
+                onClick={() => removeEntry(i)}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
             </div>
           ))}
         </div>
       )}
+      <Button type="button" variant="outline" size="sm" onClick={addEntry}>
+        <Plus className="mr-1.5 h-4 w-4" />
+        {tr("Ajouter une ligne")}
+      </Button>
     </div>
   );
 }
@@ -1062,13 +1100,15 @@ function yearImportOptions(anchorYear?: number | null): SearchableOption[] {
 function ImportReviewPanel({
   questions,
   onImported,
+  initialModuleId,
 }: {
   questions: ExtractedQ[];
   onImported: () => void;
+  initialModuleId?: string;
 }) {
   const { tr } = useI18n();
   const [modules, setModules] = useState<ImportModule[] | null>(null);
-  const [moduleId, setModuleId] = useState<string>("");
+  const [moduleId, setModuleId] = useState<string>(initialModuleId ?? "");
   const [rotations, setRotations] = useState<ImportRotation[]>([]);
   const [review, setReview] = useState<ImportableQuestion[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1905,6 +1945,40 @@ function Step4Panel() {
   const extractHtml = useServerFn(extractQuestionsFromHtmlChunk);
   const genDocx = useServerFn(generateQuestionsDocx);
 
+  const [modules, setModules] = useState<ImportModule[] | null>(null);
+  const [moduleId, setModuleId] = useState<string>("");
+  const [rotations, setRotations] = useState<ImportRotation[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("modules")
+        .select("id,title,year")
+        .order("year")
+        .order("sort_order");
+      setModules((data as ImportModule[]) ?? []);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!moduleId) {
+      setRotations([]);
+      return;
+    }
+    (async () => {
+      const { data } = await supabase
+        .from("module_rotations")
+        .select("id,label")
+        .eq("module_id", moduleId)
+        .order("sort_order");
+      setRotations((data as ImportRotation[]) ?? []);
+    })();
+  }, [moduleId]);
+
+  const selectedModule = modules?.find((m) => m.id === moduleId) ?? null;
+  const rotationLabels = rotations.map((r) => r.label);
+  const yearLabels = yearImportOptions(selectedModule?.year).map((o) => o.label);
+
   const [entries, setEntries] = useState<PageEntry[] | null>(null);
 
   const [srcFile, setSrcFile] = useState<File | null>(null);
@@ -2067,9 +2141,35 @@ function Step4Panel() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
+        <div>
+          <Label className="text-xs">{tr("Module")}</Label>
+          <Select value={moduleId} onValueChange={setModuleId}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder={tr("Choisir un module")} />
+            </SelectTrigger>
+            <SelectContent>
+              {(modules ?? []).map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.year} · {m.title}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {tr(
+              "Optionnel — suggère les rotations/années réelles du module ci-dessous et pré-remplit le module lors de l'import.",
+            )}
+          </p>
+        </div>
+
         <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
           <p className="text-sm font-medium">{tr("A. Captures PDF (rotation/année en en-tête)")}</p>
-          <RotationYearDetector entries={entries} onEntriesChange={setEntries} />
+          <RotationYearDetector
+            entries={entries}
+            onEntriesChange={setEntries}
+            rotationOptions={rotationLabels}
+            yearOptions={yearLabels}
+          />
         </div>
 
         <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
@@ -2183,7 +2283,11 @@ function Step4Panel() {
               </Button>
             </div>
             {showImport && (
-              <ImportReviewPanel questions={applied} onImported={() => setShowImport(false)} />
+              <ImportReviewPanel
+                questions={applied}
+                onImported={() => setShowImport(false)}
+                initialModuleId={moduleId}
+              />
             )}
             <QuestionsPreviewEditor items={applied} onChange={setApplied} showExplanation />
           </div>
