@@ -56,6 +56,7 @@ import { resolveImportAssignments, primaryRotation } from "@/lib/importMatch";
 import { importQuestionsToModule, type ImportableQuestion } from "@/lib/importQuestions";
 import { MultiSearchableSelect } from "@/components/ui/multi-searchable-select";
 import type { SearchableOption } from "@/components/ui/searchable-select";
+import { parseQuestionsJson } from "@/lib/structuredImport";
 
 export const Route = createFileRoute("/_authenticated/admin/convert")({
   head: () => ({ meta: [{ title: "Conversion — Admin" }] }),
@@ -538,28 +539,22 @@ function QuestionsPreviewEditor({
 
 type PageEntry = { rotation: string; year: string };
 
-/** Optional tool, usable from any step once questions are extracted: reads
- *  the rotation/année header shown at the top of each screenshot in a PDF
- *  (can be the same file the step already processed, or a different one),
- *  lets the admin review/correct the detected values, then applies them in
- *  bulk onto the extracted questions — one entry per group (a standalone
- *  question, or a cas clinique's shared block), in order. */
-function RotationYearScreenshots({
-  extracted,
-  onApply,
+/** Step-4-only tool: reads the rotation/année header shown at the top of
+ *  each screenshot in a PDF, letting the admin review/correct the detected
+ *  values before they're applied (by the caller) onto a separately parsed
+ *  question list. */
+function RotationYearDetector({
+  entries,
+  onEntriesChange,
 }: {
-  extracted: ExtractedQ[];
-  onApply: (items: ExtractedQ[]) => void;
+  entries: PageEntry[] | null;
+  onEntriesChange: (entries: PageEntry[] | null) => void;
 }) {
   const { tr } = useI18n();
   const extractRotYear = useServerFn(extractRotationYearFromPdfChunk);
-  const [open, setOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
-  const [entries, setEntries] = useState<PageEntry[] | null>(null);
-
-  const ranges = groupIndexRanges(extracted);
 
   const detect = async () => {
     if (!file) {
@@ -567,7 +562,7 @@ function RotationYearScreenshots({
       return;
     }
     setBusy(true);
-    setEntries(null);
+    onEntriesChange(null);
     setProgress(null);
     try {
       const bytes = await file.arrayBuffer();
@@ -591,7 +586,7 @@ function RotationYearScreenshots({
       const flat: PageEntry[] = results.flatMap((r) =>
         r.pages.map((p) => ({ rotation: p.rotation ?? "", year: p.year ?? "" })),
       );
-      setEntries(flat);
+      onEntriesChange(flat);
       toast.success(`${flat.length} ${tr("page(s) analysée(s)")}`);
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
@@ -602,47 +597,14 @@ function RotationYearScreenshots({
   };
 
   const updateEntry = (i: number, patch: Partial<PageEntry>) => {
-    setEntries((prev) => (prev ? prev.map((e, k) => (k === i ? { ...e, ...patch } : e)) : prev));
+    onEntriesChange(entries ? entries.map((e, k) => (k === i ? { ...e, ...patch } : e)) : entries);
   };
-
-  const apply = () => {
-    if (!entries || !entries.length) return;
-    const n = Math.min(entries.length, ranges.length);
-    const next = extracted.map((q) => ({ ...q }));
-    for (let g = 0; g < n; g++) {
-      const [start, end] = ranges[g];
-      const e = entries[g];
-      for (let k = start; k < end; k++) {
-        if (e.rotation.trim()) next[k].rotation_hint = e.rotation.trim();
-        if (e.year.trim()) next[k].year_hint = e.year.trim();
-      }
-    }
-    onApply(next);
-    toast.success(`${tr("Rotation/Année appliquées à")} ${n} ${tr("question(s)/cas.")}`);
-  };
-
-  if (!open) {
-    return (
-      <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
-        <UploadCloud className="mr-1.5 h-4 w-4" />
-        {tr("Détecter rotations/années depuis des captures (PDF)")}
-      </Button>
-    );
-  }
 
   return (
-    <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-medium">
-          {tr("Détecter rotations/années depuis des captures (PDF)")}
-        </p>
-        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
-          {tr("Fermer")}
-        </Button>
-      </div>
+    <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
         {tr(
-          "PDF où chaque page est une capture d'écran de question avec un en-tête rotation/année en haut. Peut être le même fichier que ci-dessus, ou un autre.",
+          "PDF où chaque page est une capture d'écran de cas clinique ou de question avec un en-tête rotation/année en haut.",
         )}
       </p>
       <div className="flex flex-wrap items-center gap-2">
@@ -652,7 +614,7 @@ function RotationYearScreenshots({
           className="max-w-xs"
           onChange={(e) => {
             setFile(e.target.files?.[0] ?? null);
-            setEntries(null);
+            onEntriesChange(null);
           }}
         />
         <Button type="button" variant="outline" onClick={detect} disabled={busy || !file}>
@@ -661,43 +623,29 @@ function RotationYearScreenshots({
           ) : (
             <FileDown className="mr-1.5 h-4 w-4" />
           )}
-          {tr("Détecter")}
+          {tr("Extraire")}
         </Button>
       </div>
       <StepProgress phase={busy ? tr("Lecture des en-têtes") : null} progress={progress} />
       {entries && (
-        <div className="space-y-2">
-          {entries.length !== ranges.length && (
-            <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-              {entries.length} {tr("page(s) détectée(s) pour")} {ranges.length}{" "}
-              {tr(
-                "question(s)/cas — vérifiez l'alignement ci-dessous avant d'appliquer (le surplus est ignoré).",
-              )}
-            </p>
-          )}
-          <div className="max-h-72 space-y-1.5 overflow-y-auto">
-            {entries.map((e, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <span className="w-8 shrink-0 text-xs text-muted-foreground">#{i + 1}</span>
-                <Input
-                  className="h-8"
-                  placeholder={tr("Rotation")}
-                  value={e.rotation}
-                  onChange={(ev) => updateEntry(i, { rotation: ev.target.value })}
-                />
-                <Input
-                  className="h-8"
-                  placeholder={tr("Année")}
-                  value={e.year}
-                  onChange={(ev) => updateEntry(i, { year: ev.target.value })}
-                />
-              </div>
-            ))}
-          </div>
-          <Button type="button" size="sm" onClick={apply}>
-            <Check className="mr-1.5 h-4 w-4" />
-            {tr("Appliquer aux questions")}
-          </Button>
+        <div className="max-h-72 space-y-1.5 overflow-y-auto">
+          {entries.map((e, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span className="w-8 shrink-0 text-xs text-muted-foreground">#{i + 1}</span>
+              <Input
+                className="h-8"
+                placeholder={tr("Rotation")}
+                value={e.rotation}
+                onChange={(ev) => updateEntry(i, { rotation: ev.target.value })}
+              />
+              <Input
+                className="h-8"
+                placeholder={tr("Année")}
+                value={e.year}
+                onChange={(ev) => updateEntry(i, { year: ev.target.value })}
+              />
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -753,6 +701,7 @@ function ConvertTabs() {
         <TabsTrigger value="step1">{tr("1. PDF → DOCX")}</TabsTrigger>
         <TabsTrigger value="step2">{tr("2. + Explications")}</TabsTrigger>
         <TabsTrigger value="step3">{tr("3. → JSON")}</TabsTrigger>
+        <TabsTrigger value="step4">{tr("4. Rotations/Années")}</TabsTrigger>
       </TabsList>
       <TabsContent value="step1" className="mt-6 data-[state=inactive]:hidden" forceMount>
         <Step1Panel
@@ -774,6 +723,9 @@ function ConvertTabs() {
       </TabsContent>
       <TabsContent value="step3" className="mt-6 data-[state=inactive]:hidden" forceMount>
         <Step3Panel incomingFile={step3Incoming} onConsumed={() => setStep3Incoming(null)} />
+      </TabsContent>
+      <TabsContent value="step4" className="mt-6 data-[state=inactive]:hidden" forceMount>
+        <Step4Panel />
       </TabsContent>
     </Tabs>
   );
@@ -1071,7 +1023,6 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
                 </ul>
               </div>
             )}
-            <RotationYearScreenshots extracted={extracted} onApply={setExtracted} />
             <QuestionsPreviewEditor
               items={extracted}
               onChange={setExtracted}
@@ -1684,7 +1635,6 @@ function Step2Panel({
         )}
         {extracted && busy !== "extract" && (
           <div className="space-y-3">
-            <RotationYearScreenshots extracted={extracted} onApply={setExtracted} />
             <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -1933,12 +1883,309 @@ function Step3Panel({
               <FileDown className="mr-1.5 h-4 w-4" />
               {tr("Générer le fichier .json")}
             </Button>
-            <RotationYearScreenshots extracted={extracted} onApply={setExtracted} />
             <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
             <Button onClick={generate} disabled={!extracted.length}>
               <FileDown className="mr-1.5 h-4 w-4" />
               {tr("Générer le fichier .json")}
             </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---- Step 4: apply rotations/années (from PDF screenshots) to a file -------
+
+type SrcKind = "docx" | "json";
+
+function Step4Panel() {
+  const { tr } = useI18n();
+  const prepDocx = useServerFn(prepareDocxChunks);
+  const extractHtml = useServerFn(extractQuestionsFromHtmlChunk);
+  const genDocx = useServerFn(generateQuestionsDocx);
+
+  const [entries, setEntries] = useState<PageEntry[] | null>(null);
+
+  const [srcFile, setSrcFile] = useState<File | null>(null);
+  const [srcKind, setSrcKind] = useState<SrcKind | null>(null);
+  const [allowNoAi, setAllowNoAi] = useState(false);
+  const { hint, setHint, saveHint } = useSavedHint("step4", tr);
+  const [uploading, setUploading] = useState(false);
+  const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
+  const [busy, setBusy] = useState<"extract" | "generate" | null>(null);
+  const [parsed, setParsed] = useState<ExtractedQ[] | null>(null);
+  const [phase, setPhase] = useState<string | null>(null);
+  const [progress, setProgress] = useState<Progress | null>(null);
+
+  const [applied, setApplied] = useState<ExtractedQ[] | null>(null);
+  const [showImport, setShowImport] = useState(false);
+
+  const ranges = parsed ? groupIndexRanges(parsed) : [];
+
+  const parseJsonFile = async (file: File) => {
+    setUploading(true);
+    setPrepared(null);
+    setParsed(null);
+    setApplied(null);
+    setShowImport(false);
+    try {
+      const text = await file.text();
+      const qs = parseQuestionsJson(text);
+      setParsed(qs);
+      toast.success(`${qs.length} ${tr("question(s) chargées depuis le JSON")}`);
+    } catch (e: any) {
+      toast.error(e?.message ?? tr("JSON invalide"));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const uploadDocx = async (file: File) => {
+    setUploading(true);
+    setPrepared(null);
+    setParsed(null);
+    setApplied(null);
+    setShowImport(false);
+    try {
+      const dataUrl = await readAsDataUrl(file);
+      const { chunks } = await withRetry(() =>
+        prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
+      );
+      if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
+      setPrepared(chunks);
+      toast.success(`${chunks.length} ${tr("lot(s) de questions chargé(s)")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const loadSource = () => {
+    if (!srcFile || !srcKind) {
+      toast.error(tr("Ajoutez un fichier .docx ou .json"));
+      return;
+    }
+    if (srcKind === "json") parseJsonFile(srcFile);
+    else uploadDocx(srcFile);
+  };
+
+  const extractDocx = async () => {
+    if (!prepared) return;
+    setBusy("extract");
+    setParsed(null);
+    setApplied(null);
+    setShowImport(false);
+    setProgress(null);
+    try {
+      setPhase(tr("Lecture des questions"));
+      const parts = await withProgress(
+        prepared.map(
+          (c) => () =>
+            withRetry(() =>
+              extractHtml({
+                data: {
+                  html: c.html,
+                  colorHint: c.colorHint,
+                  expected: c.expected,
+                  allowNoAi,
+                  detectCases: true,
+                  hint: hint.trim() || undefined,
+                },
+              }),
+            ).then((r) =>
+              (r.questions ?? []).map((q, i) => {
+                const ctx = c.contexts[i];
+                if (!ctx) return q;
+                return {
+                  ...q,
+                  year_hint: ctx.year_hint ?? q.year_hint,
+                  rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
+                  course_hint: ctx.course_hint ?? q.course_hint,
+                  case_stem: ctx.case_stem ?? q.case_stem,
+                };
+              }),
+            ),
+        ),
+        setProgress,
+      );
+      const qs: ExtractedQ[] = parts.flat();
+      if (!qs.length) throw new Error(tr("Aucune question détectée"));
+      setParsed(qs);
+      toast.success(`${qs.length} ${tr("question(s) extraites")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setBusy(null);
+      setPhase(null);
+      setProgress(null);
+    }
+  };
+
+  const apply = () => {
+    if (!entries || !entries.length || !parsed || !parsed.length) return;
+    const n = Math.min(entries.length, ranges.length);
+    const next = parsed.map((q) => ({ ...q }));
+    for (let g = 0; g < n; g++) {
+      const [start, end] = ranges[g];
+      const e = entries[g];
+      for (let k = start; k < end; k++) {
+        if (e.rotation.trim()) next[k].rotation_hint = e.rotation.trim();
+        if (e.year.trim()) next[k].year_hint = e.year.trim();
+      }
+    }
+    setApplied(next);
+    setShowImport(false);
+    toast.success(`${tr("Rotation/Année appliquées à")} ${n} ${tr("question(s)/cas.")}`);
+  };
+
+  const downloadApplied = async () => {
+    if (!applied || !applied.length) return;
+    if (srcKind === "json") {
+      downloadText(`questions_${Date.now()}.json`, JSON.stringify(toJsonObjects(applied), null, 2));
+      return;
+    }
+    setBusy("generate");
+    try {
+      const items = toDocxItems(applied);
+      const includeExplanations = applied.some((q) => !!q.explanation);
+      const { base64 } = await withRetry(() => genDocx({ data: { items, includeExplanations } }));
+      downloadBase64(`questions_${Date.now()}.docx`, base64, DOCX_MIME);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          {tr("Appliquer rotations/années depuis des captures PDF")}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+          <p className="text-sm font-medium">{tr("A. Captures PDF (rotation/année en en-tête)")}</p>
+          <RotationYearDetector entries={entries} onEntriesChange={setEntries} />
+        </div>
+
+        <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+          <p className="text-sm font-medium">{tr("B. Fichier de questions (.docx ou .json)")}</p>
+          <Input
+            type="file"
+            accept={`.docx,.json,${DOCX_MIME},application/json`}
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              setSrcFile(f);
+              setSrcKind(
+                f
+                  ? /\.json$/i.test(f.name) || f.type === "application/json"
+                    ? "json"
+                    : "docx"
+                  : null,
+              );
+              setPrepared(null);
+              setParsed(null);
+              setApplied(null);
+              setShowImport(false);
+            }}
+          />
+          {srcFile && <p className="mt-1 text-xs text-muted-foreground">{srcFile.name}</p>}
+          {srcKind === "docx" && (
+            <>
+              <div className="flex items-center gap-2">
+                <Switch id="step4-noai" checked={allowNoAi} onCheckedChange={setAllowNoAi} />
+                <Label htmlFor="step4-noai" className="cursor-pointer">
+                  {tr(
+                    "Mode sans IA pour la lecture du .docx (gratuit, un seul fichier par rotation)",
+                  )}
+                </Label>
+              </div>
+              <HintField
+                hint={hint}
+                setHint={setHint}
+                saveHint={saveHint}
+                placeholder={tr("ex: cardiologie, plusieurs rotations dans ce fichier")}
+              />
+            </>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={loadSource}
+              disabled={busy !== null || uploading || !srcFile}
+            >
+              {uploading ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : prepared || parsed ? (
+                <Check className="mr-1.5 h-4 w-4" />
+              ) : (
+                <UploadCloud className="mr-1.5 h-4 w-4" />
+              )}
+              {tr("Charger le fichier")}
+            </Button>
+            {srcKind === "docx" && (
+              <Button onClick={extractDocx} disabled={busy !== null || !prepared}>
+                {busy === "extract" ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                )}
+                {tr("Extraire les questions")}
+              </Button>
+            )}
+          </div>
+          <StepProgress phase={phase} progress={progress} />
+          {parsed && (
+            <p className="text-xs text-muted-foreground">
+              {parsed.length} {tr("question(s)/cas chargé(s) —")} {ranges.length} {tr("groupe(s).")}
+            </p>
+          )}
+        </div>
+
+        {entries && entries.length > 0 && parsed && parsed.length > 0 && (
+          <div className="space-y-2">
+            {entries.length !== ranges.length && (
+              <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                {entries.length} {tr("page(s) détectée(s) pour")} {ranges.length}{" "}
+                {tr(
+                  "question(s)/cas — vérifiez l'alignement ci-dessus avant d'appliquer (le surplus est ignoré).",
+                )}
+              </p>
+            )}
+            <Button onClick={apply}>
+              <Check className="mr-1.5 h-4 w-4" />
+              {tr("Appliquer")}
+            </Button>
+          </div>
+        )}
+
+        {applied && (
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+            <p className="text-sm font-medium">
+              {applied.length} {tr("question(s) prêtes")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={downloadApplied} disabled={busy === "generate"}>
+                {busy === "generate" ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                )}
+                {tr("Télécharger")}
+              </Button>
+              <Button variant="outline" onClick={() => setShowImport((v) => !v)}>
+                <UploadCloud className="mr-1.5 h-4 w-4" />
+                {tr("Importer directement")}
+              </Button>
+            </div>
+            {showImport && (
+              <ImportReviewPanel questions={applied} onImported={() => setShowImport(false)} />
+            )}
+            <QuestionsPreviewEditor items={applied} onChange={setApplied} showExplanation />
           </div>
         )}
       </CardContent>
