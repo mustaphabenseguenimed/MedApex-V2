@@ -1929,6 +1929,10 @@ function Step3Panel({
         )}
         {extracted && busy !== "extract" && (
           <div className="space-y-3">
+            <Button onClick={generate} disabled={!extracted.length}>
+              <FileDown className="mr-1.5 h-4 w-4" />
+              {tr("Générer le fichier .json")}
+            </Button>
             <RotationYearScreenshots extracted={extracted} onApply={setExtracted} />
             <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
             <Button onClick={generate} disabled={!extracted.length}>
