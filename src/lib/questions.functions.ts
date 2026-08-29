@@ -109,28 +109,34 @@ export function isTransient(error: unknown): boolean {
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function runExtract(
-  content: Array<
-    | { type: "text"; text: string }
-    | { type: "image"; image: string }
-    | { type: "file"; data: string; mediaType: string; filename?: string }
-  >,
-): Promise<ExtractResult> {
+type AiContent = Array<
+  | { type: "text"; text: string }
+  | { type: "image"; image: string }
+  | { type: "file"; data: string; mediaType: string; filename?: string }
+>;
+
+/** Shared model-fallback + retry loop: tries each configured model in turn,
+ *  retrying transient (429/5xx) errors with backoff and a schema miss once,
+ *  before moving to the next candidate. Used by every structured AI call in
+ *  this module so the retry policy lives in one place. */
+async function generateWithFallback<T>(
+  schema: z.ZodType<T>,
+  content: AiContent,
+  opts?: { temperature?: number; timeoutMs?: number; thinking?: boolean },
+): Promise<{ output: T; engine: ExtractEngine }> {
   const candidates = await getExtractModelCandidates();
   if (!candidates.length) throw new Error("Moteur IA indisponible.");
 
   const attempt = async (model: any) => {
     const { output } = await generateText({
       model,
-      output: Output.object({ schema: ExtractSchema }),
-      abortSignal: AbortSignal.timeout(150_000),
+      output: Output.object({ schema }),
+      abortSignal: AbortSignal.timeout(opts?.timeoutMs ?? 150_000),
       messages: [{ role: "user", content: content as any }],
-      temperature: 0.2,
-      providerOptions: {
-        google: {
-          thinkingConfig: { thinkingLevel: "high" },
-        },
-      },
+      temperature: opts?.temperature ?? 0.2,
+      ...(opts?.thinking
+        ? { providerOptions: { google: { thinkingConfig: { thinkingLevel: "high" } } } }
+        : {}),
     });
     return output;
   };
@@ -143,7 +149,7 @@ async function runExtract(
     for (let attemptNo = 0; attemptNo < 3; attemptNo++) {
       try {
         const out = await attempt(candidate.model);
-        return { ...normalizeQuestions(out), engine: candidate.engine };
+        return { output: out, engine: candidate.engine };
       } catch (error) {
         lastError = error;
         if (isTransient(error)) {
@@ -161,6 +167,15 @@ async function runExtract(
 
   // Never resolve with an empty list pretending success: the caller must know.
   throw friendlyGatewayError(lastError);
+}
+
+async function runExtract(content: AiContent): Promise<ExtractResult> {
+  const { output, engine } = await generateWithFallback(ExtractSchema, content, {
+    temperature: 0.2,
+    timeoutMs: 150_000,
+    thinking: true,
+  });
+  return { ...normalizeQuestions(output), engine };
 }
 
 /** Word shading fills that are effectively "no highlight". */
@@ -854,6 +869,67 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
       base64,
       data.expected ?? 0,
     );
+  });
+
+const RotationYearPage = z.object({
+  rotation: z.string().nullable().optional(),
+  year: z.string().nullable().optional(),
+});
+const RotationYearPageSchema = z.object({
+  pages: z.array(RotationYearPage),
+});
+
+/** Read only the rotation/année header shown at the top of each screenshot in
+ *  a PDF chunk (one page = one screenshot) — a narrower, cheaper task than
+ *  full question extraction, meant to be reviewed/corrected before being
+ *  applied in bulk onto already-extracted questions. */
+export const extractRotationYearFromPdfChunk = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) =>
+    z
+      .object({
+        pdfDataUrl: z
+          .string()
+          .max(15_000_000)
+          .regex(/^data:application\/pdf;base64,/i, "PDF invalide"),
+        pageCount: z.number().int().min(1).max(60),
+        filename: z.string().max(200).optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
+    const base64 = data.pdfDataUrl.replace(/^data:application\/pdf;base64,/i, "");
+    const { output } = await generateWithFallback(
+      RotationYearPageSchema,
+      [
+        {
+          type: "text",
+          text:
+            `Ce PDF contient exactement ${data.pageCount} page(s), chacune une capture ` +
+            `d'écran d'une question médicale. En haut de CHAQUE capture se trouve un ` +
+            `en-tête indiquant la rotation et/ou l'année (ex: "P3 2024", "Rotation 2 - ` +
+            `2023/2024", "R4"). Lis UNIQUEMENT cet en-tête pour chaque page — ne lis pas ` +
+            `le contenu de la question elle-même. Renvoie exactement ${data.pageCount} ` +
+            `entrées dans "pages", une par page et DANS L'ORDRE des pages (pages[0] = ` +
+            `page 1, pages[1] = page 2, etc.). Si une page n'a pas d'en-tête visible, mets ` +
+            `rotation et year à null pour cette page — ne devine jamais.`,
+        },
+        {
+          type: "file",
+          data: base64,
+          mediaType: "application/pdf",
+          filename: data.filename ?? "chunk.pdf",
+        },
+      ],
+      { temperature: 0.1, timeoutMs: 90_000 },
+    );
+    const pages = (output.pages ?? []).map((p) => ({
+      rotation: p.rotation?.trim() || null,
+      year: p.year?.trim() || null,
+    }));
+    while (pages.length < data.pageCount) pages.push({ rotation: null, year: null });
+    return { pages: pages.slice(0, data.pageCount) };
   });
 
 /** Health check for the admin panel: pings each built-in model candidate. */

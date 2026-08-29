@@ -39,6 +39,7 @@ import {
   prepareDocxChunks,
   extractQuestionsFromHtmlChunk,
   extractQuestionsFromPdfChunk,
+  extractRotationYearFromPdfChunk,
   type ExtractedQ,
 } from "@/lib/questions.functions";
 import {
@@ -70,6 +71,32 @@ function caseKey(q: { case_stem?: string | null }): string {
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** Index ranges [start, end) of each group in an extracted list — a
+ *  standalone question is its own group of 1, a cas clinique's consecutive
+ *  sub-questions (shared case_stem) form one group. Mirrors the grouping
+ *  QuestionsPreviewEditor/toJsonObjects already do visually. */
+function groupIndexRanges(items: ExtractedQ[]): [number, number][] {
+  const ranges: [number, number][] = [];
+  let i = 0;
+  while (i < items.length) {
+    const key = caseKey(items[i]);
+    let j = i + 1;
+    if (key) {
+      while (j < items.length && caseKey(items[j]) === key) j++;
+    }
+    ranges.push([i, j]);
+    i = j;
+  }
+  return ranges;
+}
+
+/** Parse a "p{start}-{end}" chunk label (from splitPdfIntoPageChunks) back
+ *  into a page count. */
+function pagesInChunkLabel(label: string): number {
+  const m = label.match(/^p(\d+)-(\d+)$/);
+  return m ? Number(m[2]) - Number(m[1]) + 1 : 1;
 }
 
 function stripHtml(html: string | null | undefined): string {
@@ -507,6 +534,176 @@ function QuestionsPreviewEditor({
   );
 }
 
+// ---- Rotation/Année detection from a PDF of screenshots ---------------------
+
+type PageEntry = { rotation: string; year: string };
+
+/** Optional tool, usable from any step once questions are extracted: reads
+ *  the rotation/année header shown at the top of each screenshot in a PDF
+ *  (can be the same file the step already processed, or a different one),
+ *  lets the admin review/correct the detected values, then applies them in
+ *  bulk onto the extracted questions — one entry per group (a standalone
+ *  question, or a cas clinique's shared block), in order. */
+function RotationYearScreenshots({
+  extracted,
+  onApply,
+}: {
+  extracted: ExtractedQ[];
+  onApply: (items: ExtractedQ[]) => void;
+}) {
+  const { tr } = useI18n();
+  const extractRotYear = useServerFn(extractRotationYearFromPdfChunk);
+  const [open, setOpen] = useState(false);
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [entries, setEntries] = useState<PageEntry[] | null>(null);
+
+  const ranges = groupIndexRanges(extracted);
+
+  const detect = async () => {
+    if (!file) {
+      toast.error(tr("Ajoutez un fichier PDF de captures"));
+      return;
+    }
+    setBusy(true);
+    setEntries(null);
+    setProgress(null);
+    try {
+      const bytes = await file.arrayBuffer();
+      const chunks = await splitPdfIntoPageChunks(bytes, 5);
+      if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
+      const results = await withProgress(
+        chunks.map(
+          (c) => () =>
+            withRetry(() =>
+              extractRotYear({
+                data: {
+                  pdfDataUrl: c.dataUrl,
+                  pageCount: pagesInChunkLabel(c.label),
+                  filename: `${file.name} (${c.label})`,
+                },
+              }),
+            ),
+        ),
+        setProgress,
+      );
+      const flat: PageEntry[] = results.flatMap((r) =>
+        r.pages.map((p) => ({ rotation: p.rotation ?? "", year: p.year ?? "" })),
+      );
+      setEntries(flat);
+      toast.success(`${flat.length} ${tr("page(s) analysée(s)")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setBusy(false);
+      setProgress(null);
+    }
+  };
+
+  const updateEntry = (i: number, patch: Partial<PageEntry>) => {
+    setEntries((prev) => (prev ? prev.map((e, k) => (k === i ? { ...e, ...patch } : e)) : prev));
+  };
+
+  const apply = () => {
+    if (!entries || !entries.length) return;
+    const n = Math.min(entries.length, ranges.length);
+    const next = extracted.map((q) => ({ ...q }));
+    for (let g = 0; g < n; g++) {
+      const [start, end] = ranges[g];
+      const e = entries[g];
+      for (let k = start; k < end; k++) {
+        if (e.rotation.trim()) next[k].rotation_hint = e.rotation.trim();
+        if (e.year.trim()) next[k].year_hint = e.year.trim();
+      }
+    }
+    onApply(next);
+    toast.success(`${tr("Rotation/Année appliquées à")} ${n} ${tr("question(s)/cas.")}`);
+  };
+
+  if (!open) {
+    return (
+      <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
+        <UploadCloud className="mr-1.5 h-4 w-4" />
+        {tr("Détecter rotations/années depuis des captures (PDF)")}
+      </Button>
+    );
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium">
+          {tr("Détecter rotations/années depuis des captures (PDF)")}
+        </p>
+        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
+          {tr("Fermer")}
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {tr(
+          "PDF où chaque page est une capture d'écran de question avec un en-tête rotation/année en haut. Peut être le même fichier que ci-dessus, ou un autre.",
+        )}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          type="file"
+          accept="application/pdf,.pdf"
+          className="max-w-xs"
+          onChange={(e) => {
+            setFile(e.target.files?.[0] ?? null);
+            setEntries(null);
+          }}
+        />
+        <Button type="button" variant="outline" onClick={detect} disabled={busy || !file}>
+          {busy ? (
+            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+          ) : (
+            <FileDown className="mr-1.5 h-4 w-4" />
+          )}
+          {tr("Détecter")}
+        </Button>
+      </div>
+      <StepProgress phase={busy ? tr("Lecture des en-têtes") : null} progress={progress} />
+      {entries && (
+        <div className="space-y-2">
+          {entries.length !== ranges.length && (
+            <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+              {entries.length} {tr("page(s) détectée(s) pour")} {ranges.length}{" "}
+              {tr(
+                "question(s)/cas — vérifiez l'alignement ci-dessous avant d'appliquer (le surplus est ignoré).",
+              )}
+            </p>
+          )}
+          <div className="max-h-72 space-y-1.5 overflow-y-auto">
+            {entries.map((e, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="w-8 shrink-0 text-xs text-muted-foreground">#{i + 1}</span>
+                <Input
+                  className="h-8"
+                  placeholder={tr("Rotation")}
+                  value={e.rotation}
+                  onChange={(ev) => updateEntry(i, { rotation: ev.target.value })}
+                />
+                <Input
+                  className="h-8"
+                  placeholder={tr("Année")}
+                  value={e.year}
+                  onChange={(ev) => updateEntry(i, { year: ev.target.value })}
+                />
+              </div>
+            ))}
+          </div>
+          <Button type="button" size="sm" onClick={apply}>
+            <Check className="mr-1.5 h-4 w-4" />
+            {tr("Appliquer aux questions")}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- page shell -------------------------------------------------------------
 
 function ConvertAdmin() {
@@ -874,6 +1071,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
                 </ul>
               </div>
             )}
+            <RotationYearScreenshots extracted={extracted} onApply={setExtracted} />
             <QuestionsPreviewEditor
               items={extracted}
               onChange={setExtracted}
@@ -1486,6 +1684,7 @@ function Step2Panel({
         )}
         {extracted && busy !== "extract" && (
           <div className="space-y-3">
+            <RotationYearScreenshots extracted={extracted} onApply={setExtracted} />
             <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -1730,6 +1929,7 @@ function Step3Panel({
         )}
         {extracted && busy !== "extract" && (
           <div className="space-y-3">
+            <RotationYearScreenshots extracted={extracted} onApply={setExtracted} />
             <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
             <Button onClick={generate} disabled={!extracted.length}>
               <FileDown className="mr-1.5 h-4 w-4" />
