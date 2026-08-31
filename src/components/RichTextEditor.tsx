@@ -236,9 +236,14 @@ export function RichTextEditor({
     const signed = data?.signedUrl;
     if (signed) signedToStorageRef.current.set(signed, storageRef);
     else if (signError) toast.error(signError.message);
+    // Always append at the very end of the explanation, after a blank
+    // line — not at the (possibly stale, after the async upload/native
+    // file picker) cursor position, which was landing images before
+    // already-typed text.
     editor
       ?.chain()
-      .focus()
+      .focus("end")
+      .insertContent("<p></p>")
       .setImage({ src: signed || storageRef })
       .run();
   };
