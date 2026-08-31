@@ -8,6 +8,7 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import { type ReactNode } from "react";
+import { Home } from "lucide-react";
 
 import appCss from "../styles.css?url";
 import { LanguageProvider } from "../lib/i18n";
@@ -16,6 +17,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { ConfirmDialogProvider } from "../hooks/use-confirm";
 import { Toaster } from "../components/ui/sonner";
 import { ContentProtection } from "../components/ContentProtection";
+import { Button } from "../components/ui/button";
 
 function NotFoundComponent() {
   return (
@@ -132,6 +134,13 @@ function RootComponent() {
             <ContentProtection />
             {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
             <Outlet />
+            <div className="fixed left-3 top-3 z-50 print:hidden">
+              <Button asChild size="icon" variant="secondary" className="rounded-full shadow-md">
+                <Link to="/dashboard" title="Dashboard" aria-label="Dashboard">
+                  <Home className="h-4 w-4" />
+                </Link>
+              </Button>
+            </div>
             <div className="fixed right-3 top-3 z-50 print:hidden">
               <ThemeToggle />
             </div>

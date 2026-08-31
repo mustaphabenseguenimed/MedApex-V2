@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RichText } from "@/components/RichText";
 import { cn } from "@/lib/utils";
+import { useActiveElapsed } from "@/lib/useActiveElapsed";
 import { toast } from "sonner";
 import { ArrowLeft, CheckCircle2, Eye, Timer, Trash2 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
@@ -65,19 +66,12 @@ function FlashcardsRunner() {
   const [idx, setIdx] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const [done, setDone] = useState({ again: 0, hard: 0, good: 0, easy: 0 });
-  const [sessionStart] = useState(() => Date.now());
-  const [now, setNow] = useState(() => Date.now());
+  const { seconds: elapsed } = useActiveElapsed();
 
   useEffect(() => {
     (async () => setCards((await load()) as Card[]))();
   }, [load]);
 
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  const elapsed = Math.max(0, Math.floor((now - sessionStart) / 1000));
   const current = cards[idx];
 
   async function grade(g: 1 | 3 | 4 | 5) {
