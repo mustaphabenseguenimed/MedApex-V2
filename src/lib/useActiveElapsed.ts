@@ -59,5 +59,12 @@ export function useActiveElapsed(enabled = true, initialSeconds = 0) {
     return Math.floor((activeMsRef.current + extra) / 1000);
   };
 
-  return { seconds, getSeconds };
+  /** Zero the counter out on purpose (an explicit "reset timer" action). */
+  const reset = () => {
+    activeMsRef.current = 0;
+    if (segmentStartRef.current != null) segmentStartRef.current = Date.now();
+    setSeconds(0);
+  };
+
+  return { seconds, getSeconds, reset };
 }
