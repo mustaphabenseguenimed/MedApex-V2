@@ -12,6 +12,7 @@ import {
 import { RichText, sanitizeExplanationHtml } from "@/components/RichText";
 import { markdownToHtml } from "@/lib/markdown";
 import { CaseRunner, type ReportReason } from "@/components/session/CaseRunner";
+import { useActiveElapsed } from "@/lib/useActiveElapsed";
 import {
   createFlashcard,
   createFlashcardsFromSession,
@@ -273,10 +274,14 @@ function QcmRunner() {
     const elapsed = Math.floor((now - new Date(session.started_at).getTime()) / 1000);
     return Math.max(0, session.time_limit_seconds - elapsed);
   }, [session, now]);
-  const elapsed = useMemo(() => {
-    if (!session?.started_at) return null;
-    return Math.max(0, Math.floor((now - new Date(session.started_at).getTime()) / 1000));
-  }, [session, now]);
+  // Practice mode only: pauses while the tab isn't visible/focused, so the
+  // displayed timer (and the duration_seconds saved on finish) reflect
+  // actual engaged time rather than wall-clock time. Exam mode keeps its
+  // wall-clock countdown above — a timed exam shouldn't pause on tab-switch.
+  const { seconds: activeElapsed, getSeconds: getActiveElapsedSeconds } = useActiveElapsed(
+    !!session && !reviewing && !isExam,
+  );
+  const elapsed = session?.started_at ? activeElapsed : null;
 
   // Effective total = choice-graded + qroc + sub-questions (case vignettes themselves are informational)
   const gradableQuestions = useMemo(
@@ -403,7 +408,11 @@ function QcmRunner() {
     if (finishedRef.current) return;
     finishedRef.current = true;
     const total = gradableQuestions.length;
-    const duration = Math.floor((Date.now() - new Date(session.started_at).getTime()) / 1000);
+    // Exam mode: wall-clock duration (tied to the enforced time limit).
+    // Practice mode: active-engaged time only (paused while tab hidden/unfocused).
+    const duration = isExam
+      ? Math.floor((Date.now() - new Date(session.started_at).getTime()) / 1000)
+      : getActiveElapsedSeconds();
     const { error } = await supabase
       .from("qcm_sessions")
       .update({
