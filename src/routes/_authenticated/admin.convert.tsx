@@ -156,7 +156,10 @@ function toJsonObjects(qs: ExtractedQ[]): unknown[] {
           stem: stripHtml(g.stem),
           choices: g.choices ? g.choices.map((c) => stripHtml(c)) : null,
           correct_indices: g.correct_indices ?? null,
-          explanation: g.explanation ? stripHtml(g.explanation) : null,
+          // Keep explanation as HTML (not stripped) so images survive the
+          // JSON round trip — structuredImport.ts already passes an
+          // already-HTML explanation through untouched on the way back in.
+          explanation: g.explanation || null,
         })),
       });
     } else {
@@ -168,7 +171,7 @@ function toJsonObjects(qs: ExtractedQ[]): unknown[] {
         stem: stripHtml(q.stem),
         choices: q.choices ? q.choices.map((c) => stripHtml(c)) : null,
         correct_indices: q.correct_indices ?? null,
-        explanation: q.explanation ? stripHtml(q.explanation) : null,
+        explanation: q.explanation || null,
       });
       i++;
     }

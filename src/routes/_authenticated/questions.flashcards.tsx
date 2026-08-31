@@ -5,8 +5,10 @@ import { listDueFlashcards, reviewFlashcard, deleteFlashcard } from "@/lib/flash
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { RichText } from "@/components/RichText";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { ArrowLeft, Eye, Timer, Trash2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Eye, Timer, Trash2 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { AnyScopeGate } from "@/lib/scopes";
 
@@ -24,16 +26,38 @@ export const Route = createFileRoute("/_authenticated/questions/flashcards")({
   ),
 });
 
+type LinkedQuestion = {
+  id: string;
+  type: "qcm" | "qcs" | "qroc" | "cas_clinique";
+  stem: string;
+  choices: string[] | null;
+  correct_indices: number[] | null;
+  model_answer: string | null;
+  explanation: string | null;
+  polarity: "correct" | "incorrect";
+  parent_id: string | null;
+} | null;
+
 type Card = {
   id: string;
   front: string;
   back: string;
   question_id: string | null;
   tags: string[];
+  questions: LinkedQuestion;
+  case_stem: string | null;
 };
 
+/** Choice indices the reviewer should have picked, mirroring CaseRunner's targets(). */
+function targetIndices(q: LinkedQuestion): number[] {
+  if (!q) return [];
+  const correct = q.correct_indices ?? [];
+  if (q.polarity === "correct") return correct;
+  return (q.choices ?? []).map((_, i) => i).filter((i) => !correct.includes(i));
+}
+
 function FlashcardsRunner() {
-  const { t } = useI18n();
+  const { t, tr } = useI18n();
   const load = useServerFn(listDueFlashcards);
   const review = useServerFn(reviewFlashcard);
   const del = useServerFn(deleteFlashcard);
@@ -156,16 +180,91 @@ function FlashcardsRunner() {
         ) : (
           <>
             <Card>
-              <CardContent className="min-h-[220px] py-8 whitespace-pre-wrap text-lg">
-                {current.front}
+              <CardContent className="min-h-[220px] space-y-3 py-8">
+                {current.questions ? (
+                  <>
+                    {current.case_stem && (
+                      <div className="rounded-lg border border-primary/40 bg-muted/40 p-3">
+                        <RichText
+                          html={current.case_stem}
+                          className="prose prose-sm max-w-none text-sm dark:prose-invert"
+                        />
+                      </div>
+                    )}
+                    <RichText
+                      html={current.questions.stem}
+                      className="prose prose-sm max-w-none text-lg font-medium dark:prose-invert"
+                    />
+                    {(current.questions.type === "qcm" || current.questions.type === "qcs") &&
+                      current.questions.choices && (
+                        <div className="space-y-2 pt-1">
+                          {current.questions.choices.map((ch, j) => {
+                            const isTarget =
+                              revealed && targetIndices(current.questions).includes(j);
+                            return (
+                              <div
+                                key={j}
+                                className={cn(
+                                  "flex items-center gap-2.5 rounded-lg border px-3 py-2 text-sm",
+                                  isTarget
+                                    ? "border-emerald-500/60 bg-emerald-500/10"
+                                    : "border-border",
+                                )}
+                              >
+                                <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-border text-[11px] font-bold">
+                                  {String.fromCharCode(65 + j)}
+                                </span>
+                                <span className="flex-1">{ch}</span>
+                                {isTarget && (
+                                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                  </>
+                ) : (
+                  <div className="whitespace-pre-wrap text-lg">{current.front}</div>
+                )}
               </CardContent>
             </Card>
             {revealed ? (
               <>
                 <Card className="border-primary/40 bg-accent/30">
-                  <CardContent className="py-6 whitespace-pre-wrap text-sm">
-                    {current.back || (
-                      <span className="text-muted-foreground italic">{t("no_answer_saved")}</span>
+                  <CardContent className="space-y-2 py-6 text-sm">
+                    {current.questions ? (
+                      <>
+                        {current.questions.type === "qroc" && current.questions.model_answer && (
+                          <div>
+                            <span className="font-medium">{tr("Réponse attendue : ")}</span>
+                            <span className="whitespace-pre-wrap">
+                              {current.questions.model_answer}
+                            </span>
+                          </div>
+                        )}
+                        {current.questions.explanation ? (
+                          <RichText
+                            autoColor
+                            html={current.questions.explanation}
+                            className="prose prose-sm max-w-none dark:prose-invert"
+                          />
+                        ) : (
+                          !current.questions.model_answer && (
+                            <span className="italic text-muted-foreground">
+                              {t("no_answer_saved")}
+                            </span>
+                          )
+                        )}
+                      </>
+                    ) : (
+                      <div className="whitespace-pre-wrap">
+                        {current.back || (
+                          <span className="text-muted-foreground italic">
+                            {t("no_answer_saved")}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </CardContent>
                 </Card>

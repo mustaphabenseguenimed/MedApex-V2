@@ -2,13 +2,44 @@ import { createFileRoute } from "@tanstack/react-router";
 import { createServerOnlyFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
-import {
-  contentTypeFor,
-  safeJoin,
-  verifyModuleFileToken,
-} from "@/lib/moduleFile.server";
+import { contentTypeFor, safeJoin, verifyModuleFileToken } from "@/lib/moduleFile.server";
 
 type MfParams = { token: string; _splat?: string };
+
+// Same deterrent as src/components/ContentProtection.tsx, but self-contained:
+// this HTML is rendered inside a sandboxed iframe with no allow-same-origin,
+// so the parent page's JS/CSS can never reach in — the only way to protect
+// this content is to inject the guard directly into the served bytes.
+// allow-scripts is already granted, so the script runs fine inside the
+// iframe's own (opaque-origin) document.
+const CONTENT_PROTECTION_SNIPPET = `
+<style>
+  html, body { -webkit-user-select: none; user-select: none; }
+  input, textarea, [contenteditable="true"] { -webkit-user-select: text; user-select: text; }
+</style>
+<script>
+(function () {
+  function allowed(t) {
+    return t instanceof Element && !!t.closest('input, textarea, [contenteditable="true"]');
+  }
+  document.addEventListener("contextmenu", function (e) { if (!allowed(e.target)) e.preventDefault(); });
+  document.addEventListener("copy", function (e) { if (!allowed(e.target)) e.preventDefault(); });
+  document.addEventListener("cut", function (e) { if (!allowed(e.target)) e.preventDefault(); });
+  document.addEventListener("dragstart", function (e) {
+    if (e.target instanceof HTMLImageElement && !allowed(e.target)) e.preventDefault();
+  });
+  document.addEventListener("keydown", function (e) {
+    var mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === "s" || e.key === "S" || e.key === "p" || e.key === "P")) e.preventDefault();
+  });
+})();
+</script>`;
+
+function injectContentProtection(html: string): string {
+  return /<\/body>/i.test(html)
+    ? html.replace(/<\/body>/i, `${CONTENT_PROTECTION_SNIPPET}</body>`)
+    : html + CONTENT_PROTECTION_SNIPPET;
+}
 
 // createServerOnlyFn marks this closure as server-only. TanStack Start's
 // import-protection plugin recognizes this boundary and allows the
@@ -30,15 +61,16 @@ const handler = createServerOnlyFn(async ({ params }: { params: MfParams }) => {
     auth: { persistSession: false, autoRefreshToken: false, storage: undefined },
   });
 
-  const { data, error } = await admin.storage
-    .from("module-files")
-    .download(objectPath);
+  const { data, error } = await admin.storage.from("module-files").download(objectPath);
   if (error || !data) return new Response("Not found", { status: 404 });
 
   const buf = await data.arrayBuffer();
   const ct = contentTypeFor(objectPath);
   const isHtml = ct.startsWith("text/html");
-  return new Response(buf, {
+  const body: BodyInit = isHtml
+    ? injectContentProtection(new TextDecoder("utf-8").decode(buf))
+    : buf;
+  return new Response(body, {
     status: 200,
     headers: {
       "Content-Type": ct,
