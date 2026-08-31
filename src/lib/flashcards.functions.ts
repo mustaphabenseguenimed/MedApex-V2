@@ -29,7 +29,8 @@ export const listDueFlashcards = createServerFn({ method: "GET" })
     const { data, error } = await supabase
       .from("flashcards")
       .select(
-        "id, front, back, question_id, module_id, tags, due_at, ease, interval_days, repetitions, lapses",
+        "id, front, back, question_id, module_id, tags, due_at, ease, interval_days, repetitions, lapses, " +
+          "questions(id, type, stem, choices, correct_indices, model_answer, explanation, polarity, parent_id)",
       )
       .eq("user_id", userId)
       .eq("suspended", false)
@@ -37,7 +38,29 @@ export const listDueFlashcards = createServerFn({ method: "GET" })
       .order("due_at", { ascending: true })
       .limit(200);
     if (error) throw new Error(error.message);
-    return data ?? [];
+    const rows = data ?? [];
+
+    // For cas-clinique sub-questions, fetch the shared parent vignette so
+    // the reviewer has the same context they'd see in the live session.
+    const parentIds = Array.from(
+      new Set(
+        rows
+          .map((r: any) => r.questions?.parent_id as string | null | undefined)
+          .filter((id): id is string => !!id),
+      ),
+    );
+    let parentStems = new Map<string, string>();
+    if (parentIds.length > 0) {
+      const { data: parents } = await supabase
+        .from("questions")
+        .select("id, stem")
+        .in("id", parentIds);
+      parentStems = new Map((parents ?? []).map((p: any) => [p.id, p.stem]));
+    }
+    return rows.map((r: any) => ({
+      ...r,
+      case_stem: r.questions?.parent_id ? (parentStems.get(r.questions.parent_id) ?? null) : null,
+    }));
   });
 
 export const countFlashcards = createServerFn({ method: "GET" })
