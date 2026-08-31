@@ -15,6 +15,7 @@ import { ThemeProvider, themeInitScript } from "../lib/theme";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { ConfirmDialogProvider } from "../hooks/use-confirm";
 import { Toaster } from "../components/ui/sonner";
+import { ContentProtection } from "../components/ContentProtection";
 
 function NotFoundComponent() {
   return (
@@ -128,6 +129,7 @@ function RootComponent() {
       <ThemeProvider>
         <LanguageProvider>
           <ConfirmDialogProvider>
+            <ContentProtection />
             {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
             <Outlet />
             <div className="fixed right-3 top-3 z-50 print:hidden">
