@@ -55,14 +55,12 @@ import {
   Pause,
   Play,
   LogOut,
+  RotateCcw,
 } from "lucide-react";
 import { ModuleScopeGate } from "@/lib/scopes";
 import { useI18n } from "@/lib/i18n";
 
 export const Route = createFileRoute("/_authenticated/modules/$moduleId/qcm/$sessionId")({
-  validateSearch: (search: Record<string, unknown>): { keepTimer?: boolean } => ({
-    keepTimer: search.keepTimer === true || search.keepTimer === "true" ? true : undefined,
-  }),
   component: QcmRunnerGate,
 });
 
@@ -201,7 +199,6 @@ function SessionStatsCard({
 function QcmRunner() {
   const { tr } = useI18n();
   const { moduleId, sessionId } = Route.useParams();
-  const { keepTimer } = Route.useSearch();
   const grade = useServerFn(gradeQrocAnswer);
   const flag = useServerFn(toggleFlag);
   const saveNote = useServerFn(upsertNote);
@@ -338,11 +335,16 @@ function QcmRunner() {
   // timer (and the duration_seconds saved on finish/quit) reflect actual
   // engaged time rather than wall-clock time. Exam mode keeps its
   // wall-clock countdown above — a timed exam shouldn't pause on tab-switch.
-  // `?keepTimer=1` (set by the "resume, keep timer" link in history) seeds
-  // the counter from the session's previously-saved duration instead of 0.
-  const { seconds: activeElapsed, getSeconds: getActiveElapsedSeconds } = useActiveElapsed(
+  // Always seeded from the session's previously-saved duration, so resuming
+  // from history never silently restarts the clock — use the explicit
+  // "Réinitialiser" button below to zero it out on purpose.
+  const {
+    seconds: activeElapsed,
+    getSeconds: getActiveElapsedSeconds,
+    reset: resetActiveElapsed,
+  } = useActiveElapsed(
     !!session && !reviewing && !isExam && !paused && !quitting,
-    keepTimer ? (session?.duration_seconds ?? 0) : 0,
+    session?.duration_seconds ?? 0,
   );
   const elapsed = session?.started_at ? activeElapsed : null;
 
@@ -399,6 +401,18 @@ function QcmRunner() {
         .eq("id", session.id)
         .then(() => {});
     }
+  };
+
+  const resetTimer = () => {
+    resetActiveElapsed();
+    if (session && session.mode !== "exam") {
+      supabase
+        .from("qcm_sessions")
+        .update({ duration_seconds: 0 })
+        .eq("id", session.id)
+        .then(() => {});
+    }
+    toast.success(tr("Chrono réinitialisé"));
   };
 
   // Steps: a clinical case (vignette + its sub-questions) is a single step.
@@ -739,6 +753,16 @@ function QcmRunner() {
                     title={paused ? tr("Reprendre") : tr("Mettre en pause")}
                   >
                     {paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+                  </Button>
+                )}
+                {!isExam && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={resetTimer}
+                    title={tr("Réinitialiser le chrono")}
+                  >
+                    <RotateCcw className="h-4 w-4" />
                   </Button>
                 )}
                 <Button size="sm" variant="ghost" onClick={quit} title={tr("Quitter")}>

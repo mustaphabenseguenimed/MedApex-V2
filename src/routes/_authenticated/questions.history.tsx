@@ -13,7 +13,6 @@ import {
   Play,
   RotateCcw,
   Search,
-  Timer,
   Trash2,
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
@@ -348,16 +347,6 @@ function HistoryPage() {
                                             <Play className="h-3.5 w-3.5" />
                                             {tr("Reprendre")}
                                           </span>
-                                        </Link>
-                                        <Link
-                                          to="/modules/$moduleId/qcm/$sessionId"
-                                          params={{ moduleId: s.module_id, sessionId: s.id }}
-                                          search={{ keepTimer: true }}
-                                          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                                          title={tr("Reprendre en gardant le chrono")}
-                                          aria-label={tr("Reprendre en gardant le chrono")}
-                                        >
-                                          <Timer className="h-4 w-4" />
                                         </Link>
                                         <button
                                           type="button"
