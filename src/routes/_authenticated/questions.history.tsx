@@ -13,6 +13,7 @@ import {
   Play,
   RotateCcw,
   Search,
+  Timer,
   Trash2,
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
@@ -244,80 +245,120 @@ function HistoryPage() {
                                   const done = s.finished_at != null;
                                   const progress =
                                     ids.length > 0 ? Math.round((answered / ids.length) * 100) : 0;
-                                  return (
-                                    <Link
-                                      key={`${modId}-${s.id}`}
-                                      to="/modules/$moduleId/qcm/$sessionId"
-                                      params={{ moduleId: s.module_id, sessionId: s.id }}
-                                      className="flex items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
-                                    >
-                                      <div>
-                                        <div className="font-medium">
-                                          {s.title ?? mods[s.module_id] ?? t("module")}
-                                        </div>
-                                        <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-1.5">
-                                          <span>{new Date(s.started_at).toLocaleString()}</span>
-                                          {s.mode && (
-                                            <Badge variant="outline" className="text-[10px]">
-                                              {s.mode === "exam" ? t("exam") : t("training")}
-                                            </Badge>
-                                          )}
-                                          {!done && (
-                                            <Badge className="text-[10px]">
-                                              {t("in_progress")}
-                                            </Badge>
-                                          )}
-                                          {multi && (
-                                            <Badge variant="outline" className="text-[10px]">
-                                              {s.module_ids!.length} {tr("modules")}
-                                            </Badge>
-                                          )}
-                                          {s.duration_seconds != null && (
-                                            <span>
-                                              · {Math.round(s.duration_seconds / 60)} {t("min")}
-                                            </span>
-                                          )}
-                                        </div>
-                                        {!done && ids.length > 0 && (
-                                          <div className="mt-1.5 sm:hidden">
-                                            <Progress value={progress} className="h-1.5 w-40" />
-                                            <div className="mt-1 text-[10px] text-muted-foreground">
-                                              {answered}/{ids.length} {tr("répondues")}
-                                            </div>
-                                          </div>
+                                  const infoBlock = (
+                                    <div>
+                                      <div className="font-medium">
+                                        {s.title ?? mods[s.module_id] ?? t("module")}
+                                      </div>
+                                      <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-1.5">
+                                        <span>{new Date(s.started_at).toLocaleString()}</span>
+                                        {s.mode && (
+                                          <Badge variant="outline" className="text-[10px]">
+                                            {s.mode === "exam" ? t("exam") : t("training")}
+                                          </Badge>
+                                        )}
+                                        {!done && (
+                                          <Badge className="text-[10px]">{t("in_progress")}</Badge>
+                                        )}
+                                        {multi && (
+                                          <Badge variant="outline" className="text-[10px]">
+                                            {s.module_ids!.length} {tr("modules")}
+                                          </Badge>
+                                        )}
+                                        {s.duration_seconds != null && (
+                                          <span>
+                                            · {Math.round(s.duration_seconds / 60)} {t("min")}
+                                          </span>
                                         )}
                                       </div>
-                                      <div className="flex items-center gap-3 text-right">
-                                        {!done && (
-                                          <div className="hidden w-32 sm:block">
-                                            <Progress value={progress} className="h-1.5" />
-                                            <div className="mt-1 text-[10px] text-muted-foreground">
-                                              {answered}/{ids.length} {tr("répondues")}
-                                            </div>
+                                      {!done && ids.length > 0 && (
+                                        <div className="mt-1.5 sm:hidden">
+                                          <Progress value={progress} className="h-1.5 w-40" />
+                                          <div className="mt-1 text-[10px] text-muted-foreground">
+                                            {answered}/{ids.length} {tr("répondues")}
                                           </div>
-                                        )}
-                                        <div>
-                                          {done && s.score != null ? (
-                                            <>
-                                              <div className="font-semibold">
-                                                {Math.round(Number(s.score) * 10) / 10}/{s.total}
-                                              </div>
-                                              {pct != null && (
-                                                <div className="text-xs text-muted-foreground">
-                                                  {pct}%
-                                                </div>
-                                              )}
-                                            </>
-                                          ) : (
-                                            <span className="inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
-                                              <Play className="h-3.5 w-3.5" />
-                                              {tr("Reprendre")}
-                                            </span>
-                                          )}
                                         </div>
-                                        {done && (
+                                      )}
+                                    </div>
+                                  );
+                                  const progressBlock = !done && (
+                                    <div className="hidden w-32 sm:block">
+                                      <Progress value={progress} className="h-1.5" />
+                                      <div className="mt-1 text-[10px] text-muted-foreground">
+                                        {answered}/{ids.length} {tr("répondues")}
+                                      </div>
+                                    </div>
+                                  );
+                                  if (done) {
+                                    return (
+                                      <Link
+                                        key={`${modId}-${s.id}`}
+                                        to="/modules/$moduleId/qcm/$sessionId"
+                                        params={{ moduleId: s.module_id, sessionId: s.id }}
+                                        className="flex items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
+                                      >
+                                        {infoBlock}
+                                        <div className="flex items-center gap-3 text-right">
+                                          <div>
+                                            {s.score != null && (
+                                              <>
+                                                <div className="font-semibold">
+                                                  {Math.round(Number(s.score) * 10) / 10}/{s.total}
+                                                </div>
+                                                {pct != null && (
+                                                  <div className="text-xs text-muted-foreground">
+                                                    {pct}%
+                                                  </div>
+                                                )}
+                                              </>
+                                            )}
+                                          </div>
                                           <RotateCcw className="h-4 w-4 text-muted-foreground" />
-                                        )}
+                                          <button
+                                            type="button"
+                                            onClick={(e) => deleteSession(s.id, e)}
+                                            className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                            aria-label={tr("Supprimer")}
+                                          >
+                                            <Trash2 className="h-4 w-4" />
+                                          </button>
+                                        </div>
+                                      </Link>
+                                    );
+                                  }
+                                  return (
+                                    <div
+                                      key={`${modId}-${s.id}`}
+                                      className="flex items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
+                                    >
+                                      <Link
+                                        to="/modules/$moduleId/qcm/$sessionId"
+                                        params={{ moduleId: s.module_id, sessionId: s.id }}
+                                        className="min-w-0 flex-1"
+                                      >
+                                        {infoBlock}
+                                      </Link>
+                                      <div className="flex items-center gap-3 text-right">
+                                        {progressBlock}
+                                        <Link
+                                          to="/modules/$moduleId/qcm/$sessionId"
+                                          params={{ moduleId: s.module_id, sessionId: s.id }}
+                                        >
+                                          <span className="inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/20">
+                                            <Play className="h-3.5 w-3.5" />
+                                            {tr("Reprendre")}
+                                          </span>
+                                        </Link>
+                                        <Link
+                                          to="/modules/$moduleId/qcm/$sessionId"
+                                          params={{ moduleId: s.module_id, sessionId: s.id }}
+                                          search={{ keepTimer: true }}
+                                          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                                          title={tr("Reprendre en gardant le chrono")}
+                                          aria-label={tr("Reprendre en gardant le chrono")}
+                                        >
+                                          <Timer className="h-4 w-4" />
+                                        </Link>
                                         <button
                                           type="button"
                                           onClick={(e) => deleteSession(s.id, e)}
@@ -327,7 +368,7 @@ function HistoryPage() {
                                           <Trash2 className="h-4 w-4" />
                                         </button>
                                       </div>
-                                    </Link>
+                                    </div>
                                   );
                                 })}
                               </div>

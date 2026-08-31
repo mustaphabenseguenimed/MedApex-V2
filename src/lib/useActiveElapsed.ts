@@ -5,14 +5,26 @@ import { useEffect, useRef, useState } from "react";
  * the window focused — pauses while the user switches tabs/apps or
  * minimizes the window, so a "session timer" reflects actual engaged time
  * rather than wall-clock time.
+ *
+ * `enabled` also doubles as a manual pause switch: toggling it off freezes
+ * the count without losing it, toggling it back on resumes from where it
+ * left off. `initialSeconds` seeds the counter once, the first time it
+ * becomes enabled — used to carry a previously-persisted duration forward
+ * when resuming a session.
  */
-export function useActiveElapsed(enabled = true) {
-  const [seconds, setSeconds] = useState(0);
-  const activeMsRef = useRef(0);
+export function useActiveElapsed(enabled = true, initialSeconds = 0) {
+  const [seconds, setSeconds] = useState(initialSeconds);
+  const activeMsRef = useRef(initialSeconds * 1000);
   const segmentStartRef = useRef<number | null>(null);
+  const seededRef = useRef(false);
 
   useEffect(() => {
     if (!enabled) return;
+    if (!seededRef.current) {
+      seededRef.current = true;
+      activeMsRef.current = initialSeconds * 1000;
+      setSeconds(initialSeconds);
+    }
     const isActiveNow = () => document.visibilityState === "visible" && document.hasFocus();
     const pause = () => {
       if (segmentStartRef.current != null) {
@@ -39,6 +51,7 @@ export function useActiveElapsed(enabled = true) {
       window.removeEventListener("focus", resume);
       clearInterval(tick);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
   const getSeconds = () => {
