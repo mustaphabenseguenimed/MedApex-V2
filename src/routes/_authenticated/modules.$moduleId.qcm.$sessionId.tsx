@@ -52,11 +52,17 @@ import {
   Layers,
   AlertTriangle,
   Search,
+  Pause,
+  Play,
+  LogOut,
 } from "lucide-react";
 import { ModuleScopeGate } from "@/lib/scopes";
 import { useI18n } from "@/lib/i18n";
 
 export const Route = createFileRoute("/_authenticated/modules/$moduleId/qcm/$sessionId")({
+  validateSearch: (search: Record<string, unknown>): { keepTimer?: boolean } => ({
+    keepTimer: search.keepTimer === true || search.keepTimer === "true" ? true : undefined,
+  }),
   component: QcmRunnerGate,
 });
 
@@ -107,6 +113,7 @@ type Session = {
   time_limit_seconds: number | null;
   started_at: string;
   module_id: string;
+  duration_seconds: number | null;
 };
 
 function sameSet(a: number[], b: number[]) {
@@ -143,9 +150,58 @@ function answerTextFor(q: Question, tr: (s: string) => string): string {
   return q.explanation || tr("(réponse non définie)");
 }
 
+function SessionStatsCard({
+  score,
+  total,
+  answered,
+  elapsedSeconds,
+  tr,
+}: {
+  score: number;
+  total: number;
+  answered: number;
+  elapsedSeconds: number;
+  tr: (s: string) => string;
+}) {
+  const pct = total > 0 ? Math.round((score / total) * 100) : 0;
+  const sec = Math.max(0, elapsedSeconds);
+  return (
+    <Card className="border-primary/30 bg-primary/5">
+      <CardHeader>
+        <CardTitle className="text-base">{tr("Statistiques de la session")}</CardTitle>
+      </CardHeader>
+      <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="text-center">
+          <div className="text-2xl font-bold">
+            {Math.round(score * 10) / 10}/{total}
+          </div>
+          <div className="text-xs text-muted-foreground">{tr("Score")}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-2xl font-bold">{pct}%</div>
+          <div className="text-xs text-muted-foreground">{tr("Réussite")}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-2xl font-bold">
+            {answered}/{total}
+          </div>
+          <div className="text-xs text-muted-foreground">{tr("Répondues")}</div>
+        </div>
+        <div className="text-center">
+          <div className="font-mono text-2xl font-bold">
+            {Math.floor(sec / 60)}:{String(sec % 60).padStart(2, "0")}
+          </div>
+          <div className="text-xs text-muted-foreground">{tr("Temps")}</div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function QcmRunner() {
   const { tr } = useI18n();
   const { moduleId, sessionId } = Route.useParams();
+  const { keepTimer } = Route.useSearch();
   const grade = useServerFn(gradeQrocAnswer);
   const flag = useServerFn(toggleFlag);
   const saveNote = useServerFn(upsertNote);
@@ -171,6 +227,9 @@ function QcmRunner() {
   const [askingId, setAskingId] = useState<string | null>(null);
   const [reportReason, setReportReason] = useState<ReportReason>("missing_rotation");
   const [reportDetails, setReportDetails] = useState("");
+  const [paused, setPaused] = useState(false);
+  const [quitting, setQuitting] = useState(false);
+  const [finalDuration, setFinalDuration] = useState<number | null>(null);
   const finishedRef = useRef(false);
 
   useEffect(() => {
@@ -178,7 +237,7 @@ function QcmRunner() {
       const { data: s } = await supabase
         .from("qcm_sessions")
         .select(
-          "id,question_ids,answers,grades,score,total,finished_at,mode,time_limit_seconds,started_at,module_id",
+          "id,question_ids,answers,grades,score,total,finished_at,mode,time_limit_seconds,started_at,module_id,duration_seconds",
         )
         .eq("id", sessionId)
         .maybeSingle();
@@ -274,20 +333,73 @@ function QcmRunner() {
     const elapsed = Math.floor((now - new Date(session.started_at).getTime()) / 1000);
     return Math.max(0, session.time_limit_seconds - elapsed);
   }, [session, now]);
-  // Practice mode only: pauses while the tab isn't visible/focused, so the
-  // displayed timer (and the duration_seconds saved on finish) reflect
-  // actual engaged time rather than wall-clock time. Exam mode keeps its
+  // Practice mode only: pauses while the tab isn't visible/focused, is
+  // manually paused, or the quit-stats screen is open — so the displayed
+  // timer (and the duration_seconds saved on finish/quit) reflect actual
+  // engaged time rather than wall-clock time. Exam mode keeps its
   // wall-clock countdown above — a timed exam shouldn't pause on tab-switch.
+  // `?keepTimer=1` (set by the "resume, keep timer" link in history) seeds
+  // the counter from the session's previously-saved duration instead of 0.
   const { seconds: activeElapsed, getSeconds: getActiveElapsedSeconds } = useActiveElapsed(
-    !!session && !reviewing && !isExam,
+    !!session && !reviewing && !isExam && !paused && !quitting,
+    keepTimer ? (session?.duration_seconds ?? 0) : 0,
   );
   const elapsed = session?.started_at ? activeElapsed : null;
+
+  // Best-effort: persist how far the timer got if the user navigates away
+  // (back button, closing the tab, an internal Link) without hitting
+  // "Quitter" — so a later resume always has an up-to-date duration to
+  // build on, and the history list's "· X min" reflects real progress.
+  const sessionForUnmountRef = useRef(session);
+  useEffect(() => {
+    sessionForUnmountRef.current = session;
+  }, [session]);
+  const reviewingRef = useRef(reviewing);
+  useEffect(() => {
+    reviewingRef.current = reviewing;
+  }, [reviewing]);
+  useEffect(() => {
+    return () => {
+      const s = sessionForUnmountRef.current;
+      if (!s || reviewingRef.current || s.mode === "exam") return;
+      const dur = getActiveElapsedSeconds();
+      if (dur > 0) {
+        supabase
+          .from("qcm_sessions")
+          .update({ duration_seconds: dur })
+          .eq("id", s.id)
+          .then(() => {});
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Effective total = choice-graded + qroc + sub-questions (case vignettes themselves are informational)
   const gradableQuestions = useMemo(
     () => questions.filter((q) => q.type !== "cas_clinique"),
     [questions],
   );
+  const answeredCount = useMemo(
+    () =>
+      gradableQuestions.filter((qq) => {
+        if (qq.type === "qroc") return grades[qq.id] != null;
+        const a = answers[qq.id];
+        return Array.isArray(a) ? a.length > 0 : a != null;
+      }).length,
+    [gradableQuestions, answers, grades],
+  );
+
+  const quit = () => {
+    setQuitting(true);
+    if (session && session.mode !== "exam") {
+      const dur = getActiveElapsedSeconds();
+      supabase
+        .from("qcm_sessions")
+        .update({ duration_seconds: dur })
+        .eq("id", session.id)
+        .then(() => {});
+    }
+  };
 
   // Steps: a clinical case (vignette + its sub-questions) is a single step.
   type Step =
@@ -413,6 +525,7 @@ function QcmRunner() {
     const duration = isExam
       ? Math.floor((Date.now() - new Date(session.started_at).getTime()) / 1000)
       : getActiveElapsedSeconds();
+    setFinalDuration(duration);
     const { error } = await supabase
       .from("qcm_sessions")
       .update({
@@ -616,6 +729,23 @@ function QcmRunner() {
             {reviewing
               ? `${Math.round(currentScore * 10) / 10} / ${gradableQuestions.length}`
               : `${idx + 1} / ${steps.length}`}
+            {!reviewing && !quitting && (
+              <div className="flex items-center gap-1">
+                {!isExam && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setPaused((p) => !p)}
+                    title={paused ? tr("Reprendre") : tr("Mettre en pause")}
+                  >
+                    {paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" onClick={quit} title={tr("Quitter")}>
+                  <LogOut className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -631,6 +761,13 @@ function QcmRunner() {
 
         {reviewing ? (
           <>
+            <SessionStatsCard
+              score={currentScore}
+              total={gradableQuestions.length}
+              answered={answeredCount}
+              elapsedSeconds={finalDuration ?? 0}
+              tr={tr}
+            />
             <ReviewList
               questions={questions}
               answers={answers}
@@ -650,6 +787,35 @@ function QcmRunner() {
               </Button>
             </div>
           </>
+        ) : quitting ? (
+          <>
+            <SessionStatsCard
+              score={currentScore}
+              total={gradableQuestions.length}
+              answered={answeredCount}
+              elapsedSeconds={activeElapsed}
+              tr={tr}
+            />
+            <div className="flex justify-center gap-2 pt-2">
+              <Button variant="outline" onClick={() => setQuitting(false)}>
+                {tr("Continuer la session")}
+              </Button>
+              <Button variant="destructive" asChild>
+                <Link to="/questions/history">{tr("Quitter")}</Link>
+              </Button>
+            </div>
+          </>
+        ) : paused ? (
+          <Card className="mx-auto max-w-sm">
+            <CardContent className="space-y-4 py-12 text-center">
+              <Pause className="mx-auto h-8 w-8 text-muted-foreground" />
+              <p className="text-muted-foreground">{tr("Session en pause")}</p>
+              <Button onClick={() => setPaused(false)}>
+                <Play className="mr-1.5 h-4 w-4" />
+                {tr("Reprendre")}
+              </Button>
+            </CardContent>
+          </Card>
         ) : step?.kind === "case" ? (
           <>
             <CaseRunner
