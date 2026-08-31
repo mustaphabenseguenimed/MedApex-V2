@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { ArrowLeft, Eye, Trash2 } from "lucide-react";
+import { ArrowLeft, Eye, Timer, Trash2 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { AnyScopeGate } from "@/lib/scopes";
 
@@ -17,7 +17,11 @@ export const Route = createFileRoute("/_authenticated/questions/flashcards")({
       { name: "description", content: "Review your flashcards with spaced repetition." },
     ],
   }),
-  component: () => <AnyScopeGate scope="sessions"><FlashcardsRunner /></AnyScopeGate>,
+  component: () => (
+    <AnyScopeGate scope="sessions">
+      <FlashcardsRunner />
+    </AnyScopeGate>
+  ),
 });
 
 type Card = {
@@ -37,9 +41,19 @@ function FlashcardsRunner() {
   const [idx, setIdx] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const [done, setDone] = useState({ again: 0, hard: 0, good: 0, easy: 0 });
+  const [sessionStart] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
 
-  useEffect(() => { (async () => setCards((await load()) as Card[]))(); }, [load]);
+  useEffect(() => {
+    (async () => setCards((await load()) as Card[]))();
+  }, [load]);
 
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const elapsed = Math.max(0, Math.floor((now - sessionStart) / 1000));
   const current = cards[idx];
 
   async function grade(g: 1 | 3 | 4 | 5) {
@@ -62,25 +76,50 @@ function FlashcardsRunner() {
       setCards((cs) => cs.filter((c) => c.id !== current.id));
       setRevealed(false);
       toast.success(t("card_deleted"));
-    } catch (e: any) { toast.error(e.message ?? t("error")); }
+    } catch (e: any) {
+      toast.error(e.message ?? t("error"));
+    }
   }
 
   if (cards.length > 0 && idx >= cards.length) {
     return (
       <div className="min-h-screen bg-background">
-        <header className="border-b"><div className="mx-auto max-w-2xl px-6 py-4">
-          <Button asChild variant="ghost" size="sm"><Link to="/questions"><ArrowLeft className="mr-1.5 h-4 w-4" />{t("questions")}</Link></Button>
-        </div></header>
+        <header className="border-b">
+          <div className="mx-auto max-w-2xl px-6 py-4">
+            <Button asChild variant="ghost" size="sm">
+              <Link to="/questions">
+                <ArrowLeft className="mr-1.5 h-4 w-4" />
+                {t("questions")}
+              </Link>
+            </Button>
+          </div>
+        </header>
         <main className="mx-auto max-w-2xl px-6 py-16 text-center space-y-4">
           <h1 className="text-3xl font-semibold">{t("session_done")}</h1>
-          <p className="text-muted-foreground">{t("bravo")} — {cards.length} {t("cards_reviewed")}.</p>
-          <div className="flex justify-center gap-3 text-sm">
-            <Badge variant="destructive">{t("again")}: {done.again}</Badge>
-            <Badge variant="outline">{t("hard")}: {done.hard}</Badge>
-            <Badge variant="secondary">{t("good")}: {done.good}</Badge>
-            <Badge>{t("easy")}: {done.easy}</Badge>
+          <p className="text-muted-foreground">
+            {t("bravo")} — {cards.length} {t("cards_reviewed")}.
+          </p>
+          <div className="mx-auto flex w-fit items-center gap-1.5 rounded-full border px-3 py-1 font-mono text-sm text-muted-foreground">
+            <Timer className="h-4 w-4" />
+            {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
           </div>
-          <Button asChild><Link to="/questions">{t("back")}</Link></Button>
+          <div className="flex justify-center gap-3 text-sm">
+            <Badge variant="destructive">
+              {t("again")}: {done.again}
+            </Badge>
+            <Badge variant="outline">
+              {t("hard")}: {done.hard}
+            </Badge>
+            <Badge variant="secondary">
+              {t("good")}: {done.good}
+            </Badge>
+            <Badge>
+              {t("easy")}: {done.easy}
+            </Badge>
+          </div>
+          <Button asChild>
+            <Link to="/questions">{t("back")}</Link>
+          </Button>
         </main>
       </div>
     );
@@ -88,15 +127,32 @@ function FlashcardsRunner() {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b"><div className="mx-auto max-w-2xl px-6 py-4 flex items-center justify-between">
-        <Button asChild variant="ghost" size="sm"><Link to="/questions"><ArrowLeft className="mr-1.5 h-4 w-4" />{t("questions")}</Link></Button>
-        <div className="text-sm text-muted-foreground">{Math.min(idx + 1, cards.length)} / {cards.length}</div>
-      </div></header>
+      <header className="border-b">
+        <div className="mx-auto max-w-2xl px-6 py-4 flex items-center justify-between">
+          <Button asChild variant="ghost" size="sm">
+            <Link to="/questions">
+              <ArrowLeft className="mr-1.5 h-4 w-4" />
+              {t("questions")}
+            </Link>
+          </Button>
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <div className="flex items-center gap-1.5 font-mono">
+              <Timer className="h-4 w-4" />
+              {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+            </div>
+            <div>
+              {Math.min(idx + 1, cards.length)} / {cards.length}
+            </div>
+          </div>
+        </div>
+      </header>
       <main className="mx-auto max-w-2xl px-6 py-10 space-y-4">
         {!current ? (
-          <Card><CardContent className="py-16 text-center text-muted-foreground">
-            {t("no_due_cards")}
-          </CardContent></Card>
+          <Card>
+            <CardContent className="py-16 text-center text-muted-foreground">
+              {t("no_due_cards")}
+            </CardContent>
+          </Card>
         ) : (
           <>
             <Card>
@@ -107,23 +163,42 @@ function FlashcardsRunner() {
             {revealed ? (
               <>
                 <Card className="border-primary/40 bg-accent/30">
-                  <CardContent className="py-6 whitespace-pre-wrap text-sm">{current.back || <span className="text-muted-foreground italic">{t("no_answer_saved")}</span>}</CardContent>
+                  <CardContent className="py-6 whitespace-pre-wrap text-sm">
+                    {current.back || (
+                      <span className="text-muted-foreground italic">{t("no_answer_saved")}</span>
+                    )}
+                  </CardContent>
                 </Card>
                 <div className="grid grid-cols-4 gap-2">
-                  <Button variant="destructive" onClick={() => grade(1)}>{t("again")}<span className="ml-1 text-xs opacity-70">&lt;1j</span></Button>
-                  <Button variant="outline" onClick={() => grade(3)}>{t("hard")}</Button>
-                  <Button variant="secondary" onClick={() => grade(4)}>{t("good")}</Button>
+                  <Button variant="destructive" onClick={() => grade(1)}>
+                    {t("again")}
+                    <span className="ml-1 text-xs opacity-70">&lt;1j</span>
+                  </Button>
+                  <Button variant="outline" onClick={() => grade(3)}>
+                    {t("hard")}
+                  </Button>
+                  <Button variant="secondary" onClick={() => grade(4)}>
+                    {t("good")}
+                  </Button>
                   <Button onClick={() => grade(5)}>{t("easy")}</Button>
                 </div>
                 <div className="flex justify-between pt-2">
                   {current.question_id ? (
                     <span className="text-xs text-muted-foreground">{t("from_question")}</span>
-                  ) : <span />}
-                  <Button size="sm" variant="ghost" onClick={removeCard}><Trash2 className="h-4 w-4 mr-1" />{t("delete")}</Button>
+                  ) : (
+                    <span />
+                  )}
+                  <Button size="sm" variant="ghost" onClick={removeCard}>
+                    <Trash2 className="h-4 w-4 mr-1" />
+                    {t("delete")}
+                  </Button>
                 </div>
               </>
             ) : (
-              <Button className="w-full" onClick={() => setRevealed(true)}><Eye className="mr-1.5 h-4 w-4" />{t("reveal")}</Button>
+              <Button className="w-full" onClick={() => setRevealed(true)}>
+                <Eye className="mr-1.5 h-4 w-4" />
+                {t("reveal")}
+              </Button>
             )}
           </>
         )}

@@ -260,9 +260,9 @@ function QcmRunner() {
     })();
   }, [sessionId]);
 
-  // Timer tick (exam mode)
+  // Timer tick — keeps the header clock (elapsed or exam countdown) live.
   useEffect(() => {
-    if (!session || reviewing || session.mode !== "exam" || !session.time_limit_seconds) return;
+    if (!session || reviewing) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [session, reviewing]);
@@ -272,6 +272,10 @@ function QcmRunner() {
     if (!session?.time_limit_seconds || !session.started_at) return null;
     const elapsed = Math.floor((now - new Date(session.started_at).getTime()) / 1000);
     return Math.max(0, session.time_limit_seconds - elapsed);
+  }, [session, now]);
+  const elapsed = useMemo(() => {
+    if (!session?.started_at) return null;
+    return Math.max(0, Math.floor((now - new Date(session.started_at).getTime()) / 1000));
   }, [session, now]);
 
   // Effective total = choice-graded + qroc + sub-questions (case vignettes themselves are informational)
@@ -592,6 +596,12 @@ function QcmRunner() {
               >
                 <Timer className="h-4 w-4" />
                 {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, "0")}
+              </div>
+            )}
+            {!isExam && elapsed != null && !reviewing && (
+              <div className="flex items-center gap-1.5 font-mono">
+                <Timer className="h-4 w-4" />
+                {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
               </div>
             )}
             {reviewing

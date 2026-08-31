@@ -107,12 +107,14 @@
   --sidebar-border: oklch(0.2 0.03 260 / 10%);
   --sidebar-ring: oklch(0.62 0.14 200);
 
-  --gradient-hero: radial-gradient(1200px 700px at 75% -10%, oklch(0.72 0.2 330 / 0.18), transparent 60%),
-                   radial-gradient(900px 600px at -10% 110%, oklch(0.72 0.15 200 / 0.22), transparent 60%),
-                   linear-gradient(180deg, oklch(0.99 0.005 250), oklch(0.96 0.01 260));
+  --gradient-hero:
+    radial-gradient(1200px 700px at 75% -10%, oklch(0.72 0.2 330 / 0.18), transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, oklch(0.72 0.15 200 / 0.22), transparent 60%),
+    linear-gradient(180deg, oklch(0.99 0.005 250), oklch(0.96 0.01 260));
   --gradient-primary: linear-gradient(135deg, var(--primary), var(--primary-glow));
   --shadow-glow: 0 20px 60px -20px color-mix(in oklab, var(--primary) 55%, transparent);
-  --shadow-elegant: 0 10px 30px -12px oklch(0.2 0.03 260 / 0.18), 0 1px 0 0 oklch(1 0 0 / 0.6) inset;
+  --shadow-elegant:
+    0 10px 30px -12px oklch(0.2 0.03 260 / 0.18), 0 1px 0 0 oklch(1 0 0 / 0.6) inset;
 
   --chip-due: oklch(0.58 0.15 165);
   --chip-warn: oklch(0.62 0.15 70);
@@ -160,9 +162,10 @@
   --sidebar-border: oklch(1 0 0 / 8%);
   --sidebar-ring: oklch(0.78 0.15 200);
 
-  --gradient-hero: radial-gradient(1200px 700px at 75% -10%, oklch(0.6 0.24 330 / 0.45), transparent 60%),
-                   radial-gradient(900px 600px at -10% 110%, oklch(0.65 0.18 200 / 0.45), transparent 60%),
-                   linear-gradient(180deg, oklch(0.14 0.04 275), oklch(0.11 0.035 275));
+  --gradient-hero:
+    radial-gradient(1200px 700px at 75% -10%, oklch(0.6 0.24 330 / 0.45), transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, oklch(0.65 0.18 200 / 0.45), transparent 60%),
+    linear-gradient(180deg, oklch(0.14 0.04 275), oklch(0.11 0.035 275));
   --shadow-elegant: 0 10px 30px -12px oklch(0 0 0 / 0.55), 0 1px 0 0 oklch(1 0 0 / 0.04) inset;
 }
 
@@ -180,9 +183,27 @@
     text-rendering: optimizeLegibility;
   }
 
-  h1, h2, h3 {
+  h1,
+  h2,
+  h3 {
     font-family: var(--font-display);
     letter-spacing: -0.01em;
+  }
+
+  /* Copy/select deterrent, toggled by ContentProtection.tsx on every route
+   * except /admin. Off by default so admin content authoring is unaffected
+   * even before hydration. */
+  html.protect-content body {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  html.protect-content input,
+  html.protect-content textarea,
+  html.protect-content select,
+  html.protect-content [contenteditable="true"],
+  html.protect-content [data-allow-copy] {
+    -webkit-user-select: text;
+    user-select: text;
   }
 }
 
@@ -195,10 +216,13 @@
 }
 
 @utility surface-card {
-  background: linear-gradient(180deg,
-                color-mix(in oklab, var(--foreground) 3%, transparent),
-                color-mix(in oklab, var(--foreground) 1%, transparent)),
-              var(--card);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--foreground) 3%, transparent),
+      color-mix(in oklab, var(--foreground) 1%, transparent)
+    ),
+    var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-elegant);
@@ -220,7 +244,10 @@
 /* ---------- Motion utilities ---------- */
 
 @utility hover-glow {
-  transition: transform 0.25s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.3s ease,
+    border-color 0.3s ease;
   &:hover {
     transform: translateY(-2px);
     border-color: color-mix(in oklab, var(--primary) 45%, var(--border));
@@ -231,7 +258,10 @@
 }
 
 @utility press {
-  transition: transform 0.12s ease, filter 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    transform 0.12s ease,
+    filter 0.2s ease,
+    box-shadow 0.2s ease;
   &:active:not(:disabled) {
     transform: scale(0.97);
     filter: brightness(0.96);
@@ -239,13 +269,22 @@
 }
 
 @keyframes progress-shimmer {
-  0%   { background-position: -200% 0; }
-  100% { background-position:  200% 0; }
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
 }
 
 @keyframes glow-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 35%, transparent); }
-  50%      { box-shadow: 0 0 0 8px color-mix(in oklab, var(--primary) 0%, transparent); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 8px color-mix(in oklab, var(--primary) 0%, transparent);
+  }
 }
 
 @utility animate-glow-pulse {
@@ -257,8 +296,13 @@
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
   a[href] {
-    transition: transform 0.12s ease, filter 0.2s ease, box-shadow 0.2s ease,
-                background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+    transition:
+      transform 0.12s ease,
+      filter 0.2s ease,
+      box-shadow 0.2s ease,
+      background-color 0.2s ease,
+      color 0.2s ease,
+      border-color 0.2s ease;
   }
   button:not(:disabled):active,
   [role="button"]:not([aria-disabled="true"]):active {
@@ -267,7 +311,10 @@
 
   /* Cards: subtle lift + cyan/magenta glow on hover. */
   [data-slot="card"] {
-    transition: transform 0.25s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+    transition:
+      transform 0.25s ease,
+      box-shadow 0.3s ease,
+      border-color 0.3s ease;
   }
   a [data-slot="card"]:hover,
   button [data-slot="card"]:hover {
@@ -307,7 +354,8 @@
   /* Primary buttons get a soft cyan/magenta glow on hover. */
   button.bg-primary:hover:not(:disabled),
   [data-slot="button"].bg-primary:hover:not(:disabled) {
-    box-shadow: 0 10px 30px -12px color-mix(in oklab, var(--primary) 65%, transparent),
-                0 0 0 1px color-mix(in oklab, var(--primary-glow) 35%, transparent);
+    box-shadow:
+      0 10px 30px -12px color-mix(in oklab, var(--primary) 65%, transparent),
+      0 0 0 1px color-mix(in oklab, var(--primary-glow) 35%, transparent);
   }
 }
