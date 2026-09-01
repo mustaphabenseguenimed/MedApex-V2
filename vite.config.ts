@@ -12,6 +12,16 @@ export default defineConfig({
     tanstackStart(),
     nitro({
       preset: "vercel",
+      // The AI extraction calls in questions.functions.ts allow up to 150s
+      // per attempt (with retries), but Vercel's default function timeout
+      // (10-15s, unconfigured otherwise) was killing conversion-tool
+      // requests mid-chunk before they could finish. "max" resolves to
+      // whatever the account's plan actually allows.
+      vercel: {
+        functions: {
+          maxDuration: "max",
+        },
+      },
       // tslib is pulled in transitively by @supabase/functions-js, but
       // Nitro's dependency tracer was leaving it external instead of
       // bundling it, so the deployed function couldn't find it at runtime
