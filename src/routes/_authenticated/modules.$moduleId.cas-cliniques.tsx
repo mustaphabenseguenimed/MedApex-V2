@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Stethoscope, Play } from "lucide-react";
 import { toast } from "sonner";
 import { useI18n } from "@/lib/i18n";
-import { ModuleScopeGate } from "@/lib/scopes";
+import { ModuleScopeGate, useModuleColor, moduleBackgroundStyle } from "@/lib/scopes";
 
 export const Route = createFileRoute("/_authenticated/modules/$moduleId/cas-cliniques")({
   component: CasCliniquesGate,
@@ -16,7 +16,11 @@ export const Route = createFileRoute("/_authenticated/modules/$moduleId/cas-clin
 
 function CasCliniquesGate() {
   const { moduleId } = Route.useParams();
-  return <ModuleScopeGate moduleId={moduleId} scope="sessions"><CasCliniquesPage /></ModuleScopeGate>;
+  return (
+    <ModuleScopeGate moduleId={moduleId} scope="sessions">
+      <CasCliniquesPage />
+    </ModuleScopeGate>
+  );
 }
 
 type Module = { id: string; title: string; year: number };
@@ -29,10 +33,15 @@ function CasCliniquesPage() {
   const [mod, setMod] = useState<Module | null>(null);
   const [cases, setCases] = useState<Case[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  const moduleColor = useModuleColor();
 
   useEffect(() => {
     (async () => {
-      const { data: m } = await supabase.from("modules").select("id,title,year").eq("id", moduleId).maybeSingle();
+      const { data: m } = await supabase
+        .from("modules")
+        .select("id,title,year")
+        .eq("id", moduleId)
+        .maybeSingle();
       setMod(m as Module | null);
       const parents = await fetchAllRows<any>(() =>
         (supabase as any)
@@ -62,39 +71,68 @@ function CasCliniquesPage() {
     setBusy(caseId);
     try {
       const { data: u } = await supabase.auth.getUser();
-      if (!u.user) { toast.error(t("session_expired")); return; }
-      const { data, error } = await (supabase as any).from("qcm_sessions").insert({
-        user_id: u.user.id,
-        module_id: moduleId,
-        types: ["cas_clinique"],
-        question_ids: [caseId],
-        total: Math.max(1, subCount),
-        mode: "training",
-      }).select("id").single();
+      if (!u.user) {
+        toast.error(t("session_expired"));
+        return;
+      }
+      const { data, error } = await (supabase as any)
+        .from("qcm_sessions")
+        .insert({
+          user_id: u.user.id,
+          module_id: moduleId,
+          types: ["cas_clinique"],
+          question_ids: [caseId],
+          total: Math.max(1, subCount),
+          mode: "training",
+        })
+        .select("id")
+        .single();
       if (error) throw error;
-      navigate({ to: "/modules/$moduleId/qcm/$sessionId", params: { moduleId, sessionId: data.id } });
+      navigate({
+        to: "/modules/$moduleId/qcm/$sessionId",
+        params: { moduleId, sessionId: data.id },
+      });
     } catch (e: any) {
       toast.error(e?.message ?? t("error"));
-    } finally { setBusy(null); }
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b"><div className="mx-auto max-w-4xl px-6 py-4 flex items-center justify-between">
-        <Button asChild variant="ghost" size="sm"><Link to="/modules/$moduleId" params={{ moduleId }}><ArrowLeft className="mr-1.5 h-4 w-4" />{t("back_to_module")}</Link></Button>
-        {mod && <Badge variant="secondary">{t("year")} {mod.year}</Badge>}
-      </div></header>
+    <div className="min-h-screen" style={moduleBackgroundStyle(moduleColor)}>
+      <header className="border-b">
+        <div className="mx-auto max-w-4xl px-6 py-4 flex items-center justify-between">
+          <Button asChild variant="ghost" size="sm">
+            <Link to="/modules/$moduleId" params={{ moduleId }}>
+              <ArrowLeft className="mr-1.5 h-4 w-4" />
+              {t("back_to_module")}
+            </Link>
+          </Button>
+          {mod && (
+            <Badge variant="secondary">
+              {t("year")} {mod.year}
+            </Badge>
+          )}
+        </div>
+      </header>
       <main className="mx-auto max-w-4xl px-6 py-10">
         <div className="mb-8">
           <h1 className="text-3xl font-semibold tracking-tight flex items-center gap-2">
             <Stethoscope className="h-7 w-7 text-primary" />
             {t("clinical_cases")}
           </h1>
-          <p className="mt-2 text-muted-foreground">{mod?.title} · {t("clinical_cases_extra")}</p>
+          <p className="mt-2 text-muted-foreground">
+            {mod?.title} · {t("clinical_cases_extra")}
+          </p>
         </div>
 
         {cases.length === 0 ? (
-          <Card><CardContent className="py-12 text-center text-muted-foreground">{t("no_clinical_case")}</CardContent></Card>
+          <Card>
+            <CardContent className="py-12 text-center text-muted-foreground">
+              {t("no_clinical_case")}
+            </CardContent>
+          </Card>
         ) : (
           <div className="grid gap-3">
             {cases.map((c, i) => (
@@ -104,13 +142,22 @@ function CasCliniquesPage() {
                     {i + 1}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <CardTitle className="text-base line-clamp-3 whitespace-pre-wrap">{c.stem}</CardTitle>
+                    <CardTitle className="text-base line-clamp-3 whitespace-pre-wrap">
+                      {c.stem}
+                    </CardTitle>
                     <div className="mt-2 flex items-center gap-2">
-                      <Badge variant="outline" className="text-[10px]">{c.sub_count} {t("sub_questions")}</Badge>
+                      <Badge variant="outline" className="text-[10px]">
+                        {c.sub_count} {t("sub_questions")}
+                      </Badge>
                     </div>
                   </div>
-                  <Button size="sm" disabled={busy === c.id || c.sub_count === 0} onClick={() => startCase(c.id, c.sub_count)}>
-                    <Play className="mr-1.5 h-4 w-4" />{t("start_case")}
+                  <Button
+                    size="sm"
+                    disabled={busy === c.id || c.sub_count === 0}
+                    onClick={() => startCase(c.id, c.sub_count)}
+                  >
+                    <Play className="mr-1.5 h-4 w-4" />
+                    {t("start_case")}
                   </Button>
                 </CardHeader>
               </Card>

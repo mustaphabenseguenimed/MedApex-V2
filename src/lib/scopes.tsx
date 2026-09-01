@@ -1,10 +1,30 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Lock, ArrowLeft } from "lucide-react";
 import { useTr } from "@/lib/i18n";
+
+/** The current module's admin-set accent color (hex string, or null), made
+ *  available to every page nested under /modules/$moduleId so each can tint
+ *  its own background — set once in the route's ModuleGate layout. */
+const ModuleColorContext = createContext<string | null>(null);
+export const ModuleColorProvider = ModuleColorContext.Provider;
+export function useModuleColor(): string | null {
+  return useContext(ModuleColorContext);
+}
+
+/** A faint full-page tint of the module's color, falling back to the plain
+ *  theme background when the module has none set (same as the bg-background
+ *  class these pages used before). */
+export function moduleBackgroundStyle(color: string | null): { background: string } {
+  return {
+    background: color
+      ? `color-mix(in srgb, ${color} 6%, hsl(var(--background)))`
+      : "hsl(var(--background))",
+  };
+}
 
 export type AccessScope = "lessons" | "sessions" | "both";
 

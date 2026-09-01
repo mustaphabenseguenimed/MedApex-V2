@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, BookOpen, ListChecks, Sparkles, Stethoscope, Lock } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { useModuleScope } from "@/lib/scopes";
+import { useModuleScope, useModuleColor, moduleBackgroundStyle } from "@/lib/scopes";
 
 export const Route = createFileRoute("/_authenticated/modules/$moduleId/")({
   component: ModuleHome,
@@ -20,20 +20,36 @@ function ModuleHome() {
   const [mod, setMod] = useState<Module | null>(null);
   const lessons = useModuleScope(moduleId, "lessons");
   const sessions = useModuleScope(moduleId, "sessions");
+  const moduleColor = useModuleColor();
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from("modules").select("id,title,description,year").eq("id", moduleId).maybeSingle();
+      const { data } = await supabase
+        .from("modules")
+        .select("id,title,description,year")
+        .eq("id", moduleId)
+        .maybeSingle();
       setMod(data as Module | null);
     })();
   }, [moduleId]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b"><div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between">
-        <Button asChild variant="ghost" size="sm"><Link to="/dashboard"><ArrowLeft className="mr-1.5 h-4 w-4" />{t("modules_link")}</Link></Button>
-        {mod && <Badge variant="secondary">{t("year")} {mod.year}</Badge>}
-      </div></header>
+    <div className="min-h-screen" style={moduleBackgroundStyle(moduleColor)}>
+      <header className="border-b">
+        <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between">
+          <Button asChild variant="ghost" size="sm">
+            <Link to="/dashboard">
+              <ArrowLeft className="mr-1.5 h-4 w-4" />
+              {t("modules_link")}
+            </Link>
+          </Button>
+          {mod && (
+            <Badge variant="secondary">
+              {t("year")} {mod.year}
+            </Badge>
+          )}
+        </div>
+      </header>
       <main className="mx-auto max-w-5xl px-6 py-10">
         <div className="mb-8">
           <h1 className="text-3xl font-semibold tracking-tight">{mod?.title ?? "…"}</h1>
@@ -49,7 +65,12 @@ function ModuleHome() {
                 </div>
                 <div className="flex-1">
                   <CardTitle>{t("course")}</CardTitle>
-                  {lessons === "locked" && <Badge variant="outline" className="mt-1"><Lock className="h-3 w-3 mr-1" />{tr("Verrouillé")}</Badge>}
+                  {lessons === "locked" && (
+                    <Badge variant="outline" className="mt-1">
+                      <Lock className="h-3 w-3 mr-1" />
+                      {tr("Verrouillé")}
+                    </Badge>
+                  )}
                   <CardDescription className="mt-1">{t("course_desc")}</CardDescription>
                 </div>
               </CardHeader>
@@ -66,8 +87,16 @@ function ModuleHome() {
                   <ListChecks className="h-6 w-6" />
                 </div>
                 <div className="flex-1">
-                  <CardTitle className="flex items-center gap-2">{t("practice")}<Sparkles className="h-4 w-4 text-primary" /></CardTitle>
-                  {sessions === "locked" && <Badge variant="outline" className="mt-1"><Lock className="h-3 w-3 mr-1" />{tr("Verrouillé")}</Badge>}
+                  <CardTitle className="flex items-center gap-2">
+                    {t("practice")}
+                    <Sparkles className="h-4 w-4 text-primary" />
+                  </CardTitle>
+                  {sessions === "locked" && (
+                    <Badge variant="outline" className="mt-1">
+                      <Lock className="h-3 w-3 mr-1" />
+                      {tr("Verrouillé")}
+                    </Badge>
+                  )}
                   <CardDescription className="mt-1">{t("practice_desc")}</CardDescription>
                 </div>
               </CardHeader>
@@ -85,7 +114,12 @@ function ModuleHome() {
                 </div>
                 <div className="flex-1">
                   <CardTitle>{t("clinical_cases")}</CardTitle>
-                  {sessions === "locked" && <Badge variant="outline" className="mt-1"><Lock className="h-3 w-3 mr-1" />{tr("Verrouillé")}</Badge>}
+                  {sessions === "locked" && (
+                    <Badge variant="outline" className="mt-1">
+                      <Lock className="h-3 w-3 mr-1" />
+                      {tr("Verrouillé")}
+                    </Badge>
+                  )}
                   <CardDescription className="mt-1">{t("clinical_cases_desc")}</CardDescription>
                 </div>
               </CardHeader>
