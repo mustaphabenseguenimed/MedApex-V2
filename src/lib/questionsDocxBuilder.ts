@@ -17,13 +17,17 @@ export type DocxQuestionItem = {
 
 const LETTERS = "ABCDEFGH";
 
-/** Normalized grouping key — mirrors admin.index.tsx's caseKey so both
+/** Normalized, truncated grouping key — mirrors admin.convert.tsx's
+ *  caseKey (truncated prefix, not an exact match, so minor AI re-typing of
+ *  the same vignette across chunks doesn't break the grouping) so both
  *  agree on which questions share the same clinical-case vignette. */
 function caseKey(item: DocxQuestionItem): string {
   return (item.case_stem ?? "")
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .toLowerCase()
+    .slice(0, 80);
 }
 
 function stripHtml(html: string): string {

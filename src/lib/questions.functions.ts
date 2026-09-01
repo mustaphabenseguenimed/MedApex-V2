@@ -464,8 +464,8 @@ const INSTRUCTIONS = (hint?: string, detectCases = true, askTotalVisible = false
     "- Si une image ou un tableau se trouve à l'intérieur d'un énoncé, d'une proposition ou d'une explication, place-le dans le champ correspondant (stem/choices[i]/explanation) au bon endroit.",
     "- course_hint: nom du cours/chapitre visible en en-tête ou dans un titre (ex: 'Cardiologie – Insuffisance cardiaque'), sinon null.",
     "- year_hint: année d'études visible sur le document (ex: '3ème année', 'DCEM2', '4A', 'PS 2020'), sinon null.",
-    "- rotation_hint: période/rotation visible (ex: 'P1 2026', 'Résidanat 2024', 'Rotation 2', 'Externat Alger'), sinon null.",
-    "Ces métadonnées (cours, rotation, année) apparaissent parfois sous forme de plusieurs petites étiquettes/badges courts en haut de la capture (ex: 'Pneumologie', 'Externat Alger', 'PS 2020') plutôt que dans une phrase — lis-les telles quelles et associe chacune au champ approprié (course_hint pour le cours/sujet, rotation_hint pour la session/cohorte, year_hint pour l'année).",
+    "- rotation_hint: UNIQUEMENT un code de rotation/session (ex: 'P1', 'P3 2026', 'Résidanat 2024', 'Rotation 2', 'Rattrapage 2024'), sinon null. Ce n'est JAMAIS un nom d'institution, de ville ou de faculté (ex: 'Externat Alger', 'CHU Alger') ni un titre de cours/document — ce genre de texte va dans course_hint, pas rotation_hint, et si aucun champ ne convient, ignore-le simplement.",
+    "Ces métadonnées (cours, rotation, année) apparaissent parfois sous forme de plusieurs petites étiquettes/badges courts en haut de la capture (ex: 'Pneumologie', 'P3', 'PS 2020') plutôt que dans une phrase — lis-les telles quelles et associe chacune au champ approprié (course_hint pour le cours/sujet ou l'institution, rotation_hint UNIQUEMENT pour un vrai code de rotation/session, year_hint pour l'année).",
     detectCases
       ? "- case_stem: CAS CLINIQUES. Si plusieurs questions consécutives partagent un même énoncé/vignette clinique (observation d'un patient suivie de plusieurs questions), recopie ce texte commun À L'IDENTIQUE dans case_stem pour CHACUNE de ces questions, et NE le répète PAS dans leur champ stem (stem = uniquement la question elle-même). Pour une question isolée, case_stem = null."
       : "- case_stem: laisse TOUJOURS ce champ à null. Ne détecte ni ne regroupe aucun cas clinique, même si plusieurs questions semblent partager un énoncé commun — traite chaque question comme indépendante.",
@@ -473,7 +473,7 @@ const INSTRUCTIONS = (hint?: string, detectCases = true, askTotalVisible = false
       ? 'Si un paragraphe <p data-doc-intro="1">…</p> précède les questions, c\'est probablement une vignette clinique partagée par les questions de cet extrait (même sans étiquette "Cas clinique"): si c\'est bien le cas, recopie CE TEXTE À L\'IDENTIQUE (verbatim, sans le paraphraser) dans case_stem pour chaque question concernée, exactement comme pour un cas clinique explicite.'
       : "",
     'IMPORTANT couleurs: PRÉSERVE fidèlement les couleurs et surlignages (highlighter) présents dans la source. Encode-les en HTML: <span style="color:#RRGGBB">…</span> pour les couleurs de texte et <span style="background-color:#RRGGBB">…</span> pour les surlignages/highlighter. Si le fragment `colorHint` est fourni ci-dessous, applique ces styles exacts autour des fragments de texte listés.',
-    "Respecte l'ordre d'apparition des questions dans le document.",
+    "Respecte STRICTEMENT l'ordre d'apparition des questions dans le document. Si la page a une mise en page à plusieurs colonnes, lis la colonne de gauche EN ENTIER de haut en bas AVANT de passer à la colonne de droite — ne mélange jamais des questions de colonnes différentes ligne par ligne. Pour un document en arabe (texte de droite à gauche), l'ordre de lecture reste le même principe: suis l'ordre naturel de lecture de la langue du document, colonne par colonne, jamais ligne par ligne à travers plusieurs colonnes.",
     hint ? `Contexte fourni par l'admin: ${hint}` : "",
     "Ignore les éléments d'interface (boutons, menus, chrono, numéros de page). Ne rien inventer: si un champ n'est pas visible, mettre null.",
   ]
@@ -906,11 +906,22 @@ export const extractRotationYearFromImage = createServerFn({ method: "POST" })
           type: "text",
           text:
             `Voici le haut d'une capture d'écran de question médicale (recadré). Il ` +
-            `contient normalement un en-tête indiquant la rotation et/ou l'année, sous ` +
-            `forme d'une ligne de texte (ex: "P3 2024", "Rotation 2 - 2023/2024", "R4") ` +
-            `ou de petites étiquettes/badges séparés (ex: "Externat Alger", "PS 2020"). ` +
-            `Lis UNIQUEMENT cet en-tête. Si l'en-tête n'est pas visible sur cette image, ` +
-            `renvoie rotation et year à null — ne devine jamais.`,
+            `contient parfois un en-tête indiquant la rotation et/ou l'année.\n\n` +
+            `Une ROTATION valide est TOUJOURS un code court de la forme "P" ou "R" ou ` +
+            `"Pôle" suivi d'un chiffre 1 à 7 (ex: "P1", "P3", "R4", "Pôle 5"), ou une ` +
+            `mention de session ("Rattrapage", "Session normale", "EMD") — presque ` +
+            `toujours accompagnée d'une année à 4 chiffres (ex: "P3 2024").\n\n` +
+            `Ne renvoie JAMAIS comme rotation : un nom d'institution, de ville ou de ` +
+            `faculté (ex: "Externat Alger", "CHU Alger", "Faculté de médecine"), ni un ` +
+            `titre de cours/leçon ou de document (ex: "Pneumologie - Tuberculose ` +
+            `pulmonaire"), même si ce texte apparaît là où un en-tête serait attendu. ` +
+            `Ce n'est jamais une rotation, quelle que soit sa position sur la page.\n\n` +
+            `Exemple correct : en-tête "P3 2024" → rotation="P3", year="2024". ` +
+            `Exemple à REJETER : en-tête "Externat Alger" → ce n'est pas une rotation, ` +
+            `renvoie rotation=null (même si une année est visible par ailleurs).\n\n` +
+            `Lis UNIQUEMENT un véritable en-tête rotation/année. Si aucun code de ` +
+            `rotation valide n'est visible sur cette image, renvoie rotation à null — ` +
+            `ne devine jamais et ne recopie jamais un autre texte à la place.`,
         },
         { type: "image", image: data.imageDataUrl },
       ],
