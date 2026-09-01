@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, FileText, FileType, BookOpen, Dumbbell, Link as LinkIcon } from "lucide-react";
 import { useI18n, type TKey } from "@/lib/i18n";
-import { ModuleScopeGate } from "@/lib/scopes";
+import { ModuleScopeGate, useModuleColor, moduleBackgroundStyle } from "@/lib/scopes";
 
 export const Route = createFileRoute("/_authenticated/modules/$moduleId/cours")({
   component: CoursGate,
@@ -14,10 +14,19 @@ export const Route = createFileRoute("/_authenticated/modules/$moduleId/cours")(
 
 function CoursGate() {
   const { moduleId } = Route.useParams();
-  return <ModuleScopeGate moduleId={moduleId} scope="lessons"><CoursPage /></ModuleScopeGate>;
+  return (
+    <ModuleScopeGate moduleId={moduleId} scope="lessons">
+      <CoursPage />
+    </ModuleScopeGate>
+  );
 }
 
-type Content = { id: string; kind: "html" | "pdf" | "richtext" | "link"; title: string; description: string | null };
+type Content = {
+  id: string;
+  kind: "html" | "pdf" | "richtext" | "link";
+  title: string;
+  description: string | null;
+};
 type Module = { id: string; title: string; description: string | null; year: number };
 
 const kindMeta: Record<Content["kind"], { label: TKey; icon: typeof BookOpen }> = {
@@ -32,10 +41,15 @@ function CoursPage() {
   const { moduleId } = Route.useParams();
   const [mod, setMod] = useState<Module | null>(null);
   const [items, setItems] = useState<Content[]>([]);
+  const moduleColor = useModuleColor();
 
   useEffect(() => {
     (async () => {
-      const { data: m } = await supabase.from("modules").select("id,title,description,year").eq("id", moduleId).maybeSingle();
+      const { data: m } = await supabase
+        .from("modules")
+        .select("id,title,description,year")
+        .eq("id", moduleId)
+        .maybeSingle();
       setMod(m as Module | null);
       const { data: c } = await supabase
         .from("module_contents")
@@ -49,15 +63,28 @@ function CoursPage() {
   }, [moduleId]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b"><div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between">
-        <Button asChild variant="ghost" size="sm"><Link to="/modules/$moduleId" params={{ moduleId }}><ArrowLeft className="mr-1.5 h-4 w-4" />{t("back_to_module")}</Link></Button>
-        {mod && <Badge variant="secondary">{t("year")} {mod.year}</Badge>}
-      </div></header>
+    <div className="min-h-screen" style={moduleBackgroundStyle(moduleColor)}>
+      <header className="border-b">
+        <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between">
+          <Button asChild variant="ghost" size="sm">
+            <Link to="/modules/$moduleId" params={{ moduleId }}>
+              <ArrowLeft className="mr-1.5 h-4 w-4" />
+              {t("back_to_module")}
+            </Link>
+          </Button>
+          {mod && (
+            <Badge variant="secondary">
+              {t("year")} {mod.year}
+            </Badge>
+          )}
+        </div>
+      </header>
       <main className="mx-auto max-w-5xl px-6 py-10">
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-semibold tracking-tight">{mod?.title ?? "…"} · {t("course")}</h1>
+            <h1 className="text-3xl font-semibold tracking-tight">
+              {mod?.title ?? "…"} · {t("course")}
+            </h1>
             {mod?.description && <p className="mt-2 text-muted-foreground">{mod.description}</p>}
           </div>
           <Button asChild size="lg" className="shrink-0">
@@ -69,7 +96,11 @@ function CoursPage() {
         </div>
 
         {items.length === 0 ? (
-          <Card><CardContent className="py-12 text-center text-muted-foreground">{t("no_course")}</CardContent></Card>
+          <Card>
+            <CardContent className="py-12 text-center text-muted-foreground">
+              {t("no_course")}
+            </CardContent>
+          </Card>
         ) : (
           <div className="space-y-10">
             {(["html", "pdf", "richtext", "link"] as const).map((kind) => {
@@ -82,17 +113,29 @@ function CoursPage() {
                   <div className="mb-3 flex items-center gap-2">
                     <Icon className="h-5 w-5 text-muted-foreground" />
                     <h2 className="text-lg font-semibold">{t(meta.label)}</h2>
-                    <Badge variant="secondary" className="ml-1">{group.length}</Badge>
+                    <Badge variant="secondary" className="ml-1">
+                      {group.length}
+                    </Badge>
                   </div>
                   <div className="grid gap-3">
                     {group.map((content) => (
-                      <Link key={content.id} to="/modules/$moduleId/$contentId" params={{ moduleId, contentId: content.id }}>
+                      <Link
+                        key={content.id}
+                        to="/modules/$moduleId/$contentId"
+                        params={{ moduleId, contentId: content.id }}
+                      >
                         <Card className="transition hover:shadow-md">
                           <CardHeader className="flex-row items-center gap-4 space-y-0">
-                            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted"><Icon className="h-5 w-5" /></div>
+                            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                              <Icon className="h-5 w-5" />
+                            </div>
                             <div className="flex-1">
                               <CardTitle className="text-base">{content.title}</CardTitle>
-                              {content.description && <CardDescription className="mt-1">{content.description}</CardDescription>}
+                              {content.description && (
+                                <CardDescription className="mt-1">
+                                  {content.description}
+                                </CardDescription>
+                              )}
                             </div>
                             <Badge variant="outline">{t(meta.label)}</Badge>
                           </CardHeader>

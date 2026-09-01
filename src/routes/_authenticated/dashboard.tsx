@@ -231,11 +231,13 @@ function Dashboard() {
                 {modules.map((m) => (
                   <Link key={m.id} to="/modules/$moduleId" params={{ moduleId: m.id }}>
                     <Card
-                      className="h-full border-t-4 transition hover:shadow-md hover:-translate-y-0.5"
+                      className="h-full border-2 transition hover:shadow-md hover:-translate-y-0.5"
                       style={{
-                        borderTopColor: m.color ?? "hsl(var(--border))",
+                        borderColor: m.color
+                          ? `color-mix(in srgb, ${m.color} 55%, transparent)`
+                          : undefined,
                         background: m.color
-                          ? `color-mix(in srgb, ${m.color} 10%, hsl(var(--card)))`
+                          ? `color-mix(in srgb, ${m.color} 18%, hsl(var(--card)))`
                           : undefined,
                       }}
                     >
