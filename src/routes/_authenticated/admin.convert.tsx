@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -30,6 +30,7 @@ import {
   Trash2,
   Sparkles,
   Plus,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAdminPermissions } from "@/hooks/use-permissions";
@@ -233,6 +234,7 @@ async function withProgress<T>(
   jobs: Array<() => Promise<T>>,
   onProgress: (p: Progress) => void,
   concurrency = 4,
+  signal?: AbortSignal,
 ): Promise<T[]> {
   const total = jobs.length;
   let done = 0;
@@ -246,8 +248,10 @@ async function withProgress<T>(
   };
   async function worker() {
     while (next < jobs.length) {
+      if (signal?.aborted) return;
       const i = next++;
       await waitForCooldown();
+      if (signal?.aborted) return;
       try {
         results[i] = await jobs[i]();
       } catch (e: any) {
@@ -255,6 +259,7 @@ async function withProgress<T>(
         // Rate limited: pause every worker, then give this job one more try.
         cooldownUntil = Date.now() + 20_000;
         await waitForCooldown();
+        if (signal?.aborted) return;
         results[i] = await jobs[i]();
       }
       done++;
@@ -266,16 +271,35 @@ async function withProgress<T>(
 }
 
 /** Current phase label + optional "X/Y" progress bar shown under a step's
- *  Convertir button while it's running. */
-function StepProgress({ phase, progress }: { phase: string | null; progress: Progress | null }) {
+ *  Convertir button while it's running. `onCancel`, when provided, shows a
+ *  single Cancel button here — the one non-duplicated spot in each panel —
+ *  rather than repeating it next to every duplicated action button. */
+function StepProgress({
+  phase,
+  progress,
+  onCancel,
+}: {
+  phase: string | null;
+  progress: Progress | null;
+  onCancel?: () => void;
+}) {
+  const { tr } = useI18n();
   if (!phase) return null;
   const pct = progress && progress.total ? (progress.done / progress.total) * 100 : 0;
   return (
     <div className="space-y-1.5">
-      <p className="text-xs text-muted-foreground">
-        {phase}
-        {progress ? ` — ${progress.done}/${progress.total}` : "…"}
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          {phase}
+          {progress ? ` — ${progress.done}/${progress.total}` : "…"}
+        </p>
+        {onCancel && (
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onCancel}>
+            <X className="mr-1 h-3 w-3" />
+            {tr("Annuler")}
+          </Button>
+        )}
+      </div>
       <Progress value={progress ? pct : undefined} className="h-1.5" />
     </div>
   );
@@ -613,12 +637,15 @@ function RotationYearDetector({
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const detect = async () => {
     if (!file) {
       toast.error(tr("Ajoutez un fichier PDF de captures"));
       return;
     }
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy(true);
     onEntriesChange(null);
     setProgress(null);
@@ -629,10 +656,14 @@ function RotationYearDetector({
       if (!images.length) throw new Error(tr("Fichier vide ou illisible"));
       const results = await withProgress(
         images.map(
-          (imageDataUrl) => () => withRetry(() => extractRotYear({ data: { imageDataUrl } })),
+          (imageDataUrl) => () =>
+            withRetry(() => extractRotYear({ data: { imageDataUrl }, signal: controller.signal })),
         ),
         setProgress,
+        4,
+        controller.signal,
       );
+      if (controller.signal.aborted) return;
       const flat: PageEntry[] = results.map((r) => ({
         rotation: r.rotation ?? "",
         year: r.year ?? "",
@@ -640,7 +671,7 @@ function RotationYearDetector({
       onEntriesChange(flat);
       toast.success(`${flat.length} ${tr("page(s) analysée(s)")}`);
     } catch (e: any) {
-      toast.error(friendlyError(e, tr));
+      if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
       setBusy(false);
       setProgress(null);
@@ -695,7 +726,11 @@ function RotationYearDetector({
           {tr("Extraire")}
         </Button>
       </div>
-      <StepProgress phase={busy ? tr("Lecture des en-têtes") : null} progress={progress} />
+      <StepProgress
+        phase={busy ? tr("Lecture des en-têtes") : null}
+        progress={progress}
+        onCancel={() => abortRef.current?.abort()}
+      />
       {entries && entries.length > 0 && (
         <div className="max-h-72 space-y-1.5 overflow-y-auto">
           {entries.map((e, i) => (
@@ -840,6 +875,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const [result, setResult] = useState<DocxResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const upload = async () => {
     if (!files.length) {
@@ -878,6 +914,8 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
 
   const extract = async () => {
     if (!prepared) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy("extract");
     setExtracted(null);
     setChunkWarnings([]);
@@ -899,11 +937,15 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
                   detectCases: true,
                   hint: hint.trim() || undefined,
                 },
+                signal: controller.signal,
               }),
             ),
         ),
         setProgress,
+        4,
+        controller.signal,
       );
+      if (controller.signal.aborted) return;
       // A rotation/year header is often shown once per file (e.g. a cover
       // page) rather than repeated on every page — since each page is sent
       // to the AI as a separate chunk, only the chunk that actually shows it
@@ -946,7 +988,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         );
       }
     } catch (e: any) {
-      toast.error(friendlyError(e, tr));
+      if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
       setBusy(null);
       setPhase(null);
@@ -956,18 +998,20 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
 
   const generate = async () => {
     if (!extracted || !extracted.length) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy("generate");
     setResult(null);
     try {
       setPhase(tr("Génération du fichier Word"));
       const items = toDocxItems(extracted, rotation);
       const { base64 } = await withRetry(() =>
-        genDocx({ data: { items, includeExplanations: false } }),
+        genDocx({ data: { items, includeExplanations: false }, signal: controller.signal }),
       );
       setResult({ base64, count: extracted.length, warnings: chunkWarnings });
       toast.success(`${extracted.length} ${tr("question(s) converties")}`);
     } catch (e: any) {
-      toast.error(friendlyError(e, tr));
+      if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
       setBusy(null);
       setPhase(null);
@@ -1041,7 +1085,11 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             {tr("Extraire les questions")}
           </Button>
         </div>
-        <StepProgress phase={phase} progress={progress} />
+        <StepProgress
+          phase={phase}
+          progress={progress}
+          onCancel={() => abortRef.current?.abort()}
+        />
         {result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
             <p className="text-sm font-medium">
@@ -1449,6 +1497,7 @@ function Step2Panel({
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const uploadFile = async (file: File) => {
     setUploading(true);
@@ -1489,6 +1538,8 @@ function Step2Panel({
 
   const extract = async () => {
     if (!prepared) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy("extract");
     setExtracted(null);
     setResult(null);
@@ -1509,6 +1560,7 @@ function Step2Panel({
                   detectCases: true,
                   hint: hint.trim() || undefined,
                 },
+                signal: controller.signal,
               }),
             ).then((r) =>
               (r.questions ?? []).map((q, i) => {
@@ -1525,13 +1577,16 @@ function Step2Panel({
             ),
         ),
         setProgress,
+        4,
+        controller.signal,
       );
+      if (controller.signal.aborted) return;
       const qs: ExtractedQ[] = parts.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
       setExtracted(qs);
       toast.success(`${qs.length} ${tr("question(s) extraites — vérifiez avant de continuer.")}`);
     } catch (e: any) {
-      toast.error(friendlyError(e, tr));
+      if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
       setBusy(null);
       setPhase(null);
@@ -1541,6 +1596,8 @@ function Step2Panel({
 
   const explain = async () => {
     if (!extracted || !extracted.length) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy("explain");
     setProgress(null);
     try {
@@ -1556,7 +1613,7 @@ function Step2Panel({
       } else if (refMode === "docx" && refFile) {
         const refDataUrl = await readAsDataUrl(refFile);
         const { text } = await withRetry(() =>
-          extractDocxText({ data: { docxDataUrl: refDataUrl } }),
+          extractDocxText({ data: { docxDataUrl: refDataUrl }, signal: controller.signal }),
         );
         referenceText = text;
       }
@@ -1583,11 +1640,15 @@ function Step2Panel({
                   referenceText,
                   instructions: hint.trim() || undefined,
                 },
+                signal: controller.signal,
               }),
             ).then((r) => r.explanations),
         ),
         setProgress,
+        4,
+        controller.signal,
       );
+      if (controller.signal.aborted) return;
       const explanations = explanationParts.flat();
       const withExplanations = extracted.map((q, i) => ({
         ...q,
@@ -1596,7 +1657,7 @@ function Step2Panel({
       setExtracted(withExplanations);
       toast.success(tr("Explications générées — vérifiez avant de générer le fichier."));
     } catch (e: any) {
-      toast.error(friendlyError(e, tr));
+      if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
       setBusy(null);
       setPhase(null);
@@ -1606,6 +1667,8 @@ function Step2Panel({
 
   const generate = async () => {
     if (!extracted || !extracted.length) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy("generate");
     setResult(null);
     setShowImport(false);
@@ -1613,12 +1676,12 @@ function Step2Panel({
       setPhase(tr("Génération du fichier Word"));
       const items = toDocxItems(extracted);
       const { base64 } = await withRetry(() =>
-        genDocx({ data: { items, includeExplanations: true } }),
+        genDocx({ data: { items, includeExplanations: true }, signal: controller.signal }),
       );
       setResult({ base64, count: extracted.length });
       toast.success(`${extracted.length} ${tr("question(s) traitées")}`);
     } catch (e: any) {
-      toast.error(friendlyError(e, tr));
+      if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
       setBusy(null);
       setPhase(null);
@@ -1714,7 +1777,11 @@ function Step2Panel({
             {tr("Extraire les questions")}
           </Button>
         </div>
-        <StepProgress phase={phase} progress={progress} />
+        <StepProgress
+          phase={phase}
+          progress={progress}
+          onCancel={() => abortRef.current?.abort()}
+        />
         {result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
             <p className="text-sm font-medium">
@@ -1844,6 +1911,7 @@ function Step3Panel({
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const uploadFile = async (file: File) => {
     setUploading(true);
@@ -1884,6 +1952,8 @@ function Step3Panel({
 
   const extract = async () => {
     if (!prepared) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy("extract");
     setExtracted(null);
     setResult(null);
@@ -1904,6 +1974,7 @@ function Step3Panel({
                   detectCases: true,
                   hint: hint.trim() || undefined,
                 },
+                signal: controller.signal,
               }),
             ).then((r) =>
               (r.questions ?? []).map((q, i) => {
@@ -1920,13 +1991,16 @@ function Step3Panel({
             ),
         ),
         setProgress,
+        4,
+        controller.signal,
       );
+      if (controller.signal.aborted) return;
       const qs: ExtractedQ[] = parts.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
       setExtracted(qs);
       toast.success(`${qs.length} ${tr("question(s) extraites — vérifiez avant de générer.")}`);
     } catch (e: any) {
-      toast.error(friendlyError(e, tr));
+      if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
       setBusy(null);
       setPhase(null);
@@ -1995,7 +2069,11 @@ function Step3Panel({
             {tr("Extraire les questions")}
           </Button>
         </div>
-        <StepProgress phase={phase} progress={progress} />
+        <StepProgress
+          phase={phase}
+          progress={progress}
+          onCancel={() => abortRef.current?.abort()}
+        />
         {result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
             <p className="text-sm font-medium">
@@ -2105,6 +2183,7 @@ function Step4Panel() {
   const [parsed, setParsed] = useState<ExtractedQ[] | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const [applied, setApplied] = useState<ExtractedQ[] | null>(null);
   const [showImport, setShowImport] = useState(false);
@@ -2161,6 +2240,8 @@ function Step4Panel() {
 
   const extractDocx = async () => {
     if (!prepared) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy("extract");
     setParsed(null);
     setApplied(null);
@@ -2181,6 +2262,7 @@ function Step4Panel() {
                   detectCases: true,
                   hint: hint.trim() || undefined,
                 },
+                signal: controller.signal,
               }),
             ).then((r) =>
               (r.questions ?? []).map((q, i) => {
@@ -2197,13 +2279,16 @@ function Step4Panel() {
             ),
         ),
         setProgress,
+        4,
+        controller.signal,
       );
+      if (controller.signal.aborted) return;
       const qs: ExtractedQ[] = parts.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
       setParsed(qs);
       toast.success(`${qs.length} ${tr("question(s) extraites")}`);
     } catch (e: any) {
-      toast.error(friendlyError(e, tr));
+      if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
       setBusy(null);
       setPhase(null);
@@ -2234,16 +2319,22 @@ function Step4Panel() {
       downloadText(`questions_${Date.now()}.json`, JSON.stringify(toJsonObjects(applied), null, 2));
       return;
     }
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy("generate");
     try {
+      setPhase(tr("Génération du fichier Word"));
       const items = toDocxItems(applied);
       const includeExplanations = applied.some((q) => !!q.explanation);
-      const { base64 } = await withRetry(() => genDocx({ data: { items, includeExplanations } }));
+      const { base64 } = await withRetry(() =>
+        genDocx({ data: { items, includeExplanations }, signal: controller.signal }),
+      );
       downloadBase64(`questions_${Date.now()}.docx`, base64, DOCX_MIME);
     } catch (e: any) {
-      toast.error(friendlyError(e, tr));
+      if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
       setBusy(null);
+      setPhase(null);
     }
   };
 
@@ -2352,7 +2443,11 @@ function Step4Panel() {
               </Button>
             )}
           </div>
-          <StepProgress phase={phase} progress={progress} />
+          <StepProgress
+            phase={phase}
+            progress={progress}
+            onCancel={() => abortRef.current?.abort()}
+          />
           {parsed && (
             <p className="text-xs text-muted-foreground">
               {parsed.length} {tr("question(s)/cas chargé(s) —")} {ranges.length} {tr("groupe(s).")}
