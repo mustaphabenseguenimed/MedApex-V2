@@ -652,7 +652,11 @@ function RotationYearDetector({
     try {
       const bytes = await file.arrayBuffer();
       const { renderPdfPageTopImages } = await import("@/lib/pdfText");
-      const images = await renderPdfPageTopImages(bytes);
+      // Sharper/taller crop than the function's bare defaults: the header
+      // text is small, and a higher-resolution image reads far more
+      // reliably — well within extractRotationYearFromImage's 5MB cap
+      // since this is still just a short top strip of one page.
+      const images = await renderPdfPageTopImages(bytes, { scale: 4, cropTop: 0.22 });
       if (!images.length) throw new Error(tr("Fichier vide ou illisible"));
       const results = await withProgress(
         images.map(
@@ -668,8 +672,32 @@ function RotationYearDetector({
         rotation: r.rotation ?? "",
         year: r.year ?? "",
       }));
-      onEntriesChange(flat);
-      toast.success(`${flat.length} ${tr("page(s) analysée(s)")}`);
+      // The batch is typically one exam/rotation capture, so a page that
+      // came back blank is more likely a missed reading than a genuinely
+      // different rotation — fill blanks only, from the batch's own most
+      // common value, never overriding a page's own detected reading
+      // (same conservative rule as Step 1's per-file rotation fallback).
+      const majority = (vals: string[]): string | null => {
+        const counts = new Map<string, number>();
+        for (const v of vals) if (v) counts.set(v, (counts.get(v) ?? 0) + 1);
+        let best: string | null = null;
+        let bestCount = 0;
+        for (const [v, c] of counts) {
+          if (c > bestCount) {
+            best = v;
+            bestCount = c;
+          }
+        }
+        return best;
+      };
+      const rotationFallback = majority(flat.map((e) => e.rotation));
+      const yearFallback = majority(flat.map((e) => e.year));
+      const filled: PageEntry[] = flat.map((e) => ({
+        rotation: e.rotation || rotationFallback || "",
+        year: e.year || yearFallback || "",
+      }));
+      onEntriesChange(filled);
+      toast.success(`${filled.length} ${tr("page(s) analysée(s)")}`);
     } catch (e: any) {
       if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
