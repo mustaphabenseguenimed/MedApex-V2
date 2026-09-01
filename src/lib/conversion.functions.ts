@@ -90,7 +90,7 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
           .min(1)
           .max(60),
         referenceText: z.string().max(200_000).optional(),
-        instructions: z.string().max(1000).optional(),
+        instructions: z.string().max(5000).optional(),
       })
       .parse(input),
   )

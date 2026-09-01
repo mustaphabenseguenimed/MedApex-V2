@@ -546,7 +546,7 @@ export const extractQuestionsFromImage = createServerFn({ method: "POST" })
           .string()
           .max(15_000_000)
           .regex(/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i, "Image invalide"),
-        hint: z.string().max(500).optional(),
+        hint: z.string().max(5000).optional(),
         detectCases: z.boolean().optional(),
       })
       .parse(input),
@@ -569,7 +569,7 @@ export const extractQuestionsFromPdf = createServerFn({ method: "POST" })
           .max(25_000_000)
           .regex(/^data:application\/pdf;base64,/i, "PDF invalide"),
         filename: z.string().max(200).optional(),
-        hint: z.string().max(500).optional(),
+        hint: z.string().max(5000).optional(),
       })
       .parse(input),
   )
@@ -599,7 +599,7 @@ export const extractQuestionsFromDocx = createServerFn({ method: "POST" })
             /^data:(application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document|application\/octet-stream);base64,/i,
             "DOCX invalide",
           ),
-        hint: z.string().max(500).optional(),
+        hint: z.string().max(5000).optional(),
       })
       .parse(input),
   )
@@ -795,7 +795,7 @@ export const extractQuestionsFromHtmlChunk = createServerFn({ method: "POST" })
       .object({
         html: z.string().max(200_000),
         colorHint: z.string().max(60_000).optional(),
-        hint: z.string().max(500).optional(),
+        hint: z.string().max(5000).optional(),
         expected: z.number().int().min(0).max(200).optional(),
         allowNoAi: z.boolean().optional(),
         detectCases: z.boolean().optional(),
@@ -848,7 +848,7 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
           .max(15_000_000)
           .regex(/^data:application\/pdf;base64,/i, "PDF invalide"),
         filename: z.string().max(200).optional(),
-        hint: z.string().max(500).optional(),
+        hint: z.string().max(5000).optional(),
         expected: z.number().int().min(0).max(200).optional(),
         detectCases: z.boolean().optional(),
       })

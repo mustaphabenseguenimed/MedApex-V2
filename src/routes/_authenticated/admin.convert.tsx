@@ -325,7 +325,12 @@ function HintField({
           {tr("Enregistrer par défaut")}
         </Button>
       </div>
-      <Input value={hint} onChange={(e) => setHint(e.target.value)} placeholder={placeholder} />
+      <Textarea
+        rows={3}
+        value={hint}
+        onChange={(e) => setHint(e.target.value)}
+        placeholder={placeholder}
+      />
     </div>
   );
 }
