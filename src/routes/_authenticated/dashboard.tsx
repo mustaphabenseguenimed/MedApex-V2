@@ -27,6 +27,7 @@ type Module = {
   year: number;
   icon: string | null;
   color: string | null;
+  icon_image_path: string | null;
 };
 type PaymentRequest = {
   id: string;
@@ -229,14 +230,34 @@ function Dashboard() {
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {modules.map((m) => (
                   <Link key={m.id} to="/modules/$moduleId" params={{ moduleId: m.id }}>
-                    <Card className="h-full transition hover:shadow-md hover:-translate-y-0.5">
+                    <Card
+                      className="h-full border-t-4 transition hover:shadow-md hover:-translate-y-0.5"
+                      style={{
+                        borderTopColor: m.color ?? "hsl(var(--border))",
+                        background: m.color
+                          ? `color-mix(in srgb, ${m.color} 10%, hsl(var(--card)))`
+                          : undefined,
+                      }}
+                    >
                       <CardHeader>
                         <div className="flex items-center gap-3">
                           <div
-                            className="flex h-10 w-10 items-center justify-center rounded-lg text-xl"
+                            className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg text-xl"
                             style={{ background: m.color ?? "hsl(var(--muted))" }}
                           >
-                            {m.icon ?? <BookOpen className="h-5 w-5" />}
+                            {m.icon_image_path ? (
+                              <img
+                                src={
+                                  supabase.storage
+                                    .from("module-icons")
+                                    .getPublicUrl(m.icon_image_path).data.publicUrl
+                                }
+                                alt=""
+                                className="h-full w-full object-cover"
+                              />
+                            ) : (
+                              (m.icon ?? <BookOpen className="h-5 w-5" />)
+                            )}
                           </div>
                           <CardTitle className="text-base">{m.title}</CardTitle>
                         </div>
