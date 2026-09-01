@@ -56,7 +56,7 @@ import {
   CalendarClock,
   FileCog,
 } from "lucide-react";
-import { ImagePlus, Sparkles, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { ImagePlus, Sparkles, ChevronDown, ChevronRight, RefreshCw, BookOpen } from "lucide-react";
 import { useIsAdmin } from "@/hooks/use-admin";
 import { useAdminPermissions } from "@/hooks/use-permissions";
 import { useServerFn } from "@tanstack/react-start";
@@ -107,6 +107,7 @@ type Module = {
   description: string | null;
   icon: string | null;
   color: string | null;
+  icon_image_path: string | null;
   sort_order: number;
 };
 type Kind = "html" | "pdf" | "richtext" | "link";
@@ -3778,6 +3779,8 @@ function ModuleEditor({
   const [year, setYear] = useState(String(m.year));
   const [icon, setIcon] = useState(m.icon ?? "");
   const [color, setColor] = useState(m.color ?? "");
+  const [iconImagePath, setIconImagePath] = useState(m.icon_image_path ?? null);
+  const [uploadingIcon, setUploadingIcon] = useState(false);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [rotations, setRotations] = useState<Rotation[]>([]);
 
@@ -3809,7 +3812,53 @@ function ModuleEditor({
     setYear(String(m.year));
     setIcon(m.icon ?? "");
     setColor(m.color ?? "");
+    setIconImagePath(m.icon_image_path ?? null);
   }, [m.id]);
+
+  const iconImageUrl = iconImagePath
+    ? supabase.storage.from("module-icons").getPublicUrl(iconImagePath).data.publicUrl
+    : null;
+
+  const uploadIconImage = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Fichier image requis");
+      return;
+    }
+    setUploadingIcon(true);
+    try {
+      const path = `${m.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const { error: upErr } = await supabase.storage
+        .from("module-icons")
+        .upload(path, file, { contentType: file.type, upsert: false });
+      if (upErr) throw upErr;
+      const { error } = await supabase
+        .from("modules")
+        .update({ icon_image_path: path })
+        .eq("id", m.id);
+      if (error) throw error;
+      setIconImagePath(path);
+      toast.success("Icône mise à jour");
+      onModuleChanged();
+    } catch (e: any) {
+      toast.error(e?.message ?? "Échec de l'envoi de l'image");
+    } finally {
+      setUploadingIcon(false);
+    }
+  };
+
+  const removeIconImage = async () => {
+    const { error } = await supabase
+      .from("modules")
+      .update({ icon_image_path: null })
+      .eq("id", m.id);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    setIconImagePath(null);
+    toast.success("Image retirée");
+    onModuleChanged();
+  };
 
   const save = async () => {
     const { error } = await supabase
@@ -3904,11 +3953,57 @@ function ModuleEditor({
             </div>
             <div className="space-y-1">
               <Label>Couleur d'accent</Label>
-              <Input
-                value={color}
-                onChange={(e) => setColor(e.target.value)}
-                placeholder="#fde68a"
-              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={/^#[0-9a-fA-F]{6}$/.test(color) ? color : "#94a3b8"}
+                  onChange={(e) => setColor(e.target.value)}
+                  className="h-9 w-10 shrink-0 cursor-pointer rounded border bg-transparent p-0.5"
+                  aria-label="Couleur d'accent"
+                />
+                <Input
+                  value={color}
+                  onChange={(e) => setColor(e.target.value)}
+                  placeholder="#fde68a"
+                />
+              </div>
+            </div>
+            <div className="space-y-1 sm:col-span-2">
+              <Label>Icône (image)</Label>
+              <div className="flex items-center gap-3">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border bg-muted text-xl">
+                  {iconImageUrl ? (
+                    <img src={iconImageUrl} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    icon || <BookOpen className="h-5 w-5 text-muted-foreground" />
+                  )}
+                </div>
+                <Input
+                  type="file"
+                  accept="image/*"
+                  disabled={uploadingIcon}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) uploadIconImage(f);
+                    e.target.value = "";
+                  }}
+                  className="max-w-xs"
+                />
+                {iconImagePath && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={uploadingIcon}
+                    onClick={removeIconImage}
+                  >
+                    Retirer
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Remplace l'emoji sur le tableau de bord si définie.
+              </p>
             </div>
           </div>
           <div className="space-y-1">
