@@ -68,11 +68,18 @@ const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingm
 
 // ---- shared helpers ---------------------------------------------------------
 
+// Truncated, normalized prefix rather than an exact match: the AI can retype
+// the same shared vignette with tiny differences (trailing punctuation, a
+// dropped <br>, minor whitespace) across two adjacent chunks — an exact
+// compare would silently break the cas-clinique grouping and orphan the
+// continuation question as a standalone.
 function caseKey(q: { case_stem?: string | null }): string {
   return (q.case_stem ?? "")
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .toLowerCase()
+    .slice(0, 80);
 }
 
 /** Index ranges [start, end) of each group in an extracted list — a
@@ -1100,6 +1107,14 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
                 </ul>
               </div>
             )}
+            <Button onClick={generate} disabled={busy !== null || !extracted.length}>
+              {busy === "generate" ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <FileDown className="mr-1.5 h-4 w-4" />
+              )}
+              {tr("Générer le fichier .docx")}
+            </Button>
             <QuestionsPreviewEditor
               items={extracted}
               onChange={setExtracted}
@@ -1752,6 +1767,28 @@ function Step2Panel({
         )}
         {extracted && busy !== "extract" && (
           <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={explain}
+                disabled={busy !== null || !extracted.length}
+              >
+                {busy === "explain" ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                )}
+                {tr("Générer les explications (IA)")}
+              </Button>
+              <Button onClick={generate} disabled={busy !== null || !extracted.length}>
+                {busy === "generate" ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                )}
+                {tr("Générer le fichier Word")}
+              </Button>
+            </div>
             <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -2325,6 +2362,10 @@ function Step4Panel() {
 
         {entries && entries.length > 0 && parsed && parsed.length > 0 && (
           <div className="space-y-2">
+            <Button onClick={apply}>
+              <Check className="mr-1.5 h-4 w-4" />
+              {tr("Appliquer")}
+            </Button>
             {entries.length !== ranges.length && (
               <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
                 {entries.length} {tr("page(s) détectée(s) pour")} {ranges.length}{" "}
@@ -2367,6 +2408,20 @@ function Step4Panel() {
               />
             )}
             <QuestionsPreviewEditor items={applied} onChange={setApplied} showExplanation />
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={downloadApplied} disabled={busy === "generate"}>
+                {busy === "generate" ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                )}
+                {tr("Télécharger")}
+              </Button>
+              <Button variant="outline" onClick={() => setShowImport((v) => !v)}>
+                <UploadCloud className="mr-1.5 h-4 w-4" />
+                {tr("Importer directement")}
+              </Button>
+            </div>
           </div>
         )}
       </CardContent>
