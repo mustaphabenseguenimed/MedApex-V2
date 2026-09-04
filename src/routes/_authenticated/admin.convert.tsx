@@ -51,7 +51,7 @@ import {
 } from "@/lib/conversion.functions";
 import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
 import { alignByStems, type PreparedChunk } from "@/lib/questionChunks";
-import { readAsDataUrl, splitPdfIntoPageChunks } from "@/lib/fileUtils";
+import { readAsDataUrl, splitPdfIntoPageChunks, MAX_CHUNK_DATA_URL } from "@/lib/fileUtils";
 import { downloadBase64, downloadText, base64ToFile } from "@/lib/download";
 import { supabase } from "@/integrations/supabase/client";
 import { resolveImportAssignments, primaryRotation } from "@/lib/importMatch";
@@ -305,6 +305,13 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
 function friendlyError(e: any, tr: (s: string) => string): string {
   if (e instanceof TypeError || /failed to fetch/i.test(String(e?.message ?? ""))) {
     return tr("Connexion réseau instable — le fichier n'a pas pu être envoyé. Réessayez.");
+  }
+  const msg = String(e?.message ?? "");
+  const status = e?.statusCode ?? e?.status ?? e?.response?.status;
+  if (status === 413 || /request entity too large|payload too large/i.test(msg)) {
+    return tr(
+      "Une page du PDF est trop lourde pour être envoyée. Réduisez la résolution des captures (ou exportez le PDF en qualité moindre) puis réessayez.",
+    );
   }
   return e?.message ?? tr("Échec de la conversion");
 }
@@ -1070,6 +1077,20 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       toast.success(
         `${files.length} ${tr("fichier(s) chargé(s)")} — ${chunkJobs.length} ${tr("page(s)/lot(s) prêt(s)")}`,
       );
+      // A page that is still oversized on its own would be rejected by the
+      // server before it runs, so say so now rather than after a long wait.
+      const tooLarge = chunkJobs.filter((j) => j.dataUrl.length > MAX_CHUNK_DATA_URL);
+      if (tooLarge.length) {
+        setChunkWarnings(
+          tooLarge.map((j) => ({
+            filename: j.filename,
+            warning: tr("page trop lourde pour être envoyée — réduisez la résolution des captures"),
+          })),
+        );
+        toast.warning(
+          `${tooLarge.length} ${tr("page(s) trop lourde(s) — voir le détail ci-dessous.")}`,
+        );
+      }
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
     } finally {
