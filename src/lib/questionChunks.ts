@@ -397,6 +397,65 @@ export function chunkUnits(
   return chunks;
 }
 
+// ---- re-aligning AI output onto the parsed source ---------------------------
+
+/** Words worth matching on: 3+ chars, accents folded, punctuation dropped. */
+function alignTokens(text: string): string[] {
+  return stripTags(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3);
+}
+
+/** Overlap of two token lists, 0..1 (counting duplicates once). */
+function tokenSimilarity(a: string[], b: string[]): number {
+  if (!a.length || !b.length) return 0;
+  const setB = new Set(b);
+  let hits = 0;
+  for (const w of new Set(a)) if (setB.has(w)) hits++;
+  return hits / Math.max(new Set(a).size, setB.size);
+}
+
+/** Below this, two stems are not considered the same question. */
+const ALIGN_MIN_SIMILARITY = 0.35;
+
+/**
+ * Match each AI-returned question back to the source question it came from.
+ *
+ * The AI sometimes returns fewer (or more) questions than a chunk actually
+ * contains. Zipping its output onto `PreparedChunk.contexts` by array index
+ * then silently attaches every later question's rotation/année/cours/case_stem
+ * to the wrong question. This matches on the question text instead.
+ *
+ * Matching is **monotonic**: a match can never point back before the previous
+ * one, so the source order is always preserved. Returns one entry per AI
+ * question — the source index it matched, or `null` when nothing cleared
+ * `ALIGN_MIN_SIMILARITY` (caller should then keep the AI's own values rather
+ * than apply a context that probably belongs to another question).
+ */
+export function alignByStems(aiStems: string[], sourceStems: string[]): (number | null)[] {
+  const source = sourceStems.map(alignTokens);
+  let cursor = 0;
+  return aiStems.map((stem) => {
+    const tokens = alignTokens(stem);
+    let best: number | null = null;
+    let bestScore = ALIGN_MIN_SIMILARITY;
+    // Only look forward from the last match, so output order is preserved.
+    for (let i = cursor; i < source.length; i++) {
+      const score = tokenSimilarity(tokens, source[i]);
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    if (best !== null) cursor = best + 1;
+    return best;
+  });
+}
+
 /** Plain text → minimal HTML so PDF text can reuse the same pipeline. */
 export function textToHtml(text: string): string {
   return text

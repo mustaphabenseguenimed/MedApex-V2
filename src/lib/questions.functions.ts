@@ -10,6 +10,7 @@ import {
   isUnreadableOnDark,
 } from "./htmlColors";
 import { getExtractModelCandidates, type ExtractEngine } from "./ai-extract-provider.server";
+import { generateWithFallback, friendlyGatewayError, type AiContent } from "./aiGenerate.server";
 import {
   buildQuestionUnits,
   chunkUnits,
@@ -32,29 +33,6 @@ export type ExtractResult = {
   total_visible?: number | null;
 };
 
-/** Surface a friendly error when the AI gateway rejects a request (credits,
- *  quota, auth). Otherwise re-throw the original error. */
-export function friendlyGatewayError(error: unknown): Error {
-  const anyErr = error as any;
-  const status: number | undefined =
-    anyErr?.statusCode ?? anyErr?.status ?? anyErr?.response?.status ?? anyErr?.cause?.statusCode;
-  const raw: string = String(anyErr?.message ?? anyErr?.responseBody ?? "");
-  if (status === 402 || /payment required|insufficient/i.test(raw)) {
-    return new Error("Crédits IA épuisés. Ajoutez des crédits à l'espace de travail.");
-  }
-  if (/quota|credit/i.test(raw)) {
-    return new Error("Quota IA atteint. Réessayez plus tard.");
-  }
-  if (status === 401 || status === 403) {
-    return new Error("Accès IA refusé. Réessayez.");
-  }
-  if (status === 429) {
-    return new Error("Trop de requêtes IA en parallèle. Réessayez dans quelques secondes.");
-  }
-  if (error instanceof Error) return error;
-  return new Error(raw || "Erreur IA inconnue");
-}
-
 const GradeSchema = z.object({
   verdict: z.enum(["correct", "partial", "incorrect"]),
   score: z.number(),
@@ -76,6 +54,10 @@ const ExtractedQuestion = z.object({
   detection_snippet: z.string().nullable().optional(),
   /** Common clinical vignette shared by a group of questions (cas clinique). */
   case_stem: z.string().nullable().optional(),
+  /** Set when this question continues a clinical case whose vignette started
+   *  on an earlier page, so the client can carry that vignette forward even
+   *  if the model could not recopy it. */
+  continues_previous_page: z.boolean().nullable().optional(),
 });
 const ExtractSchema = z.object({
   questions: z.array(ExtractedQuestion),
@@ -84,90 +66,6 @@ const ExtractSchema = z.object({
 export type ExtractedQ = z.infer<typeof ExtractedQuestion>;
 
 // ---- helpers ---------------------------------------------------------------
-
-/** Extract the "Please retry in Ns" delay Google returns on 429, in ms. */
-export function retryDelayMs(error: unknown, attempt: number): number {
-  const raw = String((error as any)?.message ?? (error as any)?.responseBody ?? "");
-  const m = raw.match(/retry in ([\d.]+)s/i);
-  if (m) return Math.min(45_000, Math.ceil(parseFloat(m[1]) * 1000) + 500);
-  return Math.min(20_000, 1500 * 2 ** attempt);
-}
-
-function errorStatus(error: unknown): number | undefined {
-  const e = error as any;
-  return e?.statusCode ?? e?.status ?? e?.response?.status ?? e?.cause?.statusCode;
-}
-
-/** 429 / 5xx are transient: worth waiting and retrying the same model. */
-export function isTransient(error: unknown): boolean {
-  const status = errorStatus(error);
-  if (status === 429 || (typeof status === "number" && status >= 500)) return true;
-  return /rate.?limit|overloaded|unavailable|RESOURCE_EXHAUSTED|timeout/i.test(
-    String((error as any)?.message ?? ""),
-  );
-}
-
-export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-type AiContent = Array<
-  | { type: "text"; text: string }
-  | { type: "image"; image: string }
-  | { type: "file"; data: string; mediaType: string; filename?: string }
->;
-
-/** Shared model-fallback + retry loop: tries each configured model in turn,
- *  retrying transient (429/5xx) errors with backoff and a schema miss once,
- *  before moving to the next candidate. Used by every structured AI call in
- *  this module so the retry policy lives in one place. */
-async function generateWithFallback<T>(
-  schema: z.ZodType<T>,
-  content: AiContent,
-  opts?: { temperature?: number; timeoutMs?: number; thinking?: boolean },
-): Promise<{ output: T; engine: ExtractEngine }> {
-  const candidates = await getExtractModelCandidates();
-  if (!candidates.length) throw new Error("Moteur IA indisponible.");
-
-  const attempt = async (model: any) => {
-    const { output } = await generateText({
-      model,
-      output: Output.object({ schema }),
-      abortSignal: AbortSignal.timeout(opts?.timeoutMs ?? 150_000),
-      messages: [{ role: "user", content: content as any }],
-      temperature: opts?.temperature ?? 0.2,
-      ...(opts?.thinking
-        ? { providerOptions: { google: { thinkingConfig: { thinkingLevel: "high" } } } }
-        : {}),
-    });
-    return output;
-  };
-
-  let lastError: unknown = new Error("Aucun moteur IA configuré");
-
-  for (const candidate of candidates) {
-    // Up to 3 tries per model: transient 429/5xx get a real backoff (Google
-    // tells us how long to wait), schema misses get one immediate retry.
-    for (let attemptNo = 0; attemptNo < 3; attemptNo++) {
-      try {
-        const out = await attempt(candidate.model);
-        return { output: out, engine: candidate.engine };
-      } catch (error) {
-        lastError = error;
-        if (isTransient(error)) {
-          if (attemptNo < 2) {
-            await sleep(retryDelayMs(error, attemptNo));
-            continue;
-          }
-          break;
-        }
-        if (NoObjectGeneratedError.isInstance(error) && attemptNo < 1) continue;
-        break; // terminal for this model — try the next candidate
-      }
-    }
-  }
-
-  // Never resolve with an empty list pretending success: the caller must know.
-  throw friendlyGatewayError(lastError);
-}
 
 async function runExtract(content: AiContent): Promise<ExtractResult> {
   const { output, engine } = await generateWithFallback(ExtractSchema, content, {
@@ -302,7 +200,7 @@ function filterColorHint(colorXmlHint: string, chunkHtml: string): string {
 /** Tell the model exactly how many questions it must return for this chunk. */
 function expectedCountNote(expected: number): string {
   return expected > 0
-    ? `IMPORTANT: ce extrait contient EXACTEMENT ${expected} question(s). Tu dois renvoyer les ${expected} questions, dans le même ordre, sans en omettre ni en fusionner aucune.`
+    ? `IMPORTANT: cet extrait contient EXACTEMENT ${expected} question(s). Tu dois renvoyer les ${expected} questions, dans le même ordre, sans en omettre ni en fusionner aucune.`
     : "IMPORTANT: extrais TOUTES les questions présentes, dans l'ordre, sans en omettre aucune.";
 }
 
@@ -387,17 +285,22 @@ async function splitPdfBase64InHalf(base64: string): Promise<[string, string] | 
  * PDF equivalent of extractChunkComplete: an image-based PDF chunk has no
  * text layer to compute a real expected count from, so completeness is
  * checked against the model's own self-reported total_visible instead (a
- * soft heuristic, not a hard fact — it can be wrong in either direction).
+ * soft heuristic, not a hard fact — it can be wrong in either direction),
+ * unless the caller could derive a real count from the page's text layer.
  * On a shortfall, re-split the chunk by page count (not by parsed text
  * units) and retry the halves, keeping whichever attempt found more.
+ *
+ * `buildContent` takes the expected count for THAT level: a half-chunk must
+ * never be told the whole chunk's count, or the model pads or duplicates to
+ * reach a number that was never in front of it.
  */
 async function extractPdfChunkComplete(
-  buildContent: (base64: string) => Parameters<typeof runExtract>[0],
+  buildContent: (base64: string, expected: number) => Parameters<typeof runExtract>[0],
   base64: string,
   priorExpected: number,
   depth = 0,
 ): Promise<ExtractResult> {
-  const result = await runExtract(buildContent(base64));
+  const result = await runExtract(buildContent(base64, priorExpected));
   const got = result.questions.length;
   const target = priorExpected > 0 ? priorExpected : (result.total_visible ?? 0);
 
@@ -443,12 +346,20 @@ async function extractPdfChunkComplete(
   };
 }
 
-const INSTRUCTIONS = (hint?: string, detectCases = true, askTotalVisible = false) =>
+const INSTRUCTIONS = (
+  hint?: string,
+  detectCases = true,
+  askTotalVisible = false,
+  contextPages = 0,
+) =>
   [
     "Tu extrais des questions de QCM médicales à partir d'un document (capture d'écran, PDF, ou texte extrait d'un fichier Word), en français ou en arabe.",
     "Le fragment fourni contient un ou plusieurs QCM. N'en oublie aucun, ne fusionne pas deux questions, et ne réinvente rien.",
+    contextPages > 0
+      ? `ATTENTION — PAGES DE CONTEXTE: ce PDF contient ${contextPages + 1} page(s), mais tu ne dois extraire QUE les questions de la DERNIÈRE page. ${contextPages === 1 ? "La page précédente est" : "Les pages précédentes sont"} fournie(s) UNIQUEMENT comme contexte: n'en extrais AUCUNE question, même complète. Ce contexte sert à une seule chose: si la dernière page commence par des questions qui poursuivent un cas clinique (vignette/observation) commencé sur la page précédente, tu dois recopier cette vignette À L'IDENTIQUE dans leur champ case_stem, et mettre continues_previous_page à true pour ces questions-là.`
+      : "",
     askTotalVisible
-      ? "Avant de répondre, compte silencieusement le nombre total de questions DISTINCTES visibles dans ce document/extrait (chaque QCM/QCS/QROC numéroté ou clairement séparé compte pour une). Renvoie ce total dans le champ total_visible, et assure-toi ensuite que la longueur du tableau questions est EXACTEMENT égale à total_visible : n'en omets, ne fusionne, ni ne dédouble aucune."
+      ? `Avant de répondre, compte silencieusement le nombre total de questions DISTINCTES visibles ${contextPages > 0 ? "SUR LA DERNIÈRE PAGE UNIQUEMENT (ignore complètement les questions des pages de contexte dans ce comptage)" : "dans ce document/extrait"} (chaque QCM/QCS/QROC numéroté ou clairement séparé compte pour une). Renvoie ce total dans le champ total_visible, et assure-toi ensuite que la longueur du tableau questions est EXACTEMENT égale à total_visible : n'en omets, ne fusionne, ni ne dédouble aucune.`
       : "",
     "Pour chaque question visible, retourne:",
     "- type: 'qcs' si une seule bonne réponse, 'qcm' si plusieurs, 'qroc' si question ouverte sans choix.",
@@ -468,6 +379,9 @@ const INSTRUCTIONS = (hint?: string, detectCases = true, askTotalVisible = false
     "Ces métadonnées (cours, rotation, année) apparaissent parfois sous forme de plusieurs petites étiquettes/badges courts en haut de la capture (ex: 'Pneumologie', 'P3', 'PS 2020') plutôt que dans une phrase — lis-les telles quelles et associe chacune au champ approprié (course_hint pour le cours/sujet ou l'institution, rotation_hint UNIQUEMENT pour un vrai code de rotation/session, year_hint pour l'année).",
     detectCases
       ? "- case_stem: CAS CLINIQUES. Si plusieurs questions consécutives partagent un même énoncé/vignette clinique (observation d'un patient suivie de plusieurs questions), recopie ce texte commun À L'IDENTIQUE dans case_stem pour CHACUNE de ces questions, et NE le répète PAS dans leur champ stem (stem = uniquement la question elle-même). Pour une question isolée, case_stem = null."
+      : "",
+    detectCases
+      ? "- continues_previous_page: mets true UNIQUEMENT pour les toutes premières questions de l'extrait lorsqu'elles poursuivent visiblement un cas clinique dont la vignette n'apparaît PAS en entier ici (elle a commencé sur une page précédente) — par exemple une page qui démarre directement par « 3. » ou « Question 4 » d'une série liée à une observation absente. Pour toutes les autres questions, laisse ce champ à false ou null. Ne l'utilise jamais pour une question indépendante."
       : "- case_stem: laisse TOUJOURS ce champ à null. Ne détecte ni ne regroupe aucun cas clinique, même si plusieurs questions semblent partager un énoncé commun — traite chaque question comme indépendante.",
     detectCases
       ? 'Si un paragraphe <p data-doc-intro="1">…</p> précède les questions, c\'est probablement une vignette clinique partagée par les questions de cet extrait (même sans étiquette "Cas clinique"): si c\'est bien le cas, recopie CE TEXTE À L\'IDENTIQUE (verbatim, sans le paraphraser) dans case_stem pour chaque question concernée, exactement comme pour un cas clinique explicite.'
@@ -851,6 +765,10 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
         hint: z.string().max(5000).optional(),
         expected: z.number().int().min(0).max(200).optional(),
         detectCases: z.boolean().optional(),
+        /** Leading pages included as context only — the questions to extract
+         *  are on the LAST page. Lets a clinical-case vignette that started on
+         *  the previous page still be visible to the model. */
+        contextPages: z.number().int().min(0).max(4).optional(),
       })
       .parse(input),
   )
@@ -858,9 +776,12 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
     const base64 = data.pdfDataUrl.replace(/^data:application\/pdf;base64,/i, "");
     return extractPdfChunkComplete(
-      (chunkBase64) => [
-        { type: "text", text: INSTRUCTIONS(data.hint, data.detectCases ?? true, true) },
-        { type: "text", text: expectedCountNote(data.expected ?? 0) },
+      (chunkBase64, expected) => [
+        {
+          type: "text",
+          text: INSTRUCTIONS(data.hint, data.detectCases ?? true, true, data.contextPages ?? 0),
+        },
+        { type: "text", text: expectedCountNote(expected) },
         {
           type: "file",
           data: chunkBase64,
@@ -925,7 +846,9 @@ export const extractRotationYearFromImage = createServerFn({ method: "POST" })
         },
         { type: "image", image: data.imageDataUrl },
       ],
-      { temperature: 0.1, timeoutMs: 60_000 },
+      // Reading a small, often low-contrast header is exactly the kind of
+      // careful visual task that benefits from thinking, same as extraction.
+      { temperature: 0.1, timeoutMs: 60_000, thinking: true },
     );
     return {
       rotation: output.rotation?.trim() || null,
