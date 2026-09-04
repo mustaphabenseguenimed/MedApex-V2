@@ -1,11 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { generateText, NoObjectGeneratedError, Output } from "ai";
+import { NoObjectGeneratedError } from "ai";
 import { z } from "zod";
 import { assertAdminPermission } from "./admin-guard";
-import { getGeminiProvider, GEMINI_DEFAULT_MODEL } from "./ai-provider.server";
 import { buildQuestionsDocx, type DocxQuestionItem } from "./questionsDocxBuilder";
-import { friendlyGatewayError, isTransient, retryDelayMs, sleep } from "./questions.functions";
+import { friendlyGatewayError, generateWithFallback } from "./aiGenerate.server";
 
 /** Plain-text extraction from an uploaded reference .docx (course notes,
  *  textbook excerpt, …) — no image/formatting handling needed, just text
@@ -68,6 +67,11 @@ export const generateQuestionsDocx = createServerFn({ method: "POST" })
 const ExplainedItem = z.object({
   index: z.number().int(),
   explanation: z.string(),
+  /** Set when the answer we were given looks wrong. The answer is never
+   *  overridden on this basis — it is surfaced for the admin to check, so an
+   *  extraction mistake upstream stops being laundered into a confident
+   *  explanation of the wrong option. */
+  answer_doubt: z.string().nullable().optional(),
 });
 const ExplainSchema = z.object({ explanations: z.array(ExplainedItem) });
 
@@ -96,9 +100,6 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
   )
   .handler(async ({ data, context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
-    const google = getGeminiProvider();
-    if (!google) throw new Error("GOOGLE_GENERATIVE_AI_API_KEY manquante");
-    const model = google(GEMINI_DEFAULT_MODEL);
 
     const questionsBlock = data.items
       .map((q, i) => {
@@ -118,8 +119,10 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
       .join("\n\n");
 
     const prompt = [
-      "Tu es un enseignant de médecine. On te donne une liste de questions de QCM/QROC avec leur bonne réponse déjà connue (ne la remets jamais en cause), et éventuellement un document de référence.",
+      "Tu es un enseignant de médecine. On te donne une liste de questions de QCM/QROC avec leur bonne réponse déjà connue, et éventuellement un document de référence.",
       "Pour CHAQUE question, rédige une explication claire et concise justifiant la réponse correcte : base-toi sur le document de référence quand il est pertinent, sinon sur des connaissances médicales fiables. Ne recopie pas l'énoncé ni les options.",
+      "MISE EN FORME de explanation: si tu justifies plusieurs propositions, retourne une liste HTML <ul><li><strong>A.</strong> …</li><li><strong>B.</strong> …</li></ul>, une <li> par proposition, jamais plusieurs justifications collées dans un même <p>. Si l'explication est unique et globale, garde un simple <p>.",
+      "N'écris JAMAIS que la réponse fournie est fausse dans le champ explanation : rédige toujours l'explication de la réponse indiquée. En revanche, si cette réponse te paraît médicalement erronée, remplis EN PLUS le champ answer_doubt avec une phrase courte disant ce qui te semble être la bonne réponse et pourquoi. Laisse answer_doubt à null quand la réponse fournie est correcte — c'est le cas le plus fréquent, ne le remplis pas par excès de prudence.",
       "Réponds pour toutes les questions listées ci-dessous, une entrée par index, dans n'importe quel ordre mais sans en omettre.",
       "",
       "Questions :",
@@ -131,33 +134,30 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
       data.instructions ? `\nInstructions supplémentaires de l'admin :\n${data.instructions}` : "",
     ].join("\n");
 
-    // Same treatment as question extraction: a 429/quota hit is worth
-    // waiting out (Google tells us how long) rather than failing the whole
-    // batch — free-tier quotas reset within seconds to a couple minutes.
-    let lastError: unknown;
-    for (let attemptNo = 0; attemptNo < 3; attemptNo++) {
-      try {
-        const { output } = await generateText({
-          model,
-          output: Output.object({ schema: ExplainSchema }),
-          temperature: 0.3,
-          prompt,
-        });
-        const byIndex = new Map(output.explanations.map((e) => [e.index, e.explanation]));
+    // Shares the extraction path's retry/backoff, timeout and safety settings
+    // instead of hand-rolling them here — this call previously had no timeout
+    // at all, so a hung request ran to the function's ceiling.
+    try {
+      const { output } = await generateWithFallback(
+        ExplainSchema,
+        [{ type: "text", text: prompt }],
+        { temperature: 0.3, timeoutMs: 150_000 },
+      );
+      const byIndex = new Map(output.explanations.map((e) => [e.index, e]));
+      return {
+        explanations: data.items.map((_, i) => byIndex.get(i)?.explanation ?? null),
+        doubts: data.items.map((_, i) => byIndex.get(i)?.answer_doubt ?? null),
+      };
+    } catch (error) {
+      // A schema miss that survived every retry means this batch produced
+      // nothing usable. Report it as empty rather than failing the whole run,
+      // but the caller counts the nulls and warns instead of claiming success.
+      if (NoObjectGeneratedError.isInstance(error)) {
         return {
-          explanations: data.items.map((_, i) => byIndex.get(i) ?? null),
+          explanations: data.items.map(() => null),
+          doubts: data.items.map(() => null),
         };
-      } catch (error) {
-        lastError = error;
-        if (NoObjectGeneratedError.isInstance(error)) {
-          return { explanations: data.items.map(() => null) };
-        }
-        if (isTransient(error) && attemptNo < 2) {
-          await sleep(retryDelayMs(error, attemptNo));
-          continue;
-        }
-        break;
       }
+      throw friendlyGatewayError(error);
     }
-    throw friendlyGatewayError(lastError);
   });

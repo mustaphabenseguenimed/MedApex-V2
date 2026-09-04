@@ -50,7 +50,7 @@ import {
   generateGroundedExplanations,
 } from "@/lib/conversion.functions";
 import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
-import type { PreparedChunk } from "@/lib/questionChunks";
+import { alignByStems, type PreparedChunk } from "@/lib/questionChunks";
 import { readAsDataUrl, splitPdfIntoPageChunks } from "@/lib/fileUtils";
 import { downloadBase64, downloadText, base64ToFile } from "@/lib/download";
 import { supabase } from "@/integrations/supabase/client";
@@ -185,6 +185,101 @@ function toJsonObjects(qs: ExtractedQ[]): unknown[] {
     }
   }
   return out;
+}
+
+/**
+ * Re-attach a chunk's parsed context (année / rotation / cours / cas clinique)
+ * to the questions the AI returned for it.
+ *
+ * The AI does not always return exactly `chunk.expected` questions. Zipping the
+ * context on by array index — as this used to do — then shifts every context
+ * after the divergence onto the wrong question, silently. `alignByStems` matches
+ * on the question text instead (order-preserving), and a question that matches
+ * nothing keeps the AI's own hints rather than inheriting someone else's.
+ */
+function applyChunkContexts(questions: ExtractedQ[], chunk: PreparedChunk): ExtractedQ[] {
+  const matches = alignByStems(
+    questions.map((q) => q.stem ?? ""),
+    chunk.stems ?? [],
+  );
+  return questions.map((q, i) => {
+    const ctx = chunk.contexts[matches[i] ?? -1];
+    if (!ctx) return q;
+    return {
+      ...q,
+      year_hint: ctx.year_hint ?? q.year_hint,
+      rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
+      course_hint: ctx.course_hint ?? q.course_hint,
+      case_stem: ctx.case_stem ?? q.case_stem,
+    };
+  });
+}
+
+type ChunkWarning = { filename: string; warning: string };
+
+/** A question whose recorded answer the explanation model thinks is wrong. */
+type AnswerDoubt = { index: number; doubt: string };
+
+/** Questions where the explanation model disagreed with the recorded answer.
+ *  It never overrides the answer — an upstream extraction mistake would
+ *  otherwise be silently dressed up as a confident explanation of the wrong
+ *  option, so it is put in front of the admin instead. */
+function AnswerDoubts({ doubts }: { doubts: AnswerDoubt[] }) {
+  const { tr } = useI18n();
+  if (!doubts.length) return null;
+  return (
+    <div className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+      <p className="font-medium">
+        {tr("Réponses à vérifier — l'IA n'est pas d'accord avec la réponse enregistrée :")}
+      </p>
+      <ul className="mt-1 list-disc pl-4">
+        {doubts.map((d) => (
+          <li key={d.index}>
+            <span className="font-medium">
+              {tr("Question")} {d.index + 1}
+            </span>{" "}
+            : {d.doubt}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Pull the per-chunk "possibly incomplete" warnings out of a batch of chunk
+ *  results, labelled by their lot number (Steps 2-4 chunk one document, so
+ *  there's no filename to show — the lot index is what locates it). */
+function collectChunkWarnings(
+  parts: { warning?: string | null }[],
+  tr: (s: string) => string,
+): ChunkWarning[] {
+  return parts.flatMap((p, i) =>
+    p.warning ? [{ filename: `${tr("Lot")} ${i + 1}`, warning: p.warning }] : [],
+  );
+}
+
+/** Amber panel listing chunks the server reported as possibly incomplete.
+ *  The server already re-splits and retries a short chunk; this is what's
+ *  left over after that, so it always needs a human look. */
+function ChunkWarnings({ warnings }: { warnings: ChunkWarning[] }) {
+  const { tr } = useI18n();
+  if (!warnings.length) return null;
+  return (
+    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+      <p className="font-medium">
+        {tr(
+          "Certaines pages semblent incomplètes malgré une nouvelle tentative — vérifiez-les manuellement :",
+        )}
+      </p>
+      <ul className="mt-1 list-disc pl-4">
+        {warnings.map((w, i) => (
+          <li key={i}>
+            <span className="font-medium">{w.filename}</span> : {w.warning}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 const EXPLAIN_BATCH_SIZE = 60;
@@ -880,7 +975,39 @@ function ConvertTabs() {
 
 // ---- Step 1: PDF(s) → DOCX (no explanations) --------------------------------
 
-type PdfChunkJob = { dataUrl: string; filename: string; fileIndex: number };
+type PdfChunkJob = {
+  dataUrl: string;
+  filename: string;
+  fileIndex: number;
+  /** Leading pages sent as context only (see splitPdfIntoPageChunks). */
+  contextPages: number;
+  /** Real question count for this page from the PDF text layer, 0 when the
+   *  page is a scan and the model's own count is the only signal available. */
+  expected: number;
+};
+
+/**
+ * Count the questions on each page from the PDF's own text layer, so an
+ * image-based extraction can be checked against a real number instead of the
+ * model's self-report. Returns 0 for any page without a usable text layer
+ * (a scan), and 0s throughout if the PDF can't be read at all — never a guess.
+ */
+async function countQuestionsPerPage(bytes: ArrayBuffer): Promise<number[]> {
+  try {
+    const [{ extractPdfText }, { countQuestions, textToHtml }] = await Promise.all([
+      import("@/lib/pdfText"),
+      import("@/lib/questionChunks"),
+    ]);
+    // extractPdfText transfers the buffer to the pdf.js worker; hand it a copy
+    // so the caller can still use the original for splitting.
+    const { pages, scannedPages } = await extractPdfText(bytes.slice(0));
+    const scanned = new Set(scannedPages);
+    return pages.map((text, i) => (scanned.has(i) ? 0 : countQuestions(textToHtml(text))));
+  } catch {
+    // A missing count only costs us the stronger completeness check.
+    return [];
+  }
+}
 
 type DocxResult = {
   base64: string;
@@ -919,12 +1046,22 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       const chunkJobs: PdfChunkJob[] = [];
       for (const [fileIndex, file] of files.entries()) {
         const bytes = await file.arrayBuffer();
-        const chunks = await splitPdfIntoPageChunks(bytes, 1);
+        // One page per call, plus the preceding page as context only, so a
+        // clinical case whose vignette starts on the previous page is still
+        // visible to the call that handles its continuation questions.
+        const chunks = await splitPdfIntoPageChunks(bytes, 1, 1);
+        // A text-based PDF gives a real per-page question count — a far better
+        // completeness anchor than the model's own self-report, which tends to
+        // under-count exactly when it has overlooked a question. Scanned pages
+        // have no text layer, so they keep the self-reported behaviour (0).
+        const expectedPerPage = await countQuestionsPerPage(bytes);
         for (const chunk of chunks) {
           chunkJobs.push({
             dataUrl: chunk.dataUrl,
             filename: `${file.name} (${chunk.label})`,
             fileIndex,
+            contextPages: chunk.contextPages,
+            expected: expectedPerPage[chunk.firstPageIndex] ?? 0,
           });
         }
       }
@@ -964,6 +1101,8 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
                   filename: job.filename,
                   detectCases: true,
                   hint: hint.trim() || undefined,
+                  contextPages: job.contextPages,
+                  expected: job.expected,
                 },
                 signal: controller.signal,
               }),
@@ -990,8 +1129,30 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           }
         }
       });
+      // Carry a clinical-case vignette across a page break. The model is given
+      // the previous page as context and asked to recopy the vignette itself,
+      // but when it only manages to flag the continuation we fill the vignette
+      // in here from the last case seen on the preceding page of the same file.
+      let lastCaseStem: string | null = null;
+      let lastCaseFile: number | null = null;
+      const stitched: ExtractedQ[][] = prepared.map((job, i) => {
+        const questions = parts[i].questions.map((q) => {
+          if (q.case_stem) return q;
+          if (q.continues_previous_page && lastCaseFile === job.fileIndex && lastCaseStem) {
+            return { ...q, case_stem: lastCaseStem };
+          }
+          return q;
+        });
+        for (const q of questions) {
+          if (q.case_stem) {
+            lastCaseStem = q.case_stem;
+            lastCaseFile = job.fileIndex;
+          }
+        }
+        return questions;
+      });
       const all: ExtractedQ[] = prepared.flatMap((job, i) =>
-        parts[i].questions.map((q) => {
+        stitched[i].map((q) => {
           if (combinedRotation(q)) return q;
           const fallback = fileFallback.get(job.fileIndex);
           return fallback ? { ...q, rotation_hint: fallback, year_hint: null } : q;
@@ -1167,22 +1328,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         )}
         {extracted && busy !== "extract" && (
           <div className="space-y-3">
-            {chunkWarnings.length > 0 && (
-              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                <p className="font-medium">
-                  {tr(
-                    "Certaines pages semblent incomplètes malgré une nouvelle tentative — vérifiez-les manuellement :",
-                  )}
-                </p>
-                <ul className="mt-1 list-disc pl-4">
-                  {chunkWarnings.map((w, i) => (
-                    <li key={i}>
-                      <span className="font-medium">{w.filename}</span> : {w.warning}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+            <ChunkWarnings warnings={chunkWarnings} />
             <Button onClick={generate} disabled={busy !== null || !extracted.length}>
               {busy === "generate" ? (
                 <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
@@ -1521,6 +1667,8 @@ function Step2Panel({
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
   const [busy, setBusy] = useState<"extract" | "explain" | "generate" | null>(null);
   const [extracted, setExtracted] = useState<ExtractedQ[] | null>(null);
+  const [chunkWarnings, setChunkWarnings] = useState<ChunkWarning[]>([]);
+  const [answerDoubts, setAnswerDoubts] = useState<AnswerDoubt[]>([]);
   const [result, setResult] = useState<DocxResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -1590,29 +1738,27 @@ function Step2Panel({
                 },
                 signal: controller.signal,
               }),
-            ).then((r) =>
-              (r.questions ?? []).map((q, i) => {
-                const ctx = c.contexts[i];
-                if (!ctx) return q;
-                return {
-                  ...q,
-                  year_hint: ctx.year_hint ?? q.year_hint,
-                  rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
-                  course_hint: ctx.course_hint ?? q.course_hint,
-                  case_stem: ctx.case_stem ?? q.case_stem,
-                };
-              }),
-            ),
+            ).then((r) => ({
+              questions: applyChunkContexts(r.questions ?? [], c),
+              warning: r.warning,
+            })),
         ),
         setProgress,
         4,
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      const qs: ExtractedQ[] = parts.flat();
+      const qs: ExtractedQ[] = parts.flatMap((p) => p.questions);
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
+      const warnings = collectChunkWarnings(parts, tr);
       setExtracted(qs);
+      setChunkWarnings(warnings);
       toast.success(`${qs.length} ${tr("question(s) extraites — vérifiez avant de continuer.")}`);
+      if (warnings.length) {
+        toast.warning(
+          `${warnings.length} ${tr("lot(s) possiblement incomplet(s) — voir le détail ci-dessous.")}`,
+        );
+      }
     } catch (e: any) {
       if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
@@ -1670,20 +1816,44 @@ function Step2Panel({
                 },
                 signal: controller.signal,
               }),
-            ).then((r) => r.explanations),
+            ),
         ),
         setProgress,
         4,
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      const explanations = explanationParts.flat();
+      // Each batch always returns one entry per question it was given (null
+      // where the model produced nothing), so these stay index-aligned.
+      const explanations = explanationParts.flatMap((r) => r.explanations);
+      const doubts = explanationParts.flatMap((r) => r.doubts ?? []);
       const withExplanations = extracted.map((q, i) => ({
         ...q,
         explanation: explanations[i] ?? q.explanation,
       }));
       setExtracted(withExplanations);
-      toast.success(tr("Explications générées — vérifiez avant de générer le fichier."));
+      setAnswerDoubts(
+        doubts.map((d, i) => (d ? { index: i, doubt: d } : null)).filter(Boolean) as AnswerDoubt[],
+      );
+      const missing = explanations.filter((e) => !e).length;
+      // Keep whatever the extraction step already reported — only this run's
+      // own explanation warning is replaced.
+      setChunkWarnings((prev) => [
+        ...prev.filter((w) => w.filename !== tr("Explications")),
+        ...(missing
+          ? [
+              {
+                filename: tr("Explications"),
+                warning: `${missing} ${tr("question(s) sans explication générée")}`,
+              },
+            ]
+          : []),
+      ]);
+      if (missing) {
+        toast.warning(`${missing} ${tr("question(s) sans explication générée")}`);
+      } else {
+        toast.success(tr("Explications générées — vérifiez avant de générer le fichier."));
+      }
     } catch (e: any) {
       if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
@@ -1862,6 +2032,8 @@ function Step2Panel({
         )}
         {extracted && busy !== "extract" && (
           <div className="space-y-3">
+            <ChunkWarnings warnings={chunkWarnings} />
+            <AnswerDoubts doubts={answerDoubts} />
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
@@ -1935,6 +2107,7 @@ function Step3Panel({
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
   const [busy, setBusy] = useState<"extract" | "generate" | null>(null);
   const [extracted, setExtracted] = useState<ExtractedQ[] | null>(null);
+  const [chunkWarnings, setChunkWarnings] = useState<ChunkWarning[]>([]);
   const [result, setResult] = useState<JsonResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -2004,29 +2177,27 @@ function Step3Panel({
                 },
                 signal: controller.signal,
               }),
-            ).then((r) =>
-              (r.questions ?? []).map((q, i) => {
-                const ctx = c.contexts[i];
-                if (!ctx) return q;
-                return {
-                  ...q,
-                  year_hint: ctx.year_hint ?? q.year_hint,
-                  rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
-                  course_hint: ctx.course_hint ?? q.course_hint,
-                  case_stem: ctx.case_stem ?? q.case_stem,
-                };
-              }),
-            ),
+            ).then((r) => ({
+              questions: applyChunkContexts(r.questions ?? [], c),
+              warning: r.warning,
+            })),
         ),
         setProgress,
         4,
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      const qs: ExtractedQ[] = parts.flat();
+      const qs: ExtractedQ[] = parts.flatMap((p) => p.questions);
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
+      const warnings = collectChunkWarnings(parts, tr);
       setExtracted(qs);
+      setChunkWarnings(warnings);
       toast.success(`${qs.length} ${tr("question(s) extraites — vérifiez avant de générer.")}`);
+      if (warnings.length) {
+        toast.warning(
+          `${warnings.length} ${tr("lot(s) possiblement incomplet(s) — voir le détail ci-dessous.")}`,
+        );
+      }
     } catch (e: any) {
       if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
@@ -2139,6 +2310,7 @@ function Step3Panel({
         )}
         {extracted && busy !== "extract" && (
           <div className="space-y-3">
+            <ChunkWarnings warnings={chunkWarnings} />
             <Button onClick={generate} disabled={!extracted.length}>
               <FileDown className="mr-1.5 h-4 w-4" />
               {tr("Générer le fichier .json")}
@@ -2209,6 +2381,7 @@ function Step4Panel() {
   const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
   const [busy, setBusy] = useState<"extract" | "generate" | null>(null);
   const [parsed, setParsed] = useState<ExtractedQ[] | null>(null);
+  const [chunkWarnings, setChunkWarnings] = useState<ChunkWarning[]>([]);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -2292,29 +2465,27 @@ function Step4Panel() {
                 },
                 signal: controller.signal,
               }),
-            ).then((r) =>
-              (r.questions ?? []).map((q, i) => {
-                const ctx = c.contexts[i];
-                if (!ctx) return q;
-                return {
-                  ...q,
-                  year_hint: ctx.year_hint ?? q.year_hint,
-                  rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
-                  course_hint: ctx.course_hint ?? q.course_hint,
-                  case_stem: ctx.case_stem ?? q.case_stem,
-                };
-              }),
-            ),
+            ).then((r) => ({
+              questions: applyChunkContexts(r.questions ?? [], c),
+              warning: r.warning,
+            })),
         ),
         setProgress,
         4,
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      const qs: ExtractedQ[] = parts.flat();
+      const qs: ExtractedQ[] = parts.flatMap((p) => p.questions);
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
+      const warnings = collectChunkWarnings(parts, tr);
       setParsed(qs);
+      setChunkWarnings(warnings);
       toast.success(`${qs.length} ${tr("question(s) extraites")}`);
+      if (warnings.length) {
+        toast.warning(
+          `${warnings.length} ${tr("lot(s) possiblement incomplet(s) — voir le détail ci-dessous.")}`,
+        );
+      }
     } catch (e: any) {
       if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
@@ -2481,6 +2652,7 @@ function Step4Panel() {
               {parsed.length} {tr("question(s)/cas chargé(s) —")} {ranges.length} {tr("groupe(s).")}
             </p>
           )}
+          <ChunkWarnings warnings={chunkWarnings} />
         </div>
 
         {entries && entries.length > 0 && parsed && parsed.length > 0 && (
