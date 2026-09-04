@@ -68,6 +68,70 @@ export async function extractPdfText(file: File | ArrayBuffer): Promise<PdfTextR
   return { pages, scannedPages, totalPages: doc.numPages };
 }
 
+/** Render one already-loaded pdf.js page to a canvas at `scale`. */
+async function renderPageToCanvas(page: any, scale: number): Promise<HTMLCanvasElement> {
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas non supporté par ce navigateur");
+  // JPEG has no alpha: paint white first or transparent areas come out black.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  return canvas;
+}
+
+/**
+ * Render every page as a JPEG data URL that fits within `maxBytes`.
+ *
+ * Used instead of shipping the PDF bytes themselves when a page's sub-PDF
+ * would be too large to send. Extracting one page with pdf-lib copies every
+ * resource that page references, so for a PDF that shares an image pool
+ * across pages (how screenshot exports are typically built) a single-page
+ * copy can be nearly the size of the whole document — regardless of what is
+ * actually on that page. Re-rendering sidesteps that completely: the payload
+ * depends only on the settings chosen here, so an arbitrarily large source
+ * PDF still produces a request that fits.
+ *
+ * Quality is stepped down first (cheap, barely visible on text), then scale,
+ * until the encoded size fits. The last attempt is returned even if it is
+ * still over budget, so the caller can decide what to do about that page.
+ */
+export async function renderPdfPages(
+  bytes: ArrayBuffer,
+  opts?: { scale?: number; maxBytes?: number },
+): Promise<string[]> {
+  const pdfjs = await getPdfjs();
+  const doc = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
+  const baseScale = opts?.scale ?? 2;
+  const maxBytes = opts?.maxBytes ?? 1_500_000;
+  const images: string[] = [];
+
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    let out = "";
+    // Text stays legible well below full quality, so try quality first and
+    // only shrink the raster if that is not enough.
+    outer: for (const scale of [baseScale, baseScale * 0.75, baseScale * 0.5]) {
+      const canvas = await renderPageToCanvas(page, scale);
+      for (const quality of [0.85, 0.7, 0.55]) {
+        out = canvas.toDataURL("image/jpeg", quality);
+        if (out.length <= maxBytes) break outer;
+      }
+    }
+    images.push(out);
+  }
+
+  try {
+    await doc.destroy();
+  } catch {
+    /* ignore */
+  }
+  return images;
+}
+
 /**
  * Render just the top strip of each page as a high-resolution PNG data URL —
  * used to read a small header (e.g. a rotation/année banner) reliably: a
@@ -87,13 +151,7 @@ export async function renderPdfPageTopImages(
 
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
-    const viewport = page.getViewport({ scale });
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("Canvas non supporté par ce navigateur");
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    const canvas = await renderPageToCanvas(page, scale);
 
     const cropHeight = Math.max(1, Math.round(canvas.height * cropTop));
     const cropCanvas = document.createElement("canvas");

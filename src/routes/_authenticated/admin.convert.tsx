@@ -41,6 +41,7 @@ import {
   prepareDocxChunks,
   extractQuestionsFromHtmlChunk,
   extractQuestionsFromPdfChunk,
+  extractQuestionsFromImage,
   extractRotationYearFromImage,
   type ExtractedQ,
 } from "@/lib/questions.functions";
@@ -983,7 +984,12 @@ function ConvertTabs() {
 // ---- Step 1: PDF(s) → DOCX (no explanations) --------------------------------
 
 type PdfChunkJob = {
+  /** PDF bytes for this chunk, or "" when the chunk is sent as an image. */
   dataUrl: string;
+  /** Set when the chunk goes as a rendered page image instead of PDF bytes. */
+  imageDataUrl?: string;
+  /** Previous page, rendered, sent as context only alongside `imageDataUrl`. */
+  contextImageDataUrl?: string;
   filename: string;
   fileIndex: number;
   /** Leading pages sent as context only (see splitPdfIntoPageChunks). */
@@ -1025,6 +1031,7 @@ type DocxResult = {
 function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const { tr } = useI18n();
   const extractPdfChunk = useServerFn(extractQuestionsFromPdfChunk);
+  const extractImage = useServerFn(extractQuestionsFromImage);
   const genDocx = useServerFn(generateQuestionsDocx);
   const [files, setFiles] = useState<File[]>([]);
   const [rotation, setRotation] = useState("");
@@ -1062,12 +1069,37 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         // under-count exactly when it has overlooked a question. Scanned pages
         // have no text layer, so they keep the self-reported behaviour (0).
         const expectedPerPage = await countQuestionsPerPage(bytes);
+
+        // Extracting a page with pdf-lib copies every resource it references,
+        // so for a PDF that shares one image pool across pages a single-page
+        // copy can be nearly the size of the whole file. When that happens the
+        // chunk can't be sent as PDF bytes at all — re-render those pages
+        // instead, which bounds the payload no matter how large the source is.
+        const oversized = chunks.some((c) => c.dataUrl.length > MAX_CHUNK_DATA_URL);
+        let rendered: string[] = [];
+        if (oversized) {
+          const { renderPdfPages } = await import("@/lib/pdfText");
+          rendered = await renderPdfPages(bytes.slice(0), { maxBytes: 1_200_000 });
+        }
+
         for (const chunk of chunks) {
+          const tooBig = chunk.dataUrl.length > MAX_CHUNK_DATA_URL;
+          const image = tooBig ? rendered[chunk.firstPageIndex] : undefined;
+          let contextImage: string | undefined;
+          if (image && chunk.contextPages > 0) {
+            const previous = rendered[chunk.firstPageIndex - 1];
+            // Only carry the context image when the pair still fits the budget.
+            if (previous && image.length + previous.length <= MAX_CHUNK_DATA_URL) {
+              contextImage = previous;
+            }
+          }
           chunkJobs.push({
-            dataUrl: chunk.dataUrl,
+            dataUrl: image ? "" : chunk.dataUrl,
+            imageDataUrl: image,
+            contextImageDataUrl: contextImage,
             filename: `${file.name} (${chunk.label})`,
             fileIndex,
-            contextPages: chunk.contextPages,
+            contextPages: image ? (contextImage ? 1 : 0) : chunk.contextPages,
             expected: expectedPerPage[chunk.firstPageIndex] ?? 0,
           });
         }
@@ -1077,9 +1109,11 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       toast.success(
         `${files.length} ${tr("fichier(s) chargé(s)")} — ${chunkJobs.length} ${tr("page(s)/lot(s) prêt(s)")}`,
       );
-      // A page that is still oversized on its own would be rejected by the
-      // server before it runs, so say so now rather than after a long wait.
-      const tooLarge = chunkJobs.filter((j) => j.dataUrl.length > MAX_CHUNK_DATA_URL);
+      // Anything still over budget after re-rendering can't be sent at all —
+      // say so now rather than after a long wait on a request that will fail.
+      const tooLarge = chunkJobs.filter(
+        (j) => (j.imageDataUrl ?? j.dataUrl).length > MAX_CHUNK_DATA_URL,
+      );
       if (tooLarge.length) {
         setChunkWarnings(
           tooLarge.map((j) => ({
@@ -1116,17 +1150,30 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         prepared.map(
           (job) => () =>
             withRetry(() =>
-              extractPdfChunk({
-                data: {
-                  pdfDataUrl: job.dataUrl,
-                  filename: job.filename,
-                  detectCases: true,
-                  hint: hint.trim() || undefined,
-                  contextPages: job.contextPages,
-                  expected: job.expected,
-                },
-                signal: controller.signal,
-              }),
+              // Pages whose sub-PDF was too large to send were re-rendered at
+              // upload time and go through the image path instead.
+              job.imageDataUrl
+                ? extractImage({
+                    data: {
+                      imageDataUrl: job.imageDataUrl,
+                      contextImageDataUrl: job.contextImageDataUrl,
+                      detectCases: true,
+                      hint: hint.trim() || undefined,
+                      expected: job.expected,
+                    },
+                    signal: controller.signal,
+                  })
+                : extractPdfChunk({
+                    data: {
+                      pdfDataUrl: job.dataUrl,
+                      filename: job.filename,
+                      detectCases: true,
+                      hint: hint.trim() || undefined,
+                      contextPages: job.contextPages,
+                      expected: job.expected,
+                    },
+                    signal: controller.signal,
+                  }),
             ),
         ),
         setProgress,

@@ -356,7 +356,7 @@ const INSTRUCTIONS = (
     "Tu extrais des questions de QCM médicales à partir d'un document (capture d'écran, PDF, ou texte extrait d'un fichier Word), en français ou en arabe.",
     "Le fragment fourni contient un ou plusieurs QCM. N'en oublie aucun, ne fusionne pas deux questions, et ne réinvente rien.",
     contextPages > 0
-      ? `ATTENTION — PAGES DE CONTEXTE: ce PDF contient ${contextPages + 1} page(s), mais tu ne dois extraire QUE les questions de la DERNIÈRE page. ${contextPages === 1 ? "La page précédente est" : "Les pages précédentes sont"} fournie(s) UNIQUEMENT comme contexte: n'en extrais AUCUNE question, même complète. Ce contexte sert à une seule chose: si la dernière page commence par des questions qui poursuivent un cas clinique (vignette/observation) commencé sur la page précédente, tu dois recopier cette vignette À L'IDENTIQUE dans leur champ case_stem, et mettre continues_previous_page à true pour ces questions-là.`
+      ? `ATTENTION — PAGES DE CONTEXTE: ce document contient ${contextPages + 1} page(s)/image(s), mais tu ne dois extraire QUE les questions de la DERNIÈRE. ${contextPages === 1 ? "La page précédente est" : "Les pages précédentes sont"} fournie(s) UNIQUEMENT comme contexte: n'en extrais AUCUNE question, même complète. Ce contexte sert à une seule chose: si la dernière page commence par des questions qui poursuivent un cas clinique (vignette/observation) commencé sur la page précédente, tu dois recopier cette vignette À L'IDENTIQUE dans leur champ case_stem, et mettre continues_previous_page à true pour ces questions-là.`
       : "",
     askTotalVisible
       ? `Avant de répondre, compte silencieusement le nombre total de questions DISTINCTES visibles ${contextPages > 0 ? "SUR LA DERNIÈRE PAGE UNIQUEMENT (ignore complètement les questions des pages de contexte dans ce comptage)" : "dans ce document/extrait"} (chaque QCM/QCS/QROC numéroté ou clairement séparé compte pour une). Renvoie ce total dans le champ total_visible, et assure-toi ensuite que la longueur du tableau questions est EXACTEMENT égale à total_visible : n'en omets, ne fusionne, ni ne dédouble aucune.`
@@ -460,17 +460,56 @@ export const extractQuestionsFromImage = createServerFn({ method: "POST" })
           .string()
           .max(15_000_000)
           .regex(/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i, "Image invalide"),
+        /** The previous page, for context only — never extracted from. Lets a
+         *  clinical-case vignette that started there still be visible here. */
+        contextImageDataUrl: z
+          .string()
+          .max(15_000_000)
+          .regex(/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i, "Image invalide")
+          .optional(),
         hint: z.string().max(5000).optional(),
         detectCases: z.boolean().optional(),
+        expected: z.number().int().min(0).max(200).optional(),
       })
       .parse(input),
   )
   .handler(async ({ data, context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
-    return runExtract([
-      { type: "text", text: INSTRUCTIONS(data.hint, data.detectCases ?? true) },
-      { type: "image", image: data.imageDataUrl },
-    ]);
+    const contextPages = data.contextImageDataUrl ? 1 : 0;
+    const expected = data.expected ?? 0;
+
+    const content = (note: string): AiContent => [
+      { type: "text", text: INSTRUCTIONS(data.hint, data.detectCases ?? true, true, contextPages) },
+      { type: "text", text: note },
+      // Context first, target last: INSTRUCTIONS tells the model to extract
+      // only from the LAST image when context pages are present.
+      ...(data.contextImageDataUrl
+        ? [{ type: "image" as const, image: data.contextImageDataUrl }]
+        : []),
+      { type: "image" as const, image: data.imageDataUrl },
+    ];
+
+    const result = await runExtract(content(expectedCountNote(expected)));
+    const got = result.questions.length;
+    const target = expected > 0 ? expected : (result.total_visible ?? 0);
+    if (target <= 0 || got >= target) return { ...result, expected: target || undefined };
+
+    // An image can't be re-split server-side the way a PDF chunk can, so the
+    // one recovery available is asking again, more firmly, for what's missing.
+    const retry = await runExtract(
+      content(
+        `${expectedCountNote(target)} Ta réponse précédente n'en contenait que ${got} : relis l'image entièrement, y compris le haut et le bas, et n'en oublie aucune.`,
+      ),
+    );
+    const best = retry.questions.length > got ? retry : result;
+    return {
+      ...best,
+      expected: target,
+      warning:
+        best.questions.length < target
+          ? `${target} question(s) détectée(s), ${best.questions.length} extraite(s)`
+          : undefined,
+    };
   });
 
 export const extractQuestionsFromPdf = createServerFn({ method: "POST" })
