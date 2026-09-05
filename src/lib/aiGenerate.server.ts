@@ -75,10 +75,15 @@ const SAFETY_SETTINGS = [
   "HARM_CATEGORY_DANGEROUS_CONTENT",
 ].map((category) => ({ category, threshold: "BLOCK_NONE" }));
 
-/** Shared model + retry loop: tries each configured model in turn, retrying
- *  transient (429/5xx) errors with backoff and a schema miss twice, before
- *  moving to the next candidate. Used by every structured AI call in the
- *  conversion pipeline so the retry policy lives in one place. */
+/** Shared model + retry loop, used by every structured AI call in the
+ *  conversion pipeline so the retry policy lives in one place.
+ *
+ *  What a failure *means* decides whether we move to the next model. Only a
+ *  model that is rate-limited or out of quota falls through to the next
+ *  candidate — that is the one thing the weaker fallback model is there for,
+ *  since it has its own quota pool. Any other failure (notably a schema miss)
+ *  throws immediately: retrying it on a weaker model would trade extraction
+ *  quality away silently, which is exactly what the fallback used to do. */
 export async function generateWithFallback<T>(
   schema: z.ZodType<T>,
   content: AiContent,
@@ -109,8 +114,6 @@ export async function generateWithFallback<T>(
   for (const candidate of candidates) {
     // Up to 4 tries per model: transient 429/5xx get a real backoff (Google
     // tells us how long to wait), schema misses get an immediate retry.
-    // Worth being persistent — there is deliberately no weaker fallback model
-    // to drop down to, so giving up here fails the chunk outright.
     for (let attemptNo = 0; attemptNo < 4; attemptNo++) {
       try {
         const out = await attempt(candidate.model);
@@ -122,10 +125,12 @@ export async function generateWithFallback<T>(
             await sleep(retryDelayMs(error, attemptNo));
             continue;
           }
-          break;
+          break; // out of patience on this model — the next one has its own quota
         }
         if (NoObjectGeneratedError.isInstance(error) && attemptNo < 2) continue;
-        break; // terminal for this model — try the next candidate
+        // Not a quota problem: a weaker model would not do better, and moving
+        // to one would hide the failure behind lower-quality output.
+        throw friendlyGatewayError(error);
       }
     }
   }

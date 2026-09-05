@@ -325,18 +325,24 @@ function isRateLimit(e: any): boolean {
   );
 }
 
+/** Cooldowns applied when the account hits a rate limit, in order. Long
+ *  enough to outlast a per-minute quota window rather than bouncing off it. */
+const RATE_LIMIT_COOLDOWNS_MS = [20_000, 45_000, 90_000];
+
 /** Run jobs with a bounded number in flight at once (unlike a bare
  *  Promise.all, which fires everything simultaneously and can blow past the
- *  Gemini free tier's ~20 requests/minute cap on a large batch), reporting
- *  live progress as each one completes. Each job already retries its own
+ *  Gemini free tier's per-minute cap on a large batch), reporting live
+ *  progress as each one completes. Each job already retries its own
  *  429/quota errors with backoff server-side, but once the whole account is
  *  rate-limited, several concurrent workers retrying independently just
  *  keeps hammering the wall — so on a rate-limit error every worker pauses
- *  together via a shared cooldown before the failed job gets one more try. */
+ *  together via a shared cooldown, which lengthens each time the wall is hit
+ *  again, before the failed job is retried. Giving up after a single retry
+ *  used to take the whole batch down for what is often a passing limit. */
 async function withProgress<T>(
   jobs: Array<() => Promise<T>>,
   onProgress: (p: Progress) => void,
-  concurrency = 4,
+  concurrency = 2,
   signal?: AbortSignal,
 ): Promise<T[]> {
   const total = jobs.length;
@@ -355,15 +361,18 @@ async function withProgress<T>(
       const i = next++;
       await waitForCooldown();
       if (signal?.aborted) return;
-      try {
-        results[i] = await jobs[i]();
-      } catch (e: any) {
-        if (!isRateLimit(e)) throw e;
-        // Rate limited: pause every worker, then give this job one more try.
-        cooldownUntil = Date.now() + 20_000;
-        await waitForCooldown();
-        if (signal?.aborted) return;
-        results[i] = await jobs[i]();
+      for (let attempt = 0; ; attempt++) {
+        try {
+          results[i] = await jobs[i]();
+          break;
+        } catch (e: any) {
+          // Only a rate limit is worth waiting out; anything else fails now.
+          if (!isRateLimit(e) || attempt >= RATE_LIMIT_COOLDOWNS_MS.length) throw e;
+          // Pause every worker together, longer each time we hit the wall.
+          cooldownUntil = Date.now() + RATE_LIMIT_COOLDOWNS_MS[attempt];
+          await waitForCooldown();
+          if (signal?.aborted) return;
+        }
       }
       done++;
       onProgress({ done, total });
@@ -767,7 +776,7 @@ function RotationYearDetector({
             withRetry(() => extractRotYear({ data: { imageDataUrl }, signal: controller.signal })),
         ),
         setProgress,
-        4,
+        2,
         controller.signal,
       );
       if (controller.signal.aborted) return;
@@ -1177,7 +1186,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             ),
         ),
         setProgress,
-        4,
+        2,
         controller.signal,
       );
       if (controller.signal.aborted) return;
@@ -1812,7 +1821,7 @@ function Step2Panel({
             })),
         ),
         setProgress,
-        4,
+        2,
         controller.signal,
       );
       if (controller.signal.aborted) return;
@@ -1887,7 +1896,7 @@ function Step2Panel({
             ),
         ),
         setProgress,
-        4,
+        2,
         controller.signal,
       );
       if (controller.signal.aborted) return;
@@ -2251,7 +2260,7 @@ function Step3Panel({
             })),
         ),
         setProgress,
-        4,
+        2,
         controller.signal,
       );
       if (controller.signal.aborted) return;
@@ -2539,7 +2548,7 @@ function Step4Panel() {
             })),
         ),
         setProgress,
-        4,
+        2,
         controller.signal,
       );
       if (controller.signal.aborted) return;
