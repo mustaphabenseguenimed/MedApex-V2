@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -53,7 +53,13 @@ import {
 import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
 import { alignByStems, type PreparedChunk } from "@/lib/questionChunks";
 import { readAsDataUrl, splitPdfIntoPageChunks, MAX_CHUNK_DATA_URL } from "@/lib/fileUtils";
-import { downloadBase64, downloadText, base64ToFile } from "@/lib/download";
+import {
+  downloadBase64,
+  downloadText,
+  base64ToFile,
+  downloadZip,
+  baseFilename,
+} from "@/lib/download";
 import { supabase } from "@/integrations/supabase/client";
 import { resolveImportAssignments, primaryRotation } from "@/lib/importMatch";
 import { importQuestionsToModule, type ImportableQuestion } from "@/lib/importQuestions";
@@ -279,6 +285,126 @@ function ChunkWarnings({ warnings }: { warnings: ChunkWarning[] }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+// ---- multi-file input: combine vs. keep-separate results -------------------
+
+/** One source file's own extracted questions, tracked independently so
+ *  "separate results" mode can edit/generate/download each file on its own. */
+type FileGroup = { filename: string; items: ExtractedQ[] };
+
+/** Toggle shown once 2+ files are loaded — combined merges every file's
+ *  questions into a single output (today's default, single-file behaviour
+ *  generalized); separate keeps one output per input file. Hidden for a
+ *  single file, where the distinction is meaningless. */
+function CombineToggle({
+  combine,
+  onChange,
+  fileCount,
+  idPrefix,
+}: {
+  combine: boolean;
+  onChange: (v: boolean) => void;
+  fileCount: number;
+  idPrefix: string;
+}) {
+  const { tr } = useI18n();
+  if (fileCount < 2) return null;
+  return (
+    <div className="flex items-center gap-2">
+      <Switch id={`${idPrefix}-combine`} checked={combine} onCheckedChange={onChange} />
+      <Label htmlFor={`${idPrefix}-combine`} className="cursor-pointer">
+        {combine
+          ? tr("Résultats combinés en un seul fichier")
+          : tr("Résultats séparés (un fichier par entrée)")}
+      </Label>
+    </div>
+  );
+}
+
+/** Per-file editor list for "separate results" mode: one QuestionsPreviewEditor
+ *  and its own Générer/Télécharger per source file, plus a single "Tout
+ *  télécharger" that zips whatever has been generated so far (generating
+ *  on the fly for any file that hasn't been downloaded individually yet). */
+function SeparateResultsList({
+  groups,
+  onGroupChange,
+  onGenerate,
+  busyIndex,
+  hasResult,
+  onDownload,
+  onDownloadAll,
+  downloadAllBusy,
+  generateLabel,
+  showExplanation,
+  renderFooter,
+}: {
+  groups: FileGroup[];
+  onGroupChange: (index: number, items: ExtractedQ[]) => void;
+  onGenerate: (index: number) => void;
+  busyIndex: number | null;
+  hasResult: (index: number) => boolean;
+  onDownload: (index: number) => void;
+  onDownloadAll: () => void;
+  downloadAllBusy: boolean;
+  generateLabel: string;
+  showExplanation: boolean;
+  renderFooter?: (index: number) => ReactNode;
+}) {
+  const { tr } = useI18n();
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium">
+          {groups.length} {tr("fichier(s)")}
+        </p>
+        <Button variant="outline" size="sm" onClick={onDownloadAll} disabled={downloadAllBusy}>
+          {downloadAllBusy ? (
+            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+          ) : (
+            <FileDown className="mr-1.5 h-4 w-4" />
+          )}
+          {tr("Tout télécharger (.zip)")}
+        </Button>
+      </div>
+      {groups.map((g, i) => (
+        <div key={i} className="space-y-2 rounded-lg border p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium">
+              {g.filename} — {g.items.length} {tr("question(s)")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onGenerate(i)}
+                disabled={busyIndex !== null || !g.items.length}
+              >
+                {busyIndex === i ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                )}
+                {generateLabel}
+              </Button>
+              {hasResult(i) && (
+                <Button size="sm" variant="outline" onClick={() => onDownload(i)}>
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                  {tr("Télécharger")}
+                </Button>
+              )}
+            </div>
+          </div>
+          <QuestionsPreviewEditor
+            items={g.items}
+            onChange={(items) => onGroupChange(i, items)}
+            showExplanation={showExplanation}
+          />
+          {renderFooter?.(i)}
+        </div>
+      ))}
     </div>
   );
 }
@@ -1054,6 +1180,14 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Multiple PDFs can be converted either into one merged .docx (combined,
+  // the original behaviour) or into one .docx per input file.
+  const [combineResults, setCombineResults] = useState(true);
+  const [fileGroups, setFileGroups] = useState<FileGroup[] | null>(null);
+  const [groupBusy, setGroupBusy] = useState<number | null>(null);
+  const [groupResults, setGroupResults] = useState<Record<number, DocxResult>>({});
+  const [downloadAllBusy, setDownloadAllBusy] = useState(false);
+  const separate = !combineResults && files.length > 1;
 
   const upload = async () => {
     if (!files.length) {
@@ -1065,6 +1199,8 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     setExtracted(null);
     setChunkWarnings([]);
     setResult(null);
+    setFileGroups(null);
+    setGroupResults({});
     try {
       const chunkJobs: PdfChunkJob[] = [];
       for (const [fileIndex, file] of files.entries()) {
@@ -1149,6 +1285,8 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     setExtracted(null);
     setChunkWarnings([]);
     setResult(null);
+    setFileGroups(null);
+    setGroupResults({});
     setProgress(null);
     try {
       // Fire every PDF chunk at once instead of one at a time — this is the
@@ -1228,13 +1366,22 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         }
         return questions;
       });
-      const all: ExtractedQ[] = prepared.flatMap((job, i) =>
-        stitched[i].map((q) => {
+      // Keyed by fileIndex so the same pass can serve either output mode:
+      // combined flattens every file's questions into one list (unchanged
+      // from before multi-file grouping existed); separate keeps each
+      // file's own questions together for its own .docx.
+      const byFile = new Map<number, ExtractedQ[]>();
+      prepared.forEach((job, i) => {
+        const withFallback = stitched[i].map((q) => {
           if (combinedRotation(q)) return q;
           const fallback = fileFallback.get(job.fileIndex);
           return fallback ? { ...q, rotation_hint: fallback, year_hint: null } : q;
-        }),
-      );
+        });
+        byFile.set(job.fileIndex, [...(byFile.get(job.fileIndex) ?? []), ...withFallback]);
+      });
+      const all: ExtractedQ[] = [...byFile.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .flatMap(([, qs]) => qs);
       if (!all.length) throw new Error(tr("Aucune question détectée"));
       // A chunk's own self-check + automatic re-split (server-side) already
       // recovers most shortfalls — this only fires for whatever's left over
@@ -1246,6 +1393,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         )
         .filter((w): w is { filename: string; warning: string } => w != null);
       setExtracted(all);
+      setFileGroups(files.map((f, i) => ({ filename: f.name, items: byFile.get(i) ?? [] })));
       setChunkWarnings(warnings);
       toast.success(`${all.length} ${tr("question(s) extraites — vérifiez avant de générer.")}`);
       if (warnings.length) {
@@ -1284,6 +1432,54 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     }
   };
 
+  const generateGroupDocx = async (idx: number): Promise<DocxResult | null> => {
+    const group = fileGroups?.[idx];
+    if (!group || !group.items.length) return null;
+    const items = toDocxItems(group.items, rotation);
+    const { base64 } = await genDocx({ data: { items, includeExplanations: false } });
+    const docResult: DocxResult = { base64, count: group.items.length };
+    setGroupResults((prev) => ({ ...prev, [idx]: docResult }));
+    return docResult;
+  };
+
+  const generateGroup = async (idx: number) => {
+    setGroupBusy(idx);
+    try {
+      const docResult = await generateGroupDocx(idx);
+      if (docResult) toast.success(`${docResult.count} ${tr("question(s) converties")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setGroupBusy(null);
+    }
+  };
+
+  const downloadAllSeparate = async () => {
+    if (!fileGroups) return;
+    setDownloadAllBusy(true);
+    try {
+      const entries: { name: string; base64: string }[] = [];
+      for (let i = 0; i < fileGroups.length; i++) {
+        if (!fileGroups[i].items.length) continue;
+        const docResult = groupResults[i] ?? (await generateGroupDocx(i));
+        if (docResult)
+          entries.push({
+            name: `${baseFilename(fileGroups[i].filename)}.docx`,
+            base64: docResult.base64,
+          });
+      }
+      if (!entries.length) {
+        toast.error(tr("Aucun fichier à télécharger"));
+        return;
+      }
+      await downloadZip(`questions_${Date.now()}.zip`, entries);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setDownloadAllBusy(false);
+    }
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -1304,6 +1500,8 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
               setExtracted(null);
               setChunkWarnings([]);
               setResult(null);
+              setFileGroups(null);
+              setGroupResults({});
             }}
           />
           {files.length > 0 && (
@@ -1311,6 +1509,24 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
               {files.length} {tr("fichier(s) sélectionné(s)")}
             </p>
           )}
+          <div className="mt-2">
+            <CombineToggle
+              combine={combineResults}
+              onChange={(v) => {
+                setCombineResults(v);
+                if (extracted || fileGroups) {
+                  setExtracted(null);
+                  setFileGroups(null);
+                  setChunkWarnings([]);
+                  setResult(null);
+                  setGroupResults({});
+                  toast.info(tr("Ré-extrayez les questions pour appliquer ce changement."));
+                }
+              }}
+              fileCount={files.length}
+              idPrefix="step1"
+            />
+          </div>
         </div>
         <div>
           <Label>{tr("Rotation (optionnel — appliquée à toutes les questions)")}</Label>
@@ -1356,7 +1572,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           progress={progress}
           onCancel={() => abortRef.current?.abort()}
         />
-        {result && (
+        {!separate && result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
             <p className="text-sm font-medium">
               {result.count} {tr("question(s) prêtes")}
@@ -1406,27 +1622,57 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         {extracted && busy !== "extract" && (
           <div className="space-y-3">
             <ChunkWarnings warnings={chunkWarnings} />
-            <Button onClick={generate} disabled={busy !== null || !extracted.length}>
-              {busy === "generate" ? (
-                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              ) : (
-                <FileDown className="mr-1.5 h-4 w-4" />
-              )}
-              {tr("Générer le fichier .docx")}
-            </Button>
-            <QuestionsPreviewEditor
-              items={extracted}
-              onChange={setExtracted}
-              showExplanation={false}
-            />
-            <Button onClick={generate} disabled={busy !== null || !extracted.length}>
-              {busy === "generate" ? (
-                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              ) : (
-                <FileDown className="mr-1.5 h-4 w-4" />
-              )}
-              {tr("Générer le fichier .docx")}
-            </Button>
+            {separate && fileGroups ? (
+              <SeparateResultsList
+                groups={fileGroups}
+                onGroupChange={(idx, items) =>
+                  setFileGroups((prev) =>
+                    prev ? prev.map((g, i) => (i === idx ? { ...g, items } : g)) : prev,
+                  )
+                }
+                onGenerate={generateGroup}
+                busyIndex={groupBusy}
+                hasResult={(idx) => !!groupResults[idx]}
+                onDownload={(idx) => {
+                  const r = groupResults[idx];
+                  if (r) {
+                    downloadBase64(
+                      `${baseFilename(fileGroups[idx].filename)}.docx`,
+                      r.base64,
+                      DOCX_MIME,
+                    );
+                  }
+                }}
+                onDownloadAll={downloadAllSeparate}
+                downloadAllBusy={downloadAllBusy}
+                generateLabel={tr("Générer")}
+                showExplanation={false}
+              />
+            ) : (
+              <>
+                <Button onClick={generate} disabled={busy !== null || !extracted.length}>
+                  {busy === "generate" ? (
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : (
+                    <FileDown className="mr-1.5 h-4 w-4" />
+                  )}
+                  {tr("Générer le fichier .docx")}
+                </Button>
+                <QuestionsPreviewEditor
+                  items={extracted}
+                  onChange={setExtracted}
+                  showExplanation={false}
+                />
+                <Button onClick={generate} disabled={busy !== null || !extracted.length}>
+                  {busy === "generate" ? (
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : (
+                    <FileDown className="mr-1.5 h-4 w-4" />
+                  )}
+                  {tr("Générer le fichier .docx")}
+                </Button>
+              </>
+            )}
           </div>
         )}
       </CardContent>
@@ -1734,14 +1980,16 @@ function Step2Panel({
   const genExplanations = useServerFn(generateGroundedExplanations);
   const genDocx = useServerFn(generateQuestionsDocx);
 
-  const [docxFile, setDocxFile] = useState<File | null>(null);
+  const [docxFiles, setDocxFiles] = useState<File[]>([]);
   const [refMode, setRefMode] = useState<"pdf" | "docx" | "text">("text");
   const [refFile, setRefFile] = useState<File | null>(null);
   const [refText, setRefText] = useState("");
   const { hint, setHint, saveHint } = useSavedHint("step2", tr);
   const [allowNoAi, setAllowNoAi] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
+  const [prepared, setPrepared] = useState<{ filename: string; chunks: PreparedChunk[] }[] | null>(
+    null,
+  );
   const [busy, setBusy] = useState<"extract" | "explain" | "generate" | null>(null);
   const [extracted, setExtracted] = useState<ExtractedQ[] | null>(null);
   const [chunkWarnings, setChunkWarnings] = useState<ChunkWarning[]>([]);
@@ -1751,21 +1999,44 @@ function Step2Panel({
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showImport, setShowImport] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Multiple .docx files can be processed as one merged output (combined) or
+  // kept as one output per input file (separate).
+  const [combineResults, setCombineResults] = useState(true);
+  const [fileGroups, setFileGroups] = useState<FileGroup[] | null>(null);
+  const [groupBusy, setGroupBusy] = useState<number | null>(null);
+  const [groupResults, setGroupResults] = useState<Record<number, DocxResult>>({});
+  const [downloadAllBusy, setDownloadAllBusy] = useState(false);
+  const [groupImportOpen, setGroupImportOpen] = useState<number | null>(null);
+  const separate = !combineResults && docxFiles.length > 1;
 
-  const uploadFile = async (file: File) => {
+  const resetExtraction = () => {
+    setExtracted(null);
+    setFileGroups(null);
+    setChunkWarnings([]);
+    setAnswerDoubts([]);
+    setResult(null);
+    setGroupResults({});
+    setShowImport(false);
+    setGroupImportOpen(null);
+  };
+
+  const uploadFiles = async (files: File[]) => {
     setUploading(true);
     setPrepared(null);
-    setExtracted(null);
-    setResult(null);
-    setShowImport(false);
+    resetExtraction();
     try {
-      const dataUrl = await readAsDataUrl(file);
-      const { chunks } = await withRetry(() =>
-        prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
-      );
-      if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
-      setPrepared(chunks);
-      toast.success(`${chunks.length} ${tr("lot(s) de questions chargé(s)")}`);
+      const perFile: { filename: string; chunks: PreparedChunk[] }[] = [];
+      for (const file of files) {
+        const dataUrl = await readAsDataUrl(file);
+        const { chunks } = await withRetry(() =>
+          prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
+        );
+        perFile.push({ filename: file.name, chunks });
+      }
+      const total = perFile.reduce((n, f) => n + f.chunks.length, 0);
+      if (!total) throw new Error(tr("Fichier vide ou illisible"));
+      setPrepared(perFile);
+      toast.success(`${total} ${tr("lot(s) de questions chargé(s)")}`);
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
     } finally {
@@ -1774,17 +2045,17 @@ function Step2Panel({
   };
 
   const upload = () => {
-    if (!docxFile) {
+    if (!docxFiles.length) {
       toast.error(tr("Ajoutez un fichier .docx (étape 1)"));
       return;
     }
-    uploadFile(docxFile);
+    uploadFiles(docxFiles);
   };
 
   useEffect(() => {
     if (!incomingFile) return;
-    setDocxFile(incomingFile);
-    uploadFile(incomingFile);
+    setDocxFiles([incomingFile]);
+    uploadFiles([incomingFile]);
     onConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incomingFile]);
@@ -1794,14 +2065,16 @@ function Step2Panel({
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy("extract");
-    setExtracted(null);
-    setResult(null);
-    setShowImport(false);
+    resetExtraction();
     setProgress(null);
     try {
+      // Every file's chunks share one progress bar and one concurrency pool —
+      // faster than processing files one at a time — then get split back into
+      // their own file's group afterwards.
       setPhase(tr("Lecture des questions"));
+      const allChunks = prepared.flatMap((f) => f.chunks);
       const parts = await withProgress(
-        prepared.map(
+        allChunks.map(
           (c) => () =>
             withRetry(() =>
               extractHtml({
@@ -1825,10 +2098,17 @@ function Step2Panel({
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      const qs: ExtractedQ[] = parts.flatMap((p) => p.questions);
+      let cursor = 0;
+      const fileItems = prepared.map((f) => {
+        const slice = parts.slice(cursor, cursor + f.chunks.length);
+        cursor += f.chunks.length;
+        return slice.flatMap((p) => p.questions);
+      });
+      const qs: ExtractedQ[] = fileItems.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
       const warnings = collectChunkWarnings(parts, tr);
       setExtracted(qs);
+      setFileGroups(prepared.map((f, i) => ({ filename: f.filename, items: fileItems[i] })));
       setChunkWarnings(warnings);
       toast.success(`${qs.length} ${tr("question(s) extraites — vérifiez avant de continuer.")}`);
       if (warnings.length) {
@@ -1846,7 +2126,14 @@ function Step2Panel({
   };
 
   const explain = async () => {
-    if (!extracted || !extracted.length) return;
+    // In separate mode the editable state is fileGroups (each file's own
+    // QuestionsPreviewEditor), which can have been edited since extraction —
+    // so this always works from the current fileGroups content rather than
+    // the possibly-stale flat `extracted`, then re-splits the result back
+    // using each group's own (current) item count.
+    const groups = separate ? fileGroups : null;
+    const flat = groups ? groups.flatMap((g) => g.items) : (extracted ?? []);
+    if (!flat.length) return;
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy("explain");
@@ -1873,8 +2160,8 @@ function Step2Panel({
       // for documents with more than EXPLAIN_BATCH_SIZE questions.
       setPhase(tr("Génération des explications"));
       const batches: ExtractedQ[][] = [];
-      for (let i = 0; i < extracted.length; i += EXPLAIN_BATCH_SIZE) {
-        batches.push(extracted.slice(i, i + EXPLAIN_BATCH_SIZE));
+      for (let i = 0; i < flat.length; i += EXPLAIN_BATCH_SIZE) {
+        batches.push(flat.slice(i, i + EXPLAIN_BATCH_SIZE));
       }
       const explanationParts = await withProgress(
         batches.map(
@@ -1904,11 +2191,22 @@ function Step2Panel({
       // where the model produced nothing), so these stay index-aligned.
       const explanations = explanationParts.flatMap((r) => r.explanations);
       const doubts = explanationParts.flatMap((r) => r.doubts ?? []);
-      const withExplanations = extracted.map((q, i) => ({
+      const withExplanations = flat.map((q, i) => ({
         ...q,
         explanation: explanations[i] ?? q.explanation,
       }));
-      setExtracted(withExplanations);
+      if (groups) {
+        let cursor = 0;
+        setFileGroups(
+          groups.map((g) => {
+            const slice = withExplanations.slice(cursor, cursor + g.items.length);
+            cursor += g.items.length;
+            return { ...g, items: slice };
+          }),
+        );
+      } else {
+        setExtracted(withExplanations);
+      }
       setAnswerDoubts(
         doubts.map((d, i) => (d ? { index: i, doubt: d } : null)).filter(Boolean) as AnswerDoubt[],
       );
@@ -1963,6 +2261,55 @@ function Step2Panel({
     }
   };
 
+  const generateGroupDocx = async (idx: number): Promise<DocxResult | null> => {
+    const group = fileGroups?.[idx];
+    if (!group || !group.items.length) return null;
+    const items = toDocxItems(group.items);
+    const { base64 } = await genDocx({ data: { items, includeExplanations: true } });
+    const docResult: DocxResult = { base64, count: group.items.length };
+    setGroupResults((prev) => ({ ...prev, [idx]: docResult }));
+    return docResult;
+  };
+
+  const generateGroup = async (idx: number) => {
+    setGroupBusy(idx);
+    try {
+      const docResult = await generateGroupDocx(idx);
+      if (docResult) toast.success(`${docResult.count} ${tr("question(s) traitées")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setGroupBusy(null);
+    }
+  };
+
+  const downloadAllSeparate = async () => {
+    if (!fileGroups) return;
+    setDownloadAllBusy(true);
+    try {
+      const entries: { name: string; base64: string }[] = [];
+      for (let i = 0; i < fileGroups.length; i++) {
+        if (!fileGroups[i].items.length) continue;
+        const docResult = groupResults[i] ?? (await generateGroupDocx(i));
+        if (docResult) {
+          entries.push({
+            name: `${baseFilename(fileGroups[i].filename)}.docx`,
+            base64: docResult.base64,
+          });
+        }
+      }
+      if (!entries.length) {
+        toast.error(tr("Aucun fichier à télécharger"));
+        return;
+      }
+      await downloadZip(`questions_explications_${Date.now()}.zip`, entries);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setDownloadAllBusy(false);
+    }
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -1972,19 +2319,38 @@ function Step2Panel({
       </CardHeader>
       <CardContent className="space-y-4">
         <div>
-          <Label>{tr("Fichier .docx (questions, sans explications)")}</Label>
+          <Label>{tr("Fichier(s) .docx (questions, sans explications)")}</Label>
           <Input
             type="file"
             accept={`.docx,${DOCX_MIME}`}
+            multiple
             onChange={(e) => {
-              setDocxFile(e.target.files?.[0] ?? null);
+              setDocxFiles(Array.from(e.target.files ?? []));
               setPrepared(null);
-              setExtracted(null);
-              setResult(null);
-              setShowImport(false);
+              resetExtraction();
             }}
           />
-          {docxFile && <p className="mt-1 text-xs text-muted-foreground">{docxFile.name}</p>}
+          {docxFiles.length > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {docxFiles.length === 1
+                ? docxFiles[0].name
+                : `${docxFiles.length} ${tr("fichier(s) sélectionné(s)")}`}
+            </p>
+          )}
+          <div className="mt-2">
+            <CombineToggle
+              combine={combineResults}
+              onChange={(v) => {
+                setCombineResults(v);
+                if (extracted || fileGroups) {
+                  resetExtraction();
+                  toast.info(tr("Ré-extrayez les questions pour appliquer ce changement."));
+                }
+              }}
+              fileCount={docxFiles.length}
+              idPrefix="step2"
+            />
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Switch id="step2-noai" checked={allowNoAi} onCheckedChange={setAllowNoAi} />
@@ -2033,7 +2399,7 @@ function Step2Panel({
           placeholder={tr("ex: explications courtes, insister sur la physiopathologie")}
         />
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" onClick={upload} disabled={uploading || !docxFile}>
+          <Button variant="outline" onClick={upload} disabled={uploading || !docxFiles.length}>
             {uploading ? (
               <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
             ) : prepared ? (
@@ -2041,7 +2407,7 @@ function Step2Panel({
             ) : (
               <UploadCloud className="mr-1.5 h-4 w-4" />
             )}
-            {tr("Charger le fichier")}
+            {tr("Charger le(s) fichier(s)")}
           </Button>
           <Button onClick={extract} disabled={busy !== null || !prepared}>
             {busy === "extract" ? (
@@ -2057,7 +2423,7 @@ function Step2Panel({
           progress={progress}
           onCancel={() => abortRef.current?.abort()}
         />
-        {result && (
+        {!separate && result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
             <p className="text-sm font-medium">
               {result.count} {tr("question(s) prêtes")}
@@ -2107,7 +2473,7 @@ function Step2Panel({
             {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Extraire.")}
           </p>
         )}
-        {extracted && busy !== "extract" && (
+        {(separate ? fileGroups : extracted) && busy !== "extract" && (
           <div className="space-y-3">
             <ChunkWarnings warnings={chunkWarnings} />
             <AnswerDoubts doubts={answerDoubts} />
@@ -2115,7 +2481,12 @@ function Step2Panel({
               <Button
                 variant="outline"
                 onClick={explain}
-                disabled={busy !== null || !extracted.length}
+                disabled={
+                  busy !== null ||
+                  !(separate
+                    ? (fileGroups?.some((g) => g.items.length) ?? false)
+                    : extracted?.length)
+                }
               >
                 {busy === "explain" ? (
                   <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
@@ -2124,38 +2495,92 @@ function Step2Panel({
                 )}
                 {tr("Générer les explications (IA)")}
               </Button>
-              <Button onClick={generate} disabled={busy !== null || !extracted.length}>
-                {busy === "generate" ? (
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                ) : (
-                  <FileDown className="mr-1.5 h-4 w-4" />
-                )}
-                {tr("Générer le fichier Word")}
-              </Button>
+              {!separate && (
+                <Button onClick={generate} disabled={busy !== null || !extracted?.length}>
+                  {busy === "generate" ? (
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : (
+                    <FileDown className="mr-1.5 h-4 w-4" />
+                  )}
+                  {tr("Générer le fichier Word")}
+                </Button>
+              )}
             </div>
-            <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                onClick={explain}
-                disabled={busy !== null || !extracted.length}
-              >
-                {busy === "explain" ? (
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                ) : (
-                  <FileDown className="mr-1.5 h-4 w-4" />
+            {separate && fileGroups ? (
+              <SeparateResultsList
+                groups={fileGroups}
+                onGroupChange={(idx, items) =>
+                  setFileGroups((prev) =>
+                    prev ? prev.map((g, i) => (i === idx ? { ...g, items } : g)) : prev,
+                  )
+                }
+                onGenerate={generateGroup}
+                busyIndex={groupBusy}
+                hasResult={(idx) => !!groupResults[idx]}
+                onDownload={(idx) => {
+                  const r = groupResults[idx];
+                  if (r) {
+                    downloadBase64(
+                      `${baseFilename(fileGroups[idx].filename)}.docx`,
+                      r.base64,
+                      DOCX_MIME,
+                    );
+                  }
+                }}
+                onDownloadAll={downloadAllSeparate}
+                downloadAllBusy={downloadAllBusy}
+                generateLabel={tr("Générer")}
+                showExplanation
+                renderFooter={(idx) => (
+                  <div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setGroupImportOpen((v) => (v === idx ? null : idx))}
+                    >
+                      <UploadCloud className="mr-1.5 h-4 w-4" />
+                      {tr("Importer directement")}
+                    </Button>
+                    {groupImportOpen === idx && (
+                      <ImportReviewPanel
+                        questions={fileGroups[idx].items}
+                        onImported={() => setGroupImportOpen(null)}
+                      />
+                    )}
+                  </div>
                 )}
-                {tr("Générer les explications (IA)")}
-              </Button>
-              <Button onClick={generate} disabled={busy !== null || !extracted.length}>
-                {busy === "generate" ? (
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                ) : (
-                  <FileDown className="mr-1.5 h-4 w-4" />
-                )}
-                {tr("Générer le fichier Word")}
-              </Button>
-            </div>
+              />
+            ) : (
+              <>
+                <QuestionsPreviewEditor
+                  items={extracted ?? []}
+                  onChange={setExtracted}
+                  showExplanation
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={explain}
+                    disabled={busy !== null || !extracted?.length}
+                  >
+                    {busy === "explain" ? (
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileDown className="mr-1.5 h-4 w-4" />
+                    )}
+                    {tr("Générer les explications (IA)")}
+                  </Button>
+                  <Button onClick={generate} disabled={busy !== null || !extracted?.length}>
+                    {busy === "generate" ? (
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileDown className="mr-1.5 h-4 w-4" />
+                    )}
+                    {tr("Générer le fichier Word")}
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
         )}
       </CardContent>
@@ -2177,11 +2602,13 @@ function Step3Panel({
   const { tr } = useI18n();
   const prepDocx = useServerFn(prepareDocxChunks);
   const extractHtml = useServerFn(extractQuestionsFromHtmlChunk);
-  const [docxFile, setDocxFile] = useState<File | null>(null);
+  const [docxFiles, setDocxFiles] = useState<File[]>([]);
   const [allowNoAi, setAllowNoAi] = useState(false);
   const { hint, setHint, saveHint } = useSavedHint("step3", tr);
   const [uploading, setUploading] = useState(false);
-  const [prepared, setPrepared] = useState<PreparedChunk[] | null>(null);
+  const [prepared, setPrepared] = useState<{ filename: string; chunks: PreparedChunk[] }[] | null>(
+    null,
+  );
   const [busy, setBusy] = useState<"extract" | "generate" | null>(null);
   const [extracted, setExtracted] = useState<ExtractedQ[] | null>(null);
   const [chunkWarnings, setChunkWarnings] = useState<ChunkWarning[]>([]);
@@ -2190,21 +2617,37 @@ function Step3Panel({
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showImport, setShowImport] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const [combineResults, setCombineResults] = useState(true);
+  const [fileGroups, setFileGroups] = useState<FileGroup[] | null>(null);
+  const [groupImportOpen, setGroupImportOpen] = useState<number | null>(null);
+  const separate = !combineResults && docxFiles.length > 1;
 
-  const uploadFile = async (file: File) => {
-    setUploading(true);
-    setPrepared(null);
+  const resetExtraction = () => {
     setExtracted(null);
+    setFileGroups(null);
+    setChunkWarnings([]);
     setResult(null);
     setShowImport(false);
+    setGroupImportOpen(null);
+  };
+
+  const uploadFiles = async (files: File[]) => {
+    setUploading(true);
+    setPrepared(null);
+    resetExtraction();
     try {
-      const dataUrl = await readAsDataUrl(file);
-      const { chunks } = await withRetry(() =>
-        prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
-      );
-      if (!chunks.length) throw new Error(tr("Fichier vide ou illisible"));
-      setPrepared(chunks);
-      toast.success(`${chunks.length} ${tr("lot(s) de questions chargé(s)")}`);
+      const perFile: { filename: string; chunks: PreparedChunk[] }[] = [];
+      for (const file of files) {
+        const dataUrl = await readAsDataUrl(file);
+        const { chunks } = await withRetry(() =>
+          prepDocx({ data: { docxDataUrl: dataUrl, detectCases: true } }),
+        );
+        perFile.push({ filename: file.name, chunks });
+      }
+      const total = perFile.reduce((n, f) => n + f.chunks.length, 0);
+      if (!total) throw new Error(tr("Fichier vide ou illisible"));
+      setPrepared(perFile);
+      toast.success(`${total} ${tr("lot(s) de questions chargé(s)")}`);
     } catch (e: any) {
       toast.error(friendlyError(e, tr));
     } finally {
@@ -2213,17 +2656,17 @@ function Step3Panel({
   };
 
   const upload = () => {
-    if (!docxFile) {
+    if (!docxFiles.length) {
       toast.error(tr("Ajoutez un fichier .docx (étape 1 ou 2)"));
       return;
     }
-    uploadFile(docxFile);
+    uploadFiles(docxFiles);
   };
 
   useEffect(() => {
     if (!incomingFile) return;
-    setDocxFile(incomingFile);
-    uploadFile(incomingFile);
+    setDocxFiles([incomingFile]);
+    uploadFiles([incomingFile]);
     onConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incomingFile]);
@@ -2233,14 +2676,13 @@ function Step3Panel({
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy("extract");
-    setExtracted(null);
-    setResult(null);
-    setShowImport(false);
+    resetExtraction();
     setProgress(null);
     try {
       setPhase(tr("Lecture des questions"));
+      const allChunks = prepared.flatMap((f) => f.chunks);
       const parts = await withProgress(
-        prepared.map(
+        allChunks.map(
           (c) => () =>
             withRetry(() =>
               extractHtml({
@@ -2264,10 +2706,17 @@ function Step3Panel({
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      const qs: ExtractedQ[] = parts.flatMap((p) => p.questions);
+      let cursor = 0;
+      const fileItems = prepared.map((f) => {
+        const slice = parts.slice(cursor, cursor + f.chunks.length);
+        cursor += f.chunks.length;
+        return slice.flatMap((p) => p.questions);
+      });
+      const qs: ExtractedQ[] = fileItems.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
       const warnings = collectChunkWarnings(parts, tr);
       setExtracted(qs);
+      setFileGroups(prepared.map((f, i) => ({ filename: f.filename, items: fileItems[i] })));
       setChunkWarnings(warnings);
       toast.success(`${qs.length} ${tr("question(s) extraites — vérifiez avant de générer.")}`);
       if (warnings.length) {
@@ -2292,6 +2741,30 @@ function Step3Panel({
     toast.success(`${extracted.length} ${tr("question(s) converties en JSON")}`);
   };
 
+  const downloadGroup = (idx: number) => {
+    const group = fileGroups?.[idx];
+    if (!group || !group.items.length) return;
+    downloadText(
+      `${baseFilename(group.filename)}.json`,
+      JSON.stringify(toJsonObjects(group.items), null, 2),
+    );
+  };
+
+  const downloadAllSeparate = async () => {
+    if (!fileGroups) return;
+    const entries = fileGroups
+      .filter((g) => g.items.length)
+      .map((g) => ({
+        name: `${baseFilename(g.filename)}.json`,
+        text: JSON.stringify(toJsonObjects(g.items), null, 2),
+      }));
+    if (!entries.length) {
+      toast.error(tr("Aucun fichier à télécharger"));
+      return;
+    }
+    await downloadZip(`questions_${Date.now()}.zip`, entries);
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -2299,19 +2772,38 @@ function Step3Panel({
       </CardHeader>
       <CardContent className="space-y-4">
         <div>
-          <Label>{tr("Fichier .docx (questions, avec ou sans explications)")}</Label>
+          <Label>{tr("Fichier(s) .docx (questions, avec ou sans explications)")}</Label>
           <Input
             type="file"
             accept={`.docx,${DOCX_MIME}`}
+            multiple
             onChange={(e) => {
-              setDocxFile(e.target.files?.[0] ?? null);
+              setDocxFiles(Array.from(e.target.files ?? []));
               setPrepared(null);
-              setExtracted(null);
-              setResult(null);
-              setShowImport(false);
+              resetExtraction();
             }}
           />
-          {docxFile && <p className="mt-1 text-xs text-muted-foreground">{docxFile.name}</p>}
+          {docxFiles.length > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {docxFiles.length === 1
+                ? docxFiles[0].name
+                : `${docxFiles.length} ${tr("fichier(s) sélectionné(s)")}`}
+            </p>
+          )}
+          <div className="mt-2">
+            <CombineToggle
+              combine={combineResults}
+              onChange={(v) => {
+                setCombineResults(v);
+                if (extracted || fileGroups) {
+                  resetExtraction();
+                  toast.info(tr("Ré-extrayez les questions pour appliquer ce changement."));
+                }
+              }}
+              fileCount={docxFiles.length}
+              idPrefix="step3"
+            />
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Switch id="step3-noai" checked={allowNoAi} onCheckedChange={setAllowNoAi} />
@@ -2326,7 +2818,7 @@ function Step3Panel({
           placeholder={tr("ex: cardiologie, plusieurs rotations dans ce fichier")}
         />
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" onClick={upload} disabled={uploading || !docxFile}>
+          <Button variant="outline" onClick={upload} disabled={uploading || !docxFiles.length}>
             {uploading ? (
               <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
             ) : prepared ? (
@@ -2334,7 +2826,7 @@ function Step3Panel({
             ) : (
               <UploadCloud className="mr-1.5 h-4 w-4" />
             )}
-            {tr("Charger le fichier")}
+            {tr("Charger le(s) fichier(s)")}
           </Button>
           <Button onClick={extract} disabled={busy !== null || !prepared}>
             {busy === "extract" ? (
@@ -2350,7 +2842,7 @@ function Step3Panel({
           progress={progress}
           onCancel={() => abortRef.current?.abort()}
         />
-        {result && (
+        {!separate && result && (
           <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
             <p className="text-sm font-medium">
               {result.count} {tr("question(s) prêtes")}
@@ -2382,21 +2874,65 @@ function Step3Panel({
         )}
         {prepared && busy === null && !extracted && (
           <p className="text-sm text-muted-foreground">
-            {prepared.length} {tr("lot(s) prêt(s) — cliquez sur Extraire.")}
+            {prepared.reduce((n, f) => n + f.chunks.length, 0)}{" "}
+            {tr("lot(s) prêt(s) — cliquez sur Extraire.")}
           </p>
         )}
-        {extracted && busy !== "extract" && (
+        {(separate ? fileGroups : extracted) && busy !== "extract" && (
           <div className="space-y-3">
             <ChunkWarnings warnings={chunkWarnings} />
-            <Button onClick={generate} disabled={!extracted.length}>
-              <FileDown className="mr-1.5 h-4 w-4" />
-              {tr("Générer le fichier .json")}
-            </Button>
-            <QuestionsPreviewEditor items={extracted} onChange={setExtracted} showExplanation />
-            <Button onClick={generate} disabled={!extracted.length}>
-              <FileDown className="mr-1.5 h-4 w-4" />
-              {tr("Générer le fichier .json")}
-            </Button>
+            {separate && fileGroups ? (
+              <SeparateResultsList
+                groups={fileGroups}
+                onGroupChange={(idx, items) =>
+                  setFileGroups((prev) =>
+                    prev ? prev.map((g, i) => (i === idx ? { ...g, items } : g)) : prev,
+                  )
+                }
+                onGenerate={downloadGroup}
+                busyIndex={null}
+                hasResult={() => false}
+                onDownload={downloadGroup}
+                onDownloadAll={downloadAllSeparate}
+                downloadAllBusy={false}
+                generateLabel={tr("Télécharger")}
+                showExplanation
+                renderFooter={(idx) => (
+                  <div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setGroupImportOpen((v) => (v === idx ? null : idx))}
+                    >
+                      <UploadCloud className="mr-1.5 h-4 w-4" />
+                      {tr("Importer directement")}
+                    </Button>
+                    {groupImportOpen === idx && (
+                      <ImportReviewPanel
+                        questions={fileGroups[idx].items}
+                        onImported={() => setGroupImportOpen(null)}
+                      />
+                    )}
+                  </div>
+                )}
+              />
+            ) : (
+              <>
+                <Button onClick={generate} disabled={!extracted?.length}>
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                  {tr("Générer le fichier .json")}
+                </Button>
+                <QuestionsPreviewEditor
+                  items={extracted ?? []}
+                  onChange={setExtracted}
+                  showExplanation
+                />
+                <Button onClick={generate} disabled={!extracted?.length}>
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                  {tr("Générer le fichier .json")}
+                </Button>
+              </>
+            )}
           </div>
         )}
       </CardContent>
@@ -2408,45 +2944,33 @@ function Step3Panel({
 
 type SrcKind = "docx" | "json";
 
-function Step4Panel() {
+/** One question file's full "detect from captures + apply + download" flow —
+ *  per the decision that rotation/année detection is always per-file (each
+ *  question file gets its own captures PDF, never merged), this is the whole
+ *  single-file experience Step4Panel used to be, now reusable per file when
+ *  several are loaded. Reports its ready result upward so the panel can offer
+ *  a combined or a zipped download across every block. */
+function Step4FileBlock({
+  moduleId,
+  rotationLabels,
+  yearLabels,
+  label,
+  onRemove,
+  onResultChange,
+}: {
+  moduleId: string;
+  rotationLabels: string[];
+  yearLabels: string[];
+  label: string;
+  onRemove?: () => void;
+  onResultChange: (
+    result: { filename: string; applied: ExtractedQ[]; srcKind: SrcKind } | null,
+  ) => void;
+}) {
   const { tr } = useI18n();
   const prepDocx = useServerFn(prepareDocxChunks);
   const extractHtml = useServerFn(extractQuestionsFromHtmlChunk);
   const genDocx = useServerFn(generateQuestionsDocx);
-
-  const [modules, setModules] = useState<ImportModule[] | null>(null);
-  const [moduleId, setModuleId] = useState<string>("");
-  const [rotations, setRotations] = useState<ImportRotation[]>([]);
-
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase
-        .from("modules")
-        .select("id,title,year")
-        .order("year")
-        .order("sort_order");
-      setModules((data as ImportModule[]) ?? []);
-    })();
-  }, []);
-
-  useEffect(() => {
-    if (!moduleId) {
-      setRotations([]);
-      return;
-    }
-    (async () => {
-      const { data } = await supabase
-        .from("module_rotations")
-        .select("id,label")
-        .eq("module_id", moduleId)
-        .order("sort_order");
-      setRotations((data as ImportRotation[]) ?? []);
-    })();
-  }, [moduleId]);
-
-  const selectedModule = modules?.find((m) => m.id === moduleId) ?? null;
-  const rotationLabels = rotations.map((r) => r.label);
-  const yearLabels = yearImportOptions(selectedModule?.year).map((o) => o.label);
 
   const [entries, setEntries] = useState<PageEntry[] | null>(null);
 
@@ -2467,6 +2991,18 @@ function Step4Panel() {
   const [showImport, setShowImport] = useState(false);
 
   const ranges = parsed ? groupIndexRanges(parsed) : [];
+
+  useEffect(() => {
+    if (applied && applied.length && srcKind) {
+      onResultChange({ filename: srcFile?.name ?? "questions", applied, srcKind });
+    } else {
+      onResultChange(null);
+    }
+    // Only the ready result matters to the parent — srcFile/onResultChange
+    // are stable enough per block that re-running on every keystroke would
+    // just be noise.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applied, srcKind]);
 
   const parseJsonFile = async (file: File) => {
     setUploading(true);
@@ -2615,6 +3151,297 @@ function Step4Panel() {
   };
 
   return (
+    <div className="space-y-6 rounded-lg border p-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium">{label}</p>
+        {onRemove && (
+          <Button size="sm" variant="ghost" onClick={onRemove}>
+            <Trash2 className="mr-1.5 h-4 w-4" />
+            {tr("Retirer")}
+          </Button>
+        )}
+      </div>
+
+      <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+        <p className="text-sm font-medium">{tr("A. Captures PDF (rotation/année en en-tête)")}</p>
+        <RotationYearDetector
+          entries={entries}
+          onEntriesChange={setEntries}
+          rotationOptions={rotationLabels}
+          yearOptions={yearLabels}
+        />
+      </div>
+
+      <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+        <p className="text-sm font-medium">{tr("B. Fichier de questions (.docx ou .json)")}</p>
+        <Input
+          type="file"
+          accept={`.docx,.json,${DOCX_MIME},application/json`}
+          onChange={(e) => {
+            const f = e.target.files?.[0] ?? null;
+            setSrcFile(f);
+            setSrcKind(
+              f
+                ? /\.json$/i.test(f.name) || f.type === "application/json"
+                  ? "json"
+                  : "docx"
+                : null,
+            );
+            setPrepared(null);
+            setParsed(null);
+            setApplied(null);
+            setShowImport(false);
+          }}
+        />
+        {srcFile && <p className="mt-1 text-xs text-muted-foreground">{srcFile.name}</p>}
+        {srcKind === "docx" && (
+          <>
+            <div className="flex items-center gap-2">
+              <Switch
+                id={`step4-noai-${label}`}
+                checked={allowNoAi}
+                onCheckedChange={setAllowNoAi}
+              />
+              <Label htmlFor={`step4-noai-${label}`} className="cursor-pointer">
+                {tr(
+                  "Mode sans IA pour la lecture du .docx (gratuit, un seul fichier par rotation)",
+                )}
+              </Label>
+            </div>
+            <HintField
+              hint={hint}
+              setHint={setHint}
+              saveHint={saveHint}
+              placeholder={tr("ex: cardiologie, plusieurs rotations dans ce fichier")}
+            />
+          </>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={loadSource}
+            disabled={busy !== null || uploading || !srcFile}
+          >
+            {uploading ? (
+              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            ) : prepared || parsed ? (
+              <Check className="mr-1.5 h-4 w-4" />
+            ) : (
+              <UploadCloud className="mr-1.5 h-4 w-4" />
+            )}
+            {tr("Charger le fichier")}
+          </Button>
+          {srcKind === "docx" && (
+            <Button onClick={extractDocx} disabled={busy !== null || !prepared}>
+              {busy === "extract" ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <FileDown className="mr-1.5 h-4 w-4" />
+              )}
+              {tr("Extraire les questions")}
+            </Button>
+          )}
+        </div>
+        <StepProgress
+          phase={phase}
+          progress={progress}
+          onCancel={() => abortRef.current?.abort()}
+        />
+        {parsed && (
+          <p className="text-xs text-muted-foreground">
+            {parsed.length} {tr("question(s)/cas chargé(s) —")} {ranges.length} {tr("groupe(s).")}
+          </p>
+        )}
+        <ChunkWarnings warnings={chunkWarnings} />
+      </div>
+
+      {entries && entries.length > 0 && parsed && parsed.length > 0 && (
+        <div className="space-y-2">
+          <Button onClick={apply}>
+            <Check className="mr-1.5 h-4 w-4" />
+            {tr("Appliquer")}
+          </Button>
+          {entries.length !== ranges.length && (
+            <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+              {entries.length} {tr("page(s) détectée(s) pour")} {ranges.length}{" "}
+              {tr(
+                "question(s)/cas — vérifiez l'alignement ci-dessus avant d'appliquer (le surplus est ignoré).",
+              )}
+            </p>
+          )}
+          <Button onClick={apply}>
+            <Check className="mr-1.5 h-4 w-4" />
+            {tr("Appliquer")}
+          </Button>
+        </div>
+      )}
+
+      {applied && (
+        <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+          <p className="text-sm font-medium">
+            {applied.length} {tr("question(s) prêtes")}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={downloadApplied} disabled={busy === "generate"}>
+              {busy === "generate" ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <FileDown className="mr-1.5 h-4 w-4" />
+              )}
+              {tr("Télécharger")}
+            </Button>
+            <Button variant="outline" onClick={() => setShowImport((v) => !v)}>
+              <UploadCloud className="mr-1.5 h-4 w-4" />
+              {tr("Importer directement")}
+            </Button>
+          </div>
+          {showImport && (
+            <ImportReviewPanel
+              questions={applied}
+              onImported={() => setShowImport(false)}
+              initialModuleId={moduleId}
+            />
+          )}
+          <QuestionsPreviewEditor items={applied} onChange={setApplied} showExplanation />
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={downloadApplied} disabled={busy === "generate"}>
+              {busy === "generate" ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <FileDown className="mr-1.5 h-4 w-4" />
+              )}
+              {tr("Télécharger")}
+            </Button>
+            <Button variant="outline" onClick={() => setShowImport((v) => !v)}>
+              <UploadCloud className="mr-1.5 h-4 w-4" />
+              {tr("Importer directement")}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type Step4BlockResult = { filename: string; applied: ExtractedQ[]; srcKind: SrcKind };
+
+function Step4Panel() {
+  const { tr } = useI18n();
+  const genDocx = useServerFn(generateQuestionsDocx);
+
+  const [modules, setModules] = useState<ImportModule[] | null>(null);
+  const [moduleId, setModuleId] = useState<string>("");
+  const [rotations, setRotations] = useState<ImportRotation[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("modules")
+        .select("id,title,year")
+        .order("year")
+        .order("sort_order");
+      setModules((data as ImportModule[]) ?? []);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!moduleId) {
+      setRotations([]);
+      return;
+    }
+    (async () => {
+      const { data } = await supabase
+        .from("module_rotations")
+        .select("id,label")
+        .eq("module_id", moduleId)
+        .order("sort_order");
+      setRotations((data as ImportRotation[]) ?? []);
+    })();
+  }, [moduleId]);
+
+  const selectedModule = modules?.find((m) => m.id === moduleId) ?? null;
+  const rotationLabels = rotations.map((r) => r.label);
+  const yearLabels = yearImportOptions(selectedModule?.year).map((o) => o.label);
+
+  // Rotation/année detection is always per-file (each question file gets its
+  // own captures PDF — see Step4FileBlock); this toggle only decides how the
+  // *outputs* of however many files are loaded come back: one merged file, or
+  // one per file. "+ Ajouter un autre fichier" adds blocks; each is fully
+  // independent until this combine/zip step at the end.
+  const [blockIds, setBlockIds] = useState<number[]>([0]);
+  const nextIdRef = useRef(1);
+  const [blockResults, setBlockResults] = useState<Record<number, Step4BlockResult | null>>({});
+  const [combineResults, setCombineResults] = useState(true);
+  const [combineBusy, setCombineBusy] = useState(false);
+  const [downloadAllBusy, setDownloadAllBusy] = useState(false);
+
+  const addBlock = () => setBlockIds((prev) => [...prev, nextIdRef.current++]);
+  const removeBlock = (id: number) => {
+    setBlockIds((prev) => prev.filter((x) => x !== id));
+    setBlockResults((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const readyResults = blockIds
+    .map((id) => blockResults[id])
+    .filter((r): r is Step4BlockResult => !!r);
+  const kinds = new Set(readyResults.map((r) => r.srcKind));
+  const canCombine = kinds.size <= 1;
+
+  const downloadCombined = async () => {
+    if (!readyResults.length || !canCombine) return;
+    setCombineBusy(true);
+    try {
+      const combined = readyResults.flatMap((r) => r.applied);
+      if (readyResults[0].srcKind === "json") {
+        downloadText(
+          `questions_${Date.now()}.json`,
+          JSON.stringify(toJsonObjects(combined), null, 2),
+        );
+      } else {
+        const items = toDocxItems(combined);
+        const includeExplanations = combined.some((q) => !!q.explanation);
+        const { base64 } = await genDocx({ data: { items, includeExplanations } });
+        downloadBase64(`questions_${Date.now()}.docx`, base64, DOCX_MIME);
+      }
+      toast.success(`${combined.length} ${tr("question(s) prêtes")}`);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setCombineBusy(false);
+    }
+  };
+
+  const downloadAllZip = async () => {
+    if (!readyResults.length) return;
+    setDownloadAllBusy(true);
+    try {
+      const entries: { name: string; base64?: string; text?: string }[] = [];
+      for (const r of readyResults) {
+        if (r.srcKind === "json") {
+          entries.push({
+            name: `${baseFilename(r.filename)}.json`,
+            text: JSON.stringify(toJsonObjects(r.applied), null, 2),
+          });
+        } else {
+          const items = toDocxItems(r.applied);
+          const includeExplanations = r.applied.some((q) => !!q.explanation);
+          const { base64 } = await genDocx({ data: { items, includeExplanations } });
+          entries.push({ name: `${baseFilename(r.filename)}.docx`, base64 });
+        }
+      }
+      await downloadZip(`questions_${Date.now()}.zip`, entries);
+    } catch (e: any) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setDownloadAllBusy(false);
+    }
+  };
+
+  return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">
@@ -2643,157 +3470,64 @@ function Step4Panel() {
           </p>
         </div>
 
-        <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
-          <p className="text-sm font-medium">{tr("A. Captures PDF (rotation/année en en-tête)")}</p>
-          <RotationYearDetector
-            entries={entries}
-            onEntriesChange={setEntries}
-            rotationOptions={rotationLabels}
-            yearOptions={yearLabels}
+        {blockIds.length > 1 && (
+          <CombineToggle
+            combine={combineResults}
+            onChange={setCombineResults}
+            fileCount={blockIds.length}
+            idPrefix="step4"
           />
-        </div>
-
-        <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
-          <p className="text-sm font-medium">{tr("B. Fichier de questions (.docx ou .json)")}</p>
-          <Input
-            type="file"
-            accept={`.docx,.json,${DOCX_MIME},application/json`}
-            onChange={(e) => {
-              const f = e.target.files?.[0] ?? null;
-              setSrcFile(f);
-              setSrcKind(
-                f
-                  ? /\.json$/i.test(f.name) || f.type === "application/json"
-                    ? "json"
-                    : "docx"
-                  : null,
-              );
-              setPrepared(null);
-              setParsed(null);
-              setApplied(null);
-              setShowImport(false);
-            }}
-          />
-          {srcFile && <p className="mt-1 text-xs text-muted-foreground">{srcFile.name}</p>}
-          {srcKind === "docx" && (
-            <>
-              <div className="flex items-center gap-2">
-                <Switch id="step4-noai" checked={allowNoAi} onCheckedChange={setAllowNoAi} />
-                <Label htmlFor="step4-noai" className="cursor-pointer">
-                  {tr(
-                    "Mode sans IA pour la lecture du .docx (gratuit, un seul fichier par rotation)",
-                  )}
-                </Label>
-              </div>
-              <HintField
-                hint={hint}
-                setHint={setHint}
-                saveHint={saveHint}
-                placeholder={tr("ex: cardiologie, plusieurs rotations dans ce fichier")}
-              />
-            </>
-          )}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              onClick={loadSource}
-              disabled={busy !== null || uploading || !srcFile}
-            >
-              {uploading ? (
-                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              ) : prepared || parsed ? (
-                <Check className="mr-1.5 h-4 w-4" />
-              ) : (
-                <UploadCloud className="mr-1.5 h-4 w-4" />
-              )}
-              {tr("Charger le fichier")}
-            </Button>
-            {srcKind === "docx" && (
-              <Button onClick={extractDocx} disabled={busy !== null || !prepared}>
-                {busy === "extract" ? (
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                ) : (
-                  <FileDown className="mr-1.5 h-4 w-4" />
-                )}
-                {tr("Extraire les questions")}
-              </Button>
-            )}
-          </div>
-          <StepProgress
-            phase={phase}
-            progress={progress}
-            onCancel={() => abortRef.current?.abort()}
-          />
-          {parsed && (
-            <p className="text-xs text-muted-foreground">
-              {parsed.length} {tr("question(s)/cas chargé(s) —")} {ranges.length} {tr("groupe(s).")}
-            </p>
-          )}
-          <ChunkWarnings warnings={chunkWarnings} />
-        </div>
-
-        {entries && entries.length > 0 && parsed && parsed.length > 0 && (
-          <div className="space-y-2">
-            <Button onClick={apply}>
-              <Check className="mr-1.5 h-4 w-4" />
-              {tr("Appliquer")}
-            </Button>
-            {entries.length !== ranges.length && (
-              <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                {entries.length} {tr("page(s) détectée(s) pour")} {ranges.length}{" "}
-                {tr(
-                  "question(s)/cas — vérifiez l'alignement ci-dessus avant d'appliquer (le surplus est ignoré).",
-                )}
-              </p>
-            )}
-            <Button onClick={apply}>
-              <Check className="mr-1.5 h-4 w-4" />
-              {tr("Appliquer")}
-            </Button>
-          </div>
         )}
 
-        {applied && (
-          <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+        {blockIds.map((id, i) => (
+          <Step4FileBlock
+            key={id}
+            moduleId={moduleId}
+            rotationLabels={rotationLabels}
+            yearLabels={yearLabels}
+            label={`${tr("Fichier")} ${i + 1}`}
+            onRemove={blockIds.length > 1 ? () => removeBlock(id) : undefined}
+            onResultChange={(r) => setBlockResults((prev) => ({ ...prev, [id]: r }))}
+          />
+        ))}
+
+        <Button variant="outline" onClick={addBlock}>
+          <Plus className="mr-1.5 h-4 w-4" />
+          {tr("Ajouter un autre fichier")}
+        </Button>
+
+        {blockIds.length > 1 && readyResults.length > 0 && (
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-4">
             <p className="text-sm font-medium">
-              {applied.length} {tr("question(s) prêtes")}
+              {readyResults.length} / {blockIds.length} {tr("fichier(s) prêt(s)")}
             </p>
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={downloadApplied} disabled={busy === "generate"}>
-                {busy === "generate" ? (
+            {combineResults ? (
+              canCombine ? (
+                <Button variant="outline" onClick={downloadCombined} disabled={combineBusy}>
+                  {combineBusy ? (
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : (
+                    <FileDown className="mr-1.5 h-4 w-4" />
+                  )}
+                  {tr("Télécharger la combinaison")}
+                </Button>
+              ) : (
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  {tr(
+                    "Combinaison indisponible : mélange de fichiers .docx et .json — téléchargez-les séparément ci-dessus.",
+                  )}
+                </p>
+              )
+            ) : (
+              <Button variant="outline" onClick={downloadAllZip} disabled={downloadAllBusy}>
+                {downloadAllBusy ? (
                   <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
                 ) : (
                   <FileDown className="mr-1.5 h-4 w-4" />
                 )}
-                {tr("Télécharger")}
+                {tr("Tout télécharger (.zip)")}
               </Button>
-              <Button variant="outline" onClick={() => setShowImport((v) => !v)}>
-                <UploadCloud className="mr-1.5 h-4 w-4" />
-                {tr("Importer directement")}
-              </Button>
-            </div>
-            {showImport && (
-              <ImportReviewPanel
-                questions={applied}
-                onImported={() => setShowImport(false)}
-                initialModuleId={moduleId}
-              />
             )}
-            <QuestionsPreviewEditor items={applied} onChange={setApplied} showExplanation />
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={downloadApplied} disabled={busy === "generate"}>
-                {busy === "generate" ? (
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                ) : (
-                  <FileDown className="mr-1.5 h-4 w-4" />
-                )}
-                {tr("Télécharger")}
-              </Button>
-              <Button variant="outline" onClick={() => setShowImport((v) => !v)}>
-                <UploadCloud className="mr-1.5 h-4 w-4" />
-                {tr("Importer directement")}
-              </Button>
-            </div>
           </div>
         )}
       </CardContent>

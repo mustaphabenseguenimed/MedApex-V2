@@ -20,7 +20,29 @@ export function base64ToFile(filename: string, base64: string, mimeType: string)
   return new File([buf], filename, { type: mimeType });
 }
 
-function downloadBlob(filename: string, blob: Blob) {
+/** Bundle several already-generated outputs (one per source file, in "separate
+ *  results" mode) into a single .zip download. */
+export async function downloadZip(
+  filename: string,
+  entries: { name: string; base64?: string; text?: string }[],
+) {
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+  for (const e of entries) {
+    if (e.base64 !== undefined) zip.file(e.name, e.base64, { base64: true });
+    else if (e.text !== undefined) zip.file(e.name, e.text);
+  }
+  const blob = await zip.generateAsync({ type: "blob" });
+  downloadBlob(filename, blob);
+}
+
+/** Strip a file's extension — used to name a per-file output after its source
+ *  (e.g. "BPCO 01.docx" -> "BPCO 01"). */
+export function baseFilename(name: string): string {
+  return name.replace(/\.[^./\\]+$/, "");
+}
+
+export function downloadBlob(filename: string, blob: Blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
