@@ -68,12 +68,20 @@ export async function extractPdfText(file: File | ArrayBuffer): Promise<PdfTextR
   return { pages, scannedPages, totalPages: doc.numPages };
 }
 
-/** Render one already-loaded pdf.js page to a canvas at `scale`. */
-async function renderPageToCanvas(page: any, scale: number): Promise<HTMLCanvasElement> {
+/** Render one already-loaded pdf.js page to a canvas at `scale`.
+ *
+ *  `maxHeight` caps the canvas height, so a caller that only wants the top of
+ *  the page neither allocates a full-page bitmap nor pays to rasterise the
+ *  part it is about to throw away — the canvas clips it instead. */
+async function renderPageToCanvas(
+  page: any,
+  scale: number,
+  maxHeight?: number,
+): Promise<HTMLCanvasElement> {
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
   canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.ceil(viewport.height);
+  canvas.height = Math.min(Math.ceil(viewport.height), maxHeight ?? Infinity);
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas non supporté par ce navigateur");
   // JPEG has no alpha: paint white first or transparent areas come out black.
@@ -151,16 +159,15 @@ export async function renderPdfPageTopImages(
 
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
-    const canvas = await renderPageToCanvas(page, scale);
-
-    const cropHeight = Math.max(1, Math.round(canvas.height * cropTop));
-    const cropCanvas = document.createElement("canvas");
-    cropCanvas.width = canvas.width;
-    cropCanvas.height = cropHeight;
-    const cropCtx = cropCanvas.getContext("2d");
-    if (!cropCtx) throw new Error("Canvas non supporté par ce navigateur");
-    cropCtx.drawImage(canvas, 0, 0, canvas.width, cropHeight, 0, 0, canvas.width, cropHeight);
-    images.push(cropCanvas.toDataURL("image/png"));
+    // Only the top strip is ever used, so render only the top strip: the old
+    // path rasterised the whole page at full scale and then threw ~80% of it
+    // away, which on a long captures PDF is most of the wait before the first
+    // request even goes out. JPEG rather than PNG for the same reason —
+    // encoding is far cheaper and the payload much smaller, at a quality
+    // where header text is still crisp.
+    const cropHeight = Math.max(1, Math.round(page.getViewport({ scale }).height * cropTop));
+    const canvas = await renderPageToCanvas(page, scale, cropHeight);
+    images.push(canvas.toDataURL("image/jpeg", 0.9));
   }
 
   try {
