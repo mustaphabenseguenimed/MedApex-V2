@@ -141,7 +141,7 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
       const { output } = await generateWithFallback(
         ExplainSchema,
         [{ type: "text", text: prompt }],
-        { temperature: 0.3, timeoutMs: 150_000 },
+        { temperature: 0.3, timeoutMs: 220_000 },
       );
       const byIndex = new Map(output.explanations.map((e) => [e.index, e]));
       return {

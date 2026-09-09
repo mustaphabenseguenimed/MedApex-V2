@@ -409,7 +409,14 @@ function SeparateResultsList({
   );
 }
 
-const EXPLAIN_BATCH_SIZE = 60;
+// 15, not 60: every batch's prompt also carries the full reference document
+// (up to 150k chars), so batch size mainly controls how much *output* one
+// call has to generate — 60 explanations in a single response was often
+// slow enough to blow past the AI call's timeout, surfacing as a raw
+// platform crash instead of a clean error. Smaller batches mean more calls,
+// but each one finishes fast and reliably instead of a large one failing
+// outright.
+const EXPLAIN_BATCH_SIZE = 15;
 
 /** Retry a network-level failure (dropped mobile connection mid-upload shows up
  *  as a bare "Failed to fetch" TypeError from the browser) with backoff. Server
