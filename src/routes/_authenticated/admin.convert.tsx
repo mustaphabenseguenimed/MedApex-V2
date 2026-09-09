@@ -910,7 +910,10 @@ function RotationYearDetector({
             withRetry(() => extractRotYear({ data: { imageDataUrl }, signal: controller.signal })),
         ),
         setProgress,
-        2,
+        // 4, like the explanation phase: one small fixed-size call per capture
+        // page, so wall time is set by how many run at once rather than by the
+        // work in any one of them.
+        4,
         controller.signal,
       );
       if (controller.signal.aborted) return;
