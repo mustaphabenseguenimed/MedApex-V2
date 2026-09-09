@@ -68,9 +68,14 @@ export type ExtractedQ = z.infer<typeof ExtractedQuestion>;
 // ---- helpers ---------------------------------------------------------------
 
 async function runExtract(content: AiContent): Promise<ExtractResult> {
+  // 220s, not 150s: with thinking enabled, a large/complex chunk can
+  // legitimately take longer than 150s to finish — the old cap was cutting
+  // off attempts that were still genuinely working, not stuck. Retries exist
+  // for transient failures (rate limits, overload), which fail fast; this
+  // just gives the one attempt that matters room to actually complete.
   const { output, engine } = await generateWithFallback(ExtractSchema, content, {
     temperature: 0.2,
-    timeoutMs: 150_000,
+    timeoutMs: 220_000,
     thinking: true,
   });
   return { ...normalizeQuestions(output), engine };
