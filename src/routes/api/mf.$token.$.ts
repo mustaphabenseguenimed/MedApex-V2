@@ -41,17 +41,17 @@ function injectContentProtection(html: string): string {
     : html + CONTENT_PROTECTION_SNIPPET;
 }
 
-// A screenshot can't be blocked (nothing on the web layer sees the OS
-// compositor), but a leaked one can be traced: tile the viewer's own email
-// across the page, semi-transparent, so any copy still carries who it came
-// from. Base64 data URI (not a raw `url("...")`) so nothing in the label —
-// quotes, accents — can break out of the injected HTML attribute.
-function injectWatermark(html: string, label: string): string {
-  const escaped = label.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="180"><text x="20" y="110" transform="rotate(-30 180 90)" font-family="sans-serif" font-size="15" fill="rgba(120,120,120,0.35)">${escaped}</text></svg>`;
-  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg, "utf-8").toString("base64")}`;
-  const snippet = `<div aria-hidden="true" style="position:fixed;inset:0;pointer-events:none;z-index:2147483647;background-image:url('${dataUrl}');background-repeat:repeat;"></div>`;
-  return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${snippet}</body>`) : html + snippet;
+// A brand watermark, not a per-viewer trace: tile "Med Apex" across the
+// page, semi-transparent. Base64 data URI (not a raw `url("...")`) keeps
+// this safe even if the label ever changes to include untrusted text again.
+const WATERMARK_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="360" height="180"><text x="20" y="110" transform="rotate(-30 180 90)" font-family="sans-serif" font-size="15" fill="rgba(120,120,120,0.35)">Med Apex</text></svg>';
+const WATERMARK_SNIPPET = `<div aria-hidden="true" style="position:fixed;inset:0;pointer-events:none;z-index:2147483647;background-image:url('data:image/svg+xml;base64,${Buffer.from(WATERMARK_SVG, "utf-8").toString("base64")}');background-repeat:repeat;"></div>`;
+
+function injectWatermark(html: string): string {
+  return /<\/body>/i.test(html)
+    ? html.replace(/<\/body>/i, `${WATERMARK_SNIPPET}</body>`)
+    : html + WATERMARK_SNIPPET;
 }
 
 // createServerOnlyFn marks this closure as server-only. TanStack Start's
@@ -80,13 +80,9 @@ const handler = createServerOnlyFn(async ({ params }: { params: MfParams }) => {
   const buf = await data.arrayBuffer();
   const ct = contentTypeFor(objectPath);
   const isHtml = ct.startsWith("text/html");
-  let body: BodyInit = buf;
-  if (isHtml) {
-    let html = injectContentProtection(new TextDecoder("utf-8").decode(buf));
-    const { data: viewer } = await admin.auth.admin.getUserById(payload.uid);
-    if (viewer.user?.email) html = injectWatermark(html, viewer.user.email);
-    body = html;
-  }
+  const body: BodyInit = isHtml
+    ? injectWatermark(injectContentProtection(new TextDecoder("utf-8").decode(buf)))
+    : buf;
   return new Response(body, {
     status: 200,
     headers: {
