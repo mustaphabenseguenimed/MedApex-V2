@@ -66,6 +66,7 @@ import { importQuestionsToModule, type ImportableQuestion } from "@/lib/importQu
 import { MultiSearchableSelect } from "@/components/ui/multi-searchable-select";
 import type { SearchableOption } from "@/components/ui/searchable-select";
 import { parseQuestionsJson } from "@/lib/structuredImport";
+import { ConversionLibrary, SaveToLibraryButton } from "@/components/ConversionLibrary";
 
 export const Route = createFileRoute("/_authenticated/admin/convert")({
   head: () => ({ meta: [{ title: "Conversion — Admin" }] }),
@@ -1086,6 +1087,20 @@ function ConvertTabs() {
   const [tab, setTab] = useState("step1");
   const [step2Incoming, setStep2Incoming] = useState<File | null>(null);
   const [step3Incoming, setStep3Incoming] = useState<File | null>(null);
+  const [step4Incoming, setStep4Incoming] = useState<{ file: File; srcKind: SrcKind } | null>(null);
+
+  const toStep2 = (file: File) => {
+    setStep2Incoming(file);
+    setTab("step2");
+  };
+  const toStep3 = (file: File) => {
+    setStep3Incoming(file);
+    setTab("step3");
+  };
+  const toStep4 = (file: File, srcKind: SrcKind) => {
+    setStep4Incoming({ file, srcKind });
+    setTab("step4");
+  };
 
   return (
     <Tabs value={tab} onValueChange={setTab}>
@@ -1096,28 +1111,24 @@ function ConvertTabs() {
         <TabsTrigger value="step4">{tr("4. Rotations/Années")}</TabsTrigger>
       </TabsList>
       <TabsContent value="step1" className="mt-6 data-[state=inactive]:hidden" forceMount>
-        <Step1Panel
-          onContinue={(file) => {
-            setStep2Incoming(file);
-            setTab("step2");
-          }}
-        />
+        <Step1Panel onContinue={toStep2} />
       </TabsContent>
       <TabsContent value="step2" className="mt-6 data-[state=inactive]:hidden" forceMount>
         <Step2Panel
           incomingFile={step2Incoming}
           onConsumed={() => setStep2Incoming(null)}
-          onContinue={(file) => {
-            setStep3Incoming(file);
-            setTab("step3");
-          }}
+          onContinue={toStep3}
         />
       </TabsContent>
       <TabsContent value="step3" className="mt-6 data-[state=inactive]:hidden" forceMount>
-        <Step3Panel incomingFile={step3Incoming} onConsumed={() => setStep3Incoming(null)} />
+        <Step3Panel
+          incomingFile={step3Incoming}
+          onConsumed={() => setStep3Incoming(null)}
+          onContinue={toStep4}
+        />
       </TabsContent>
       <TabsContent value="step4" className="mt-6 data-[state=inactive]:hidden" forceMount>
-        <Step4Panel />
+        <Step4Panel incoming={step4Incoming} onConsumed={() => setStep4Incoming(null)} />
       </TabsContent>
     </Tabs>
   );
@@ -1194,6 +1205,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const [groupBusy, setGroupBusy] = useState<number | null>(null);
   const [groupResults, setGroupResults] = useState<Record<number, DocxResult>>({});
   const [downloadAllBusy, setDownloadAllBusy] = useState(false);
+  const [libraryVersion, setLibraryVersion] = useState(0);
   const separate = !combineResults && files.length > 1;
 
   const upload = async () => {
@@ -1602,6 +1614,14 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
                 <ArrowRight className="mr-1.5 h-4 w-4" />
                 {tr("Continuer vers l'étape 2 (même fichier)")}
               </Button>
+              <SaveToLibraryButton
+                step={1}
+                sourceFilenames={files.map((f) => f.name)}
+                outputKind="docx"
+                content={result.base64}
+                itemCount={result.count}
+                onSaved={() => setLibraryVersion((v) => v + 1)}
+              />
             </div>
             {result.warnings && result.warnings.length > 0 && (
               <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
@@ -1682,6 +1702,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             )}
           </div>
         )}
+        <ConversionLibrary step={1} refreshKey={libraryVersion} onContinue={onContinue} />
       </CardContent>
     </Card>
   );
@@ -2014,6 +2035,7 @@ function Step2Panel({
   const [groupResults, setGroupResults] = useState<Record<number, DocxResult>>({});
   const [downloadAllBusy, setDownloadAllBusy] = useState(false);
   const [groupImportOpen, setGroupImportOpen] = useState<number | null>(null);
+  const [libraryVersion, setLibraryVersion] = useState(0);
   const separate = !combineResults && docxFiles.length > 1;
 
   const resetExtraction = () => {
@@ -2463,6 +2485,14 @@ function Step2Panel({
                 <ArrowRight className="mr-1.5 h-4 w-4" />
                 {tr("Continuer vers l'étape 3 (même fichier)")}
               </Button>
+              <SaveToLibraryButton
+                step={2}
+                sourceFilenames={docxFiles.map((f) => f.name)}
+                outputKind="docx"
+                content={result.base64}
+                itemCount={result.count}
+                onSaved={() => setLibraryVersion((v) => v + 1)}
+              />
               {extracted && (
                 <Button variant="outline" onClick={() => setShowImport((v) => !v)}>
                   <UploadCloud className="mr-1.5 h-4 w-4" />
@@ -2590,6 +2620,7 @@ function Step2Panel({
             )}
           </div>
         )}
+        <ConversionLibrary step={2} refreshKey={libraryVersion} onContinue={onContinue} />
       </CardContent>
     </Card>
   );
@@ -2602,9 +2633,13 @@ type JsonResult = { objects: unknown[]; count: number };
 function Step3Panel({
   incomingFile,
   onConsumed,
+  onContinue,
 }: {
   incomingFile?: File | null;
   onConsumed?: () => void;
+  /** From the library's "Continuer" action only — step 3's own fresh result
+   *  has no immediate continue button, matching the rest of this panel. */
+  onContinue?: (file: File, srcKind: SrcKind) => void;
 }) {
   const { tr } = useI18n();
   const prepDocx = useServerFn(prepareDocxChunks);
@@ -2627,6 +2662,7 @@ function Step3Panel({
   const [combineResults, setCombineResults] = useState(true);
   const [fileGroups, setFileGroups] = useState<FileGroup[] | null>(null);
   const [groupImportOpen, setGroupImportOpen] = useState<number | null>(null);
+  const [libraryVersion, setLibraryVersion] = useState(0);
   const separate = !combineResults && docxFiles.length > 1;
 
   const resetExtraction = () => {
@@ -2867,6 +2903,14 @@ function Step3Panel({
                 <FileDown className="mr-1.5 h-4 w-4" />
                 {tr("Télécharger")}
               </Button>
+              <SaveToLibraryButton
+                step={3}
+                sourceFilenames={docxFiles.map((f) => f.name)}
+                outputKind="json"
+                content={JSON.stringify(result.objects, null, 2)}
+                itemCount={result.count}
+                onSaved={() => setLibraryVersion((v) => v + 1)}
+              />
               {extracted && (
                 <Button variant="outline" onClick={() => setShowImport((v) => !v)}>
                   <UploadCloud className="mr-1.5 h-4 w-4" />
@@ -2942,6 +2986,7 @@ function Step3Panel({
             )}
           </div>
         )}
+        <ConversionLibrary step={3} refreshKey={libraryVersion} onContinue={onContinue} />
       </CardContent>
     </Card>
   );
@@ -2964,6 +3009,8 @@ function Step4FileBlock({
   label,
   onRemove,
   onResultChange,
+  initialFile,
+  initialSrcKind,
 }: {
   moduleId: string;
   rotationLabels: string[];
@@ -2973,6 +3020,10 @@ function Step4FileBlock({
   onResultChange: (
     result: { filename: string; applied: ExtractedQ[]; srcKind: SrcKind } | null,
   ) => void;
+  /** Pre-loads this block from a library "Continuer" action — same effect as
+   *  picking the file by hand and clicking "Charger le fichier". */
+  initialFile?: File;
+  initialSrcKind?: SrcKind;
 }) {
   const { tr } = useI18n();
   const prepDocx = useServerFn(prepareDocxChunks);
@@ -3058,6 +3109,17 @@ function Step4FileBlock({
     if (srcKind === "json") parseJsonFile(srcFile);
     else uploadDocx(srcFile);
   };
+
+  useEffect(() => {
+    if (!initialFile || !initialSrcKind) return;
+    setSrcFile(initialFile);
+    setSrcKind(initialSrcKind);
+    if (initialSrcKind === "json") parseJsonFile(initialFile);
+    else uploadDocx(initialFile);
+    // Runs once per fresh block — a new block is created for each
+    // "Continuer" from the library, so initialFile never changes in place.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const extractDocx = async () => {
     if (!prepared) return;
@@ -3155,6 +3217,15 @@ function Step4FileBlock({
       setBusy(null);
       setPhase(null);
     }
+  };
+
+  const getAppliedContent = async (): Promise<string> => {
+    if (!applied || !applied.length) return "";
+    if (srcKind === "json") return JSON.stringify(toJsonObjects(applied), null, 2);
+    const items = toDocxItems(applied);
+    const includeExplanations = applied.some((q) => !!q.explanation);
+    const { base64 } = await genDocx({ data: { items, includeExplanations } });
+    return base64;
   };
 
   return (
@@ -3301,6 +3372,14 @@ function Step4FileBlock({
               <UploadCloud className="mr-1.5 h-4 w-4" />
               {tr("Importer directement")}
             </Button>
+            <SaveToLibraryButton
+              step={4}
+              sourceFilenames={[srcFile?.name ?? "questions"]}
+              outputKind={srcKind ?? "docx"}
+              getContent={getAppliedContent}
+              itemCount={applied.length}
+              moduleId={moduleId || null}
+            />
           </div>
           {showImport && (
             <ImportReviewPanel
@@ -3323,6 +3402,14 @@ function Step4FileBlock({
               <UploadCloud className="mr-1.5 h-4 w-4" />
               {tr("Importer directement")}
             </Button>
+            <SaveToLibraryButton
+              step={4}
+              sourceFilenames={[srcFile?.name ?? "questions"]}
+              outputKind={srcKind ?? "docx"}
+              getContent={getAppliedContent}
+              itemCount={applied.length}
+              moduleId={moduleId || null}
+            />
           </div>
         </div>
       )}
@@ -3332,7 +3419,14 @@ function Step4FileBlock({
 
 type Step4BlockResult = { filename: string; applied: ExtractedQ[]; srcKind: SrcKind };
 
-function Step4Panel() {
+function Step4Panel({
+  incoming,
+  onConsumed,
+}: {
+  /** A library "Continuer" from step 3 — becomes a new block's source file. */
+  incoming?: { file: File; srcKind: SrcKind } | null;
+  onConsumed?: () => void;
+}) {
   const { tr } = useI18n();
   const genDocx = useServerFn(generateQuestionsDocx);
 
@@ -3378,9 +3472,21 @@ function Step4Panel() {
   const [blockIds, setBlockIds] = useState<number[]>([0]);
   const nextIdRef = useRef(1);
   const [blockResults, setBlockResults] = useState<Record<number, Step4BlockResult | null>>({});
+  const [blockInitialFiles, setBlockInitialFiles] = useState<
+    Record<number, { file: File; srcKind: SrcKind }>
+  >({});
   const [combineResults, setCombineResults] = useState(true);
   const [combineBusy, setCombineBusy] = useState(false);
   const [downloadAllBusy, setDownloadAllBusy] = useState(false);
+
+  useEffect(() => {
+    if (!incoming) return;
+    const id = nextIdRef.current++;
+    setBlockIds((prev) => [...prev, id]);
+    setBlockInitialFiles((prev) => ({ ...prev, [id]: incoming }));
+    onConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incoming]);
 
   const addBlock = () => setBlockIds((prev) => [...prev, nextIdRef.current++]);
   const removeBlock = (id: number) => {
@@ -3495,6 +3601,8 @@ function Step4Panel() {
             label={`${tr("Fichier")} ${i + 1}`}
             onRemove={blockIds.length > 1 ? () => removeBlock(id) : undefined}
             onResultChange={(r) => setBlockResults((prev) => ({ ...prev, [id]: r }))}
+            initialFile={blockInitialFiles[id]?.file}
+            initialSrcKind={blockInitialFiles[id]?.srcKind}
           />
         ))}
 
@@ -3537,6 +3645,7 @@ function Step4Panel() {
             )}
           </div>
         )}
+        <ConversionLibrary step={4} />
       </CardContent>
     </Card>
   );

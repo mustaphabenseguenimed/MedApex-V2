@@ -86,6 +86,59 @@ export type Database = {
         };
         Relationships: [];
       };
+      conversion_library_items: {
+        Row: {
+          created_at: string;
+          created_by: string;
+          id: string;
+          item_count: number | null;
+          label: string;
+          module_id: string | null;
+          output_kind: string;
+          rotation: string | null;
+          source_filenames: string[];
+          step: number;
+          storage_path: string;
+          year_label: string | null;
+        };
+        Insert: {
+          created_at?: string;
+          created_by: string;
+          id?: string;
+          item_count?: number | null;
+          label: string;
+          module_id?: string | null;
+          output_kind: string;
+          rotation?: string | null;
+          source_filenames?: string[];
+          step: number;
+          storage_path: string;
+          year_label?: string | null;
+        };
+        Update: {
+          created_at?: string;
+          created_by?: string;
+          id?: string;
+          item_count?: number | null;
+          label?: string;
+          module_id?: string | null;
+          output_kind?: string;
+          rotation?: string | null;
+          source_filenames?: string[];
+          step?: number;
+          storage_path?: string;
+          year_label?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "conversion_library_items_module_id_fkey";
+            columns: ["module_id"];
+            isOneToOne: false;
+            referencedRelation: "modules";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       flashcards: {
         Row: {
           back: string;
