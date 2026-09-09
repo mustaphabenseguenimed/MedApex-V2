@@ -2212,7 +2212,14 @@ function Step2Panel({
             ),
         ),
         setProgress,
-        2,
+        // 4 here, unlike every other phase's 2. Total decode work in this
+        // phase is fixed (one explanation per question, batching doesn't
+        // change that), so wall time is set almost entirely by how many
+        // batches run at once. The quota headroom to afford it comes from
+        // extraction no longer spending AI calls on documents the app wrote
+        // itself — in a typical Step 2 run this is now the only phase
+        // calling the model at all.
+        4,
         controller.signal,
       );
       if (controller.signal.aborted) return;

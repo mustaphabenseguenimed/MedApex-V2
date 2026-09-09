@@ -358,8 +358,31 @@ export function buildQuestionUnits(html: string, detectCases = true): QuestionUn
     // Attach the vignette that explicitly covers this question start, if any.
     const owningVignette = vignettes.find((v) => v.coveredStarts.has(from));
     if (owningVignette) header.case_stem = owningVignette.text;
-    const bodyBlocks = blocks.slice(from, to);
-    const text = texts.slice(from, to).join(" ");
+    // A unit's body must stop before the NEXT question's preamble. Slicing
+    // straight to `to` swallows whatever sits between the two questions —
+    // typically the next case's "Rotation : P3", its "Cas clinique n°2 :"
+    // marker and the whole vignette — which the local parser then files as
+    // this question's explanation, and which the AI sees as stray context.
+    // Walk back from the next start over the run of blocks we can positively
+    // identify as that preamble, stopping at the first block that belongs to
+    // this question (an option, "Réponse :"/"Explication :", or explanation
+    // prose we can't attribute elsewhere).
+    let bodyEnd = to;
+    if (s + 1 < starts.length) {
+      for (let k = to - 1; k > from; k--) {
+        const t = texts[k];
+        if (isOptionLine(t) || ANSWER_OR_EXPLANATION_LINE.test(t)) break;
+        const hints = parseContextHints([t]);
+        const isNextPreamble =
+          allVignetteProseIndices.has(k) ||
+          isCaseMarkerLine(t) ||
+          !!(hints.rotation_hint || hints.year_hint || hints.course_hint);
+        if (!isNextPreamble) break;
+        bodyEnd = k;
+      }
+    }
+    const bodyBlocks = blocks.slice(from, bodyEnd);
+    const text = texts.slice(from, bodyEnd).join(" ");
     units.push({ html: bodyBlocks.join("\n"), text, header });
   }
   return units;
