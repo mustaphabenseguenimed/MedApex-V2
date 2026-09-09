@@ -93,7 +93,13 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
           )
           .min(1)
           .max(60),
-        referenceText: z.string().max(200_000).optional(),
+        // Generous sanity ceiling only — the handler below truncates to
+        // 150k before it ever reaches the prompt. This must stay above that
+        // truncation point, or a normal-sized reference document (a course
+        // chapter easily runs past 200k characters) fails validation before
+        // the intended truncation gets a chance to run, surfacing a raw
+        // Zod error instead of just quietly using less of the document.
+        referenceText: z.string().max(500_000).optional(),
         instructions: z.string().max(5000).optional(),
       })
       .parse(input),
