@@ -61,6 +61,9 @@ const QUESTION_START_BARE = /^\s*(?:<[^>]+>\s*)*[N°#]?\s*\d{1,3}\s*[.)\-:–]/;
 
 /** An answer-option line: "A.", "b)", "- C -", "1.", "2)". */
 const OPTION_LINE = /^\s*[-•*]?\s*\(?([A-Ea-e]|[1-9])\s*[).:\-–]\s+/;
+/** Only the lettered form — used to tell which style a document uses for its
+ *  choices, since a numbered line is ambiguous but a lettered one never is. */
+const LETTERED_OPTION_LINE = /^\s*[-•*]?\s*\(?([A-Ea-e])\s*[).:\-–]\s+/;
 
 export function isQuestionStart(text: string): boolean {
   return QUESTION_START_KEYWORD.test(text) || QUESTION_START_BARE.test(text);
@@ -286,14 +289,24 @@ export function buildQuestionUnits(html: string, detectCases = true): QuestionUn
   const texts = blocks.map(stripTags);
   const numbered = texts.some((t) => isQuestionStart(t));
 
+  // Which style does THIS document use for its options? When its choices are
+  // lettered ("A." / "B."), a numbered line cannot also be a choice — so
+  // "1." is a question. Without this, `isOptionLine` (which accepts 1-9)
+  // vetoes every question numbered 1..9 while 10+ survive, because "10."
+  // has no separator right after the first digit: a document numbered
+  // 1..30 silently loses its first nine questions.
+  const hasLetteredOptions = texts.some((t) => LETTERED_OPTION_LINE.test(t));
+
   const starts: number[] = [];
   if (numbered) {
     texts.forEach((t, i) => {
       // A keyword-anchored match ("Question 4") is always a real boundary.
       // A bare numeric match ("1.") is ambiguous with a numbered choice
-      // ("1. Some option text") — only trust it when it's NOT also an
-      // option line.
-      if (isUnambiguousQuestionStart(t) || (isQuestionStart(t) && !isOptionLine(t))) starts.push(i);
+      // ("1. Some option text") — trust it when the document letters its
+      // choices, or when the line isn't option-shaped at all.
+      const bareIsTrustworthy = hasLetteredOptions || !isOptionLine(t);
+      if (isUnambiguousQuestionStart(t) || (isQuestionStart(t) && bareIsTrustworthy))
+        starts.push(i);
     });
   } else {
     // Unnumbered: the last non-option block right before an option run is the
@@ -391,6 +404,35 @@ export function buildQuestionUnits(html: string, detectCases = true): QuestionUn
 /** Number of questions detected in a document (used as the expected count). */
 export function countQuestions(html: string): number {
   return buildQuestionUnits(html).length;
+}
+
+/** The number each detected question declares in its own marker
+ *  ("Question 7" → 7, "3." → 3), or null where the source doesn't number it. */
+const LEADING_NUMBER =
+  /^\s*(?:<[^>]+>\s*)*(?:Q(?:uestion)?|QCM|QCS|QROC|Cas)?\s*[N°#]?\s*(\d{1,3})\b/i;
+export function questionNumbers(html: string, detectCases = true): (number | null)[] {
+  return buildQuestionUnits(html, detectCases).map((u) => {
+    const first = stripTags(splitBlocks(u.html)[0] ?? "");
+    const m = first.match(LEADING_NUMBER);
+    return m ? Number(m[1]) : null;
+  });
+}
+
+/**
+ * Does the document's OWN numbering run unbroken across these questions?
+ *
+ * This is the one completeness signal that doesn't come from our own
+ * segmentation: a chunk's `expected` count and the local parser both derive
+ * from `buildQuestionUnits`, so comparing them can never reveal a question
+ * that segmentation never saw. A gap in the source's numbering can
+ * (1, 2, 4 → we lost 3). A restart at 1 is allowed: sections and clinical
+ * cases legitimately renumber. Unnumbered questions return false — not
+ * proof of a miss, but no proof of completeness either.
+ */
+export function numberingIsContiguous(numbers: (number | null)[]): boolean {
+  if (!numbers.length || numbers.some((n) => n === null)) return false;
+  const ns = numbers as number[];
+  return ns.every((n, i) => i === 0 || n === ns[i - 1] + 1 || n === 1);
 }
 
 function escapeHtml(s: string): string {

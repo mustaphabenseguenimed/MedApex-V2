@@ -19,6 +19,8 @@ import {
 import {
   buildQuestionUnits,
   chunkUnits,
+  numberingIsContiguous,
+  questionNumbers,
   textToHtml,
   type PreparedChunk,
   type QHeader,
@@ -228,6 +230,12 @@ function expectedCountNote(expected: number): string {
  */
 function localIfComplete(html: string, expected: number): ExtractResult | null {
   if (expected <= 0) return null;
+  // The document's own numbering is the only completeness signal that isn't
+  // circular here: `expected` and the parse below both come from
+  // buildQuestionUnits, so a question that segmentation never saw is missing
+  // from BOTH and the counts still agree. A gap in the source's numbering is
+  // what actually catches it.
+  if (!numberingIsContiguous(questionNumbers(html))) return null;
   const { questions } = normalizeQuestions({
     questions: parseQuestionsLocally(html) as ExtractedQ[],
   });
@@ -822,6 +830,12 @@ export const extractQuestionsFromHtmlChunk = createServerFn({ method: "POST" })
         questions: parseQuestionsLocally(data.html) as ExtractedQ[],
       });
       const expected = data.expected ?? 0;
+      // `expected` comes from the same segmentation as the parse, so it can
+      // only report questions that were *seen and then dropped*. Questions
+      // the segmentation never recognised at all show up as a break in the
+      // document's own numbering, which is the far more common miss.
+      const numbers = questionNumbers(data.html, data.detectCases ?? true);
+      const gap = numbers.length > 0 && !numberingIsContiguous(numbers);
       return {
         questions,
         engine: "local" as ExtractEngine,
@@ -829,7 +843,9 @@ export const extractQuestionsFromHtmlChunk = createServerFn({ method: "POST" })
         warning:
           expected > 0 && questions.length < expected
             ? `${expected} question(s) détectée(s), ${questions.length} lue(s) par le mode sans IA`
-            : undefined,
+            : gap
+              ? `Numérotation discontinue (${numbers.filter(Boolean).join(", ")}) — le mode sans IA a probablement sauté des questions. Décochez-le pour relire ce fichier avec l'IA.`
+              : undefined,
       } satisfies ExtractResult;
     }
     // Step 2/3/4's input is usually the .docx the previous step generated,
