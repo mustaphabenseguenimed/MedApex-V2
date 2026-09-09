@@ -104,7 +104,7 @@ export async function buildQuestionsDocx(
           children: [new TextRun({ text: `Cas clinique n°${caseNum} :`, bold: true })],
         }),
       );
-      children.push(new Paragraph({ text: stripHtml(key) }));
+      children.push(new Paragraph({ text: stripHtml(group[0].case_stem ?? "") }));
       for (const sub of group) {
         qNum++;
         children.push(...questionParagraphs(sub, qNum, includeExplanations));
