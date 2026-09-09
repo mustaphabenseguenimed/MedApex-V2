@@ -75,6 +75,24 @@ const SAFETY_SETTINGS = [
   "HARM_CATEGORY_DANGEROUS_CONTENT",
 ].map((category) => ({ category, threshold: "BLOCK_NONE" }));
 
+/**
+ * Hard ceiling on the *total* time generateWithFallback will spend across
+ * every model, attempt and backoff sleep combined.
+ *
+ * Without this, the retry loop below has no bound on wall-clock time: worst
+ * case is 2 models x 4 attempts, each attempt allowed up to 150s before its
+ * own timeout fires, plus up to 45s of backoff between attempts — north of
+ * 24 minutes for a single server function call. No Vercel plan lets a
+ * function run anywhere near that; the platform kills the invocation outright
+ * and the browser shows Vercel's own generic crash page instead of any error
+ * message this app controls — indistinguishable from a real outage, and it
+ * happens on every step since they all funnel through this one function.
+ * Kept comfortably under typical serverless duration caps so this function
+ * always resolves — success or a clean thrown error — well before the
+ * platform would step in.
+ */
+const TOTAL_DEADLINE_MS = 240_000;
+
 /** Shared model + retry loop, used by every structured AI call in the
  *  conversion pipeline so the retry policy lives in one place.
  *
@@ -92,11 +110,18 @@ export async function generateWithFallback<T>(
   const candidates = await getExtractModelCandidates();
   if (!candidates.length) throw new Error("Moteur IA indisponible.");
 
+  const startedAt = Date.now();
+  const remaining = () => TOTAL_DEADLINE_MS - (Date.now() - startedAt);
+
   const attempt = async (model: any) => {
     const { output } = await generateText({
       model,
       output: Output.object({ schema }),
-      abortSignal: AbortSignal.timeout(opts?.timeoutMs ?? 150_000),
+      // Never let a single attempt outlive the overall budget, even if the
+      // caller asked for a longer per-attempt timeout.
+      abortSignal: AbortSignal.timeout(
+        Math.max(1000, Math.min(opts?.timeoutMs ?? 150_000, remaining())),
+      ),
       messages: [{ role: "user", content: content as any }],
       temperature: opts?.temperature ?? 0.2,
       providerOptions: {
@@ -111,18 +136,19 @@ export async function generateWithFallback<T>(
 
   let lastError: unknown = new Error("Aucun moteur IA configuré");
 
-  for (const candidate of candidates) {
+  outer: for (const candidate of candidates) {
     // Up to 4 tries per model: transient 429/5xx get a real backoff (Google
     // tells us how long to wait), schema misses get an immediate retry.
     for (let attemptNo = 0; attemptNo < 4; attemptNo++) {
+      if (remaining() <= 0) break outer;
       try {
         const out = await attempt(candidate.model);
         return { output: out, engine: candidate.engine };
       } catch (error) {
         lastError = error;
         if (isTransient(error)) {
-          if (attemptNo < 3) {
-            await sleep(retryDelayMs(error, attemptNo));
+          if (attemptNo < 3 && remaining() > 0) {
+            await sleep(Math.min(retryDelayMs(error, attemptNo), Math.max(0, remaining())));
             continue;
           }
           break; // out of patience on this model — the next one has its own quota
@@ -136,5 +162,8 @@ export async function generateWithFallback<T>(
   }
 
   // Never resolve with an empty list pretending success: the caller must know.
+  // Reaching the deadline surfaces as the same friendly message as any other
+  // exhausted-retries case — from the admin's side there's no useful
+  // difference between "gave up" and "ran out of time to keep trying".
   throw friendlyGatewayError(lastError);
 }
