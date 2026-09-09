@@ -140,7 +140,12 @@ export async function generateWithFallback<T>(
       providerOptions: {
         google: {
           safetySettings: SAFETY_SETTINGS,
-          ...(opts?.thinking ? { thinkingConfig: { thinkingLevel: "high" } } : {}),
+          // "medium", not "high": high-effort thinking on every extraction
+          // call was the single biggest contributor to conversion latency.
+          // Medium keeps the reasoning pass that improved extraction
+          // accuracy, just with a smaller budget, at meaningfully lower cost
+          // per call.
+          ...(opts?.thinking ? { thinkingConfig: { thinkingLevel: "medium" } } : {}),
         },
       },
     });
