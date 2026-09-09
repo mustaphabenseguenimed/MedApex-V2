@@ -104,7 +104,7 @@ const SAFETY_SETTINGS = [
  * limits, overload), which fail fast; genuine slowness needs room on the
  * first try, not more attempts at the same wall.
  */
-const TOTAL_DEADLINE_MS = 280_000;
+export const TOTAL_DEADLINE_MS = 280_000;
 
 /** Shared model + retry loop, used by every structured AI call in the
  *  conversion pipeline so the retry policy lives in one place.
@@ -118,13 +118,22 @@ const TOTAL_DEADLINE_MS = 280_000;
 export async function generateWithFallback<T>(
   schema: z.ZodType<T>,
   content: AiContent,
-  opts?: { temperature?: number; timeoutMs?: number; thinking?: boolean },
+  opts?: {
+    temperature?: number;
+    timeoutMs?: number;
+    thinking?: boolean;
+    /** Absolute Date.now()-style deadline, shared across a whole tree of
+     *  calls (e.g. a chunk's recursive re-split attempts) instead of each
+     *  call getting its own fresh TOTAL_DEADLINE_MS. Defaults to a fresh
+     *  deadline starting now, same as before this option existed. */
+    deadlineAt?: number;
+  },
 ): Promise<{ output: T; engine: ExtractEngine }> {
   const candidates = await getExtractModelCandidates();
   if (!candidates.length) throw new Error("Moteur IA indisponible.");
 
-  const startedAt = Date.now();
-  const remaining = () => TOTAL_DEADLINE_MS - (Date.now() - startedAt);
+  const deadlineAt = opts?.deadlineAt ?? Date.now() + TOTAL_DEADLINE_MS;
+  const remaining = () => deadlineAt - Date.now();
 
   const attempt = async (model: any) => {
     const { output } = await generateText({

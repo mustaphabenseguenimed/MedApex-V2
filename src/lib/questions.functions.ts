@@ -10,7 +10,12 @@ import {
   isUnreadableOnDark,
 } from "./htmlColors";
 import { getExtractModelCandidates, type ExtractEngine } from "./ai-extract-provider.server";
-import { generateWithFallback, friendlyGatewayError, type AiContent } from "./aiGenerate.server";
+import {
+  generateWithFallback,
+  friendlyGatewayError,
+  TOTAL_DEADLINE_MS,
+  type AiContent,
+} from "./aiGenerate.server";
 import {
   buildQuestionUnits,
   chunkUnits,
@@ -67,7 +72,7 @@ export type ExtractedQ = z.infer<typeof ExtractedQuestion>;
 
 // ---- helpers ---------------------------------------------------------------
 
-async function runExtract(content: AiContent): Promise<ExtractResult> {
+async function runExtract(content: AiContent, deadlineAt?: number): Promise<ExtractResult> {
   // 220s, not 150s: with thinking enabled, a large/complex chunk can
   // legitimately take longer than 150s to finish — the old cap was cutting
   // off attempts that were still genuinely working, not stuck. Retries exist
@@ -77,6 +82,7 @@ async function runExtract(content: AiContent): Promise<ExtractResult> {
     temperature: 0.2,
     timeoutMs: 220_000,
     thinking: true,
+    deadlineAt,
   });
   return { ...normalizeQuestions(output), engine };
 }
@@ -214,8 +220,14 @@ async function extractChunkComplete(
   html: string,
   expected: number,
   depth = 0,
+  // Shared across a chunk's whole recursive re-split tree so the tree's
+  // *total* wall time is bounded, not just each individual call — a fresh
+  // TOTAL_DEADLINE_MS per recursion level could otherwise stack up to
+  // ~3x its budget across depth 0/1/2. Only the outer, non-recursive call
+  // (depth 0) computes this; every recursive call forwards it unchanged.
+  deadlineAt: number = Date.now() + TOTAL_DEADLINE_MS,
 ): Promise<ExtractResult> {
-  const result = await runExtract(buildContent(html, expected));
+  const result = await runExtract(buildContent(html, expected), deadlineAt);
   const got = result.questions.length;
   if (expected <= 0 || got >= expected || depth >= 2) {
     return {
@@ -228,9 +240,11 @@ async function extractChunkComplete(
     };
   }
 
-  // Shortfall: split this chunk in half and retry each half.
+  // Shortfall: split this chunk in half and retry each half — unless the
+  // shared budget is already spent, in which case another attempt would
+  // just throw; return what we have instead, same as "can't split further".
   const units = buildQuestionUnits(html);
-  if (units.length < 2) {
+  if (units.length < 2 || Date.now() >= deadlineAt) {
     return { ...result, expected, warning: `${expected} attendue(s), ${got} extraite(s)` };
   }
   const mid = Math.ceil(units.length / 2);
@@ -242,6 +256,7 @@ async function extractChunkComplete(
         group.map((u) => u.html).join("\n"),
         group.length,
         depth + 1,
+        deadlineAt,
       ),
     ),
   );
@@ -304,8 +319,11 @@ async function extractPdfChunkComplete(
   base64: string,
   priorExpected: number,
   depth = 0,
+  // See extractChunkComplete: shared across the whole recursive re-split
+  // tree so total wall time is bounded, not just each individual call.
+  deadlineAt: number = Date.now() + TOTAL_DEADLINE_MS,
 ): Promise<ExtractResult> {
-  const result = await runExtract(buildContent(base64, priorExpected));
+  const result = await runExtract(buildContent(base64, priorExpected), deadlineAt);
   const got = result.questions.length;
   const target = priorExpected > 0 ? priorExpected : (result.total_visible ?? 0);
 
@@ -320,6 +338,14 @@ async function extractPdfChunkComplete(
     };
   }
 
+  if (Date.now() >= deadlineAt) {
+    return {
+      ...result,
+      expected: target,
+      warning: `${target} question(s) détectée(s) par l'IA, ${got} extraite(s)`,
+    };
+  }
+
   const halves = await splitPdfBase64InHalf(base64);
   if (!halves) {
     return {
@@ -330,7 +356,7 @@ async function extractPdfChunkComplete(
   }
 
   const parts = await Promise.all(
-    halves.map((half) => extractPdfChunkComplete(buildContent, half, 0, depth + 1)),
+    halves.map((half) => extractPdfChunkComplete(buildContent, half, 0, depth + 1, deadlineAt)),
   );
   const questions = parts.flatMap((p) => p.questions);
   if (questions.length <= got) {
