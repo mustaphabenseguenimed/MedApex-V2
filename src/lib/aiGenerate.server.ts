@@ -36,6 +36,11 @@ export function friendlyGatewayError(error: unknown): Error {
   if (status === 429) {
     return new Error("Trop de requêtes IA en parallèle. Réessayez dans quelques secondes.");
   }
+  if (anyErr?.name === "TimeoutError" || /aborted.*timeout|timed? ?out/i.test(raw)) {
+    return new Error(
+      "Le traitement a dépassé le délai imparti (fichier volumineux ou page complexe). Réessayez, ou traitez moins de pages/fichiers à la fois.",
+    );
+  }
   if (error instanceof Error) return error;
   return new Error(raw || "Erreur IA inconnue");
 }
@@ -90,8 +95,16 @@ const SAFETY_SETTINGS = [
  * Kept comfortably under typical serverless duration caps so this function
  * always resolves — success or a clean thrown error — well before the
  * platform would step in.
+ *
+ * 280s (not less): extraction runs with `thinking: true` on image-heavy
+ * content, and a single earnest attempt on a large/complex chunk can
+ * legitimately take well over 150s. A tighter budget was cutting those off
+ * mid-attempt — same content, same result, just a faster, cleaner failure
+ * instead of a slow one. Retries only rescue *transient* failures (rate
+ * limits, overload), which fail fast; genuine slowness needs room on the
+ * first try, not more attempts at the same wall.
  */
-const TOTAL_DEADLINE_MS = 240_000;
+const TOTAL_DEADLINE_MS = 280_000;
 
 /** Shared model + retry loop, used by every structured AI call in the
  *  conversion pipeline so the retry policy lives in one place.

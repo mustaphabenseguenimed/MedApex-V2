@@ -10,6 +10,7 @@ import {
   getQuestionExplanations,
 } from "@/lib/explanations.functions";
 import { RichText, sanitizeExplanationHtml } from "@/components/RichText";
+import { Watermark } from "@/components/Watermark";
 import { markdownToHtml } from "@/lib/markdown";
 import { CaseRunner, type ReportReason } from "@/components/session/CaseRunner";
 import { useActiveElapsed } from "@/lib/useActiveElapsed";
@@ -717,6 +718,7 @@ function QcmRunner() {
 
   return (
     <div className="min-h-screen bg-background">
+      <Watermark />
       <header className="border-b">
         <div className="mx-auto max-w-3xl px-6 py-4 flex items-center justify-between">
           <Button asChild variant="ghost" size="sm">
