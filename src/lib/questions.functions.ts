@@ -215,6 +215,34 @@ function expectedCountNote(expected: number): string {
     : "IMPORTANT: extrais TOUTES les questions présentes, dans l'ordre, sans en omettre aucune.";
 }
 
+/**
+ * Rules-based parse of a chunk, returned ONLY when it is verifiably
+ * complete — otherwise null, and the caller runs the normal AI extraction.
+ *
+ * The count check alone proves little: `parseQuestionsLocally` and the
+ * chunker both segment via `buildQuestionUnits`, so matching counts mostly
+ * means "every unit produced something". The structural checks below are
+ * what actually prove the layout was *understood* rather than merely split —
+ * a question whose answer line wasn't recognised comes back with no
+ * `correct_indices`, and that alone sends the whole chunk to the AI.
+ */
+function localIfComplete(html: string, expected: number): ExtractResult | null {
+  if (expected <= 0) return null;
+  const { questions } = normalizeQuestions({
+    questions: parseQuestionsLocally(html) as ExtractedQ[],
+  });
+  if (questions.length !== expected) return null;
+  const allUsable = questions.every((q) => {
+    if (!q.stem?.trim()) return false;
+    // QROC: no answer key, but it must still have an answer of some kind —
+    // otherwise the parse found a question and lost what it was worth.
+    if (!q.choices || !q.choices.length) return !!q.model_answer?.trim();
+    return q.choices.length >= 2 && !!q.correct_indices?.length;
+  });
+  if (!allUsable) return null;
+  return { questions, engine: "local" as ExtractEngine, expected } satisfies ExtractResult;
+}
+
 async function extractChunkComplete(
   buildContent: (html: string, expected: number) => Parameters<typeof runExtract>[0],
   html: string,
@@ -804,6 +832,15 @@ export const extractQuestionsFromHtmlChunk = createServerFn({ method: "POST" })
             : undefined,
       } satisfies ExtractResult;
     }
+    // Step 2/3/4's input is usually the .docx the previous step generated,
+    // written by buildQuestionsDocx in a fixed layout the local parser reads
+    // exactly. Re-reading that with the AI is a full redundant pass over
+    // content the app itself wrote, and it dominates the wall time. Try the
+    // rules-based parse first and take it ONLY when it is verifiably
+    // complete; anything less falls through to the AI path untouched.
+    const localCandidate = localIfComplete(data.html, data.expected ?? 0);
+    if (localCandidate) return localCandidate;
+
     return extractChunkComplete(
       (chunkHtml, expected) => [
         { type: "text", text: INSTRUCTIONS(data.hint, data.detectCases ?? true) },
