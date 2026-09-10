@@ -152,6 +152,16 @@ function toDocxItems(qs: ExtractedQ[], rotationOverride?: string): DocxQuestionI
   }));
 }
 
+/** 1-based number per clinical case, in the order the cases appear. */
+function caseOrdinals(qs: { case_stem?: string | null }[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const q of qs) {
+    const k = caseKey(q);
+    if (k && !out.has(k)) out.set(k, out.size + 1);
+  }
+  return out;
+}
+
 function toJsonObjects(qs: ExtractedQ[]): unknown[] {
   const out: unknown[] = [];
   let i = 0;
@@ -654,6 +664,11 @@ function QuestionsPreviewEditor({
     });
   };
 
+  // Number the cases in document order, so several cases in one document can
+  // be told apart while reviewing — matching the "Cas clinique n°N" numbering
+  // buildQuestionsDocx already writes into the .docx.
+  const caseNumbers = caseOrdinals(items);
+
   return (
     <div className="space-y-3">
       {items.map((q, i) => {
@@ -666,7 +681,7 @@ function QuestionsPreviewEditor({
               <div className="mb-2 space-y-1.5 rounded-md border border-primary/40 bg-primary/5 p-3">
                 <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
                   <Sparkles className="h-3.5 w-3.5" />
-                  {tr("Cas clinique — énoncé partagé")}
+                  {tr("Cas clinique")} n°{caseNumbers.get(groupKey)} — {tr("énoncé partagé")}
                 </div>
                 <RichTextEditor
                   value={q.case_stem ?? ""}
@@ -1814,6 +1829,8 @@ function ImportReviewPanel({
     );
   };
 
+  const reviewCaseNumbers = caseOrdinals(review ?? []);
+
   const confirmImport = async () => {
     if (!review || !selectedModule) return;
     setBusy(true);
@@ -1901,8 +1918,11 @@ function ImportReviewPanel({
                     <div className="mb-1.5 space-y-1.5 rounded-md border border-primary/40 bg-primary/5 p-2">
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
                         <Sparkles className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate">
-                          {stripHtml(q.case_stem) || tr("Cas clinique")}
+                        <span className="shrink-0">
+                          {tr("Cas clinique")} n°{reviewCaseNumbers.get(groupKey)}
+                        </span>
+                        <span className="truncate font-normal opacity-80">
+                          {stripHtml(q.case_stem)}
                         </span>
                       </div>
                       <div className="grid gap-2 sm:grid-cols-2">
