@@ -243,21 +243,34 @@ function findCaseVignettes(
       // continuation line right after "Explication :") — such a block is a
       // new heading/topic that ends the case right here.
       let inExplanation = false;
+      // Has this question's own content started (options / answer / explanation)?
+      // Until it has, plain prose is still the question's STEM.
+      let pastStem = false;
       let interrupted = false;
       for (let k = from + 1; k < to; k++) {
         const t = texts[k];
         if (isOptionLine(t)) {
+          pastStem = true;
           inExplanation = false;
           continue;
         }
         if (ANSWER_LINE_ONLY.test(t)) {
+          pastStem = true;
           inExplanation = false;
           continue;
         }
         if (EXPLANATION_LINE_ONLY.test(t)) {
+          pastStem = true;
           inExplanation = true;
           continue;
         }
+        // Prose before any option/answer line is this question's own stem, not
+        // a new topic. Without this the very first stem ended the case: every
+        // document that puts the stem on its own line under a "Question N"
+        // heading — which is exactly what buildQuestionsDocx writes — attached
+        // the vignette to the case's FIRST question only, so the rest imported
+        // as standalone questions instead of sub-questions of the case.
+        if (!pastStem) continue;
         // A short standalone line looks like a heading, not explanation prose,
         // even while "inExplanation" — treat it as the interruption rather
         // than silently folding it into the case.
@@ -289,24 +302,43 @@ export function buildQuestionUnits(html: string, detectCases = true): QuestionUn
   const texts = blocks.map(stripTags);
   const numbered = texts.some((t) => isQuestionStart(t));
 
-  // Which style does THIS document use for its options? When its choices are
-  // lettered ("A." / "B."), a numbered line cannot also be a choice — so
-  // "1." is a question. Without this, `isOptionLine` (which accepts 1-9)
-  // vetoes every question numbered 1..9 while 10+ survive, because "10."
-  // has no separator right after the first digit: a document numbered
-  // 1..30 silently loses its first nine questions.
-  const hasLetteredOptions = texts.some((t) => LETTERED_OPTION_LINE.test(t));
-
   const starts: number[] = [];
   if (numbered) {
+    // A keyword-anchored match ("Question 4") is always a real boundary.
+    const keywordStarts = new Set<number>();
     texts.forEach((t, i) => {
-      // A keyword-anchored match ("Question 4") is always a real boundary.
-      // A bare numeric match ("1.") is ambiguous with a numbered choice
-      // ("1. Some option text") — trust it when the document letters its
-      // choices, or when the line isn't option-shaped at all.
-      const bareIsTrustworthy = hasLetteredOptions || !isOptionLine(t);
-      if (isUnambiguousQuestionStart(t) || (isQuestionStart(t) && bareIsTrustworthy))
-        starts.push(i);
+      if (isUnambiguousQuestionStart(t)) keywordStarts.add(i);
+    });
+
+    // A bare numeric line ("1.") is ambiguous. It can open a question, or be
+    // one item of a numbered proposition list inside a single question's stem
+    // — "cochez la réponse juste / 1. … 2. … 3. …", answered by lettered
+    // options like "A. 1+2". What tells them apart is what sits BETWEEN two
+    // consecutive numbered lines: real questions are separated by their own
+    // lettered options, propositions follow each other back to back. So group
+    // the bare candidates into runs broken by a lettered option (or by a
+    // keyword question) and keep only the runs of one; a run of several
+    // consecutive numbered lines is a proposition list and belongs to the
+    // stem it sits in.
+    const bare = texts
+      .map((_t, i) => i)
+      .filter((i) => !keywordStarts.has(i) && isQuestionStart(texts[i]));
+    const separated = (from: number, to: number) => {
+      for (let k = from + 1; k < to; k++) {
+        if (LETTERED_OPTION_LINE.test(texts[k]) || keywordStarts.has(k)) return true;
+      }
+      return false;
+    };
+    const acceptedBare = new Set<number>();
+    for (let r = 0; r < bare.length;) {
+      let end = r;
+      while (end + 1 < bare.length && !separated(bare[end], bare[end + 1])) end++;
+      if (end === r) acceptedBare.add(bare[r]);
+      r = end + 1;
+    }
+
+    texts.forEach((_t, i) => {
+      if (keywordStarts.has(i) || acceptedBare.has(i)) starts.push(i);
     });
   } else {
     // Unnumbered: the last non-option block right before an option run is the
