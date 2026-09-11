@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   XCircle,
   Maximize2,
+  Minimize2,
   Minus,
   Plus,
   ExternalLink,
@@ -17,6 +18,7 @@ import {
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { ModuleScopeGate } from "@/lib/scopes";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/modules/$moduleId/$contentId")({
   component: ContentGate,
@@ -42,7 +44,7 @@ type Content = {
 };
 
 function ContentView() {
-  const { t } = useI18n();
+  const { t, tr } = useI18n();
   const { moduleId, contentId } = Route.useParams();
   const [c, setC] = useState<Content | null>(null);
   const [fileUrl, setFileUrl] = useState<string>("");
@@ -81,15 +83,13 @@ function ContentView() {
     }
   }, [contentId, htmlZoom, wideHtml]);
 
-  const openFullscreen = () => {
-    const el = frameRef.current;
-    if (!el) return;
-    const req =
-      el.requestFullscreen ||
-      (el as any).webkitRequestFullscreen ||
-      (el as any).msRequestFullscreen;
-    if (req) req.call(el);
-  };
+  // PDF and link viewers are mutually exclusive, so one container ref serves
+  // whichever is on screen.
+  const viewerContainerRef = useRef<HTMLDivElement | null>(null);
+  const { isFullscreen, isPseudoFullscreen, toggle } = useViewerFullscreen(
+    frameRef,
+    viewerContainerRef,
+  );
 
   useEffect(() => {
     (async () => {
@@ -155,7 +155,13 @@ function ContentView() {
             </div>
           ))}
         {c?.kind === "pdf" && fileUrl && (
-          <div className="relative flex-1 min-h-0 w-full">
+          <div
+            ref={viewerContainerRef}
+            className={cn(
+              "relative flex-1 min-h-0 w-full",
+              isPseudoFullscreen && `${PSEUDO_FULLSCREEN_CLASS} bg-background`,
+            )}
+          >
             <iframe
               ref={frameRef}
               src={fileUrl}
@@ -163,13 +169,17 @@ function ContentView() {
               className="h-full w-full rounded-lg border"
             />
             <Button
-              onClick={openFullscreen}
+              onClick={toggle}
               size="sm"
               variant="secondary"
               className="absolute top-2 right-2 shadow"
             >
-              <Maximize2 className="h-4 w-4 mr-1.5" />
-              {t("fullscreen")}
+              {isFullscreen ? (
+                <Minimize2 className="h-4 w-4 mr-1.5" />
+              ) : (
+                <Maximize2 className="h-4 w-4 mr-1.5" />
+              )}
+              {isFullscreen ? tr("Quitter le plein écran") : t("fullscreen")}
             </Button>
           </div>
         )}
@@ -181,7 +191,13 @@ function ContentView() {
           </Card>
         )}
         {c?.kind === "link" && c.body && (
-          <div className="relative flex-1 min-h-0 w-full">
+          <div
+            ref={viewerContainerRef}
+            className={cn(
+              "relative flex-1 min-h-0 w-full",
+              isPseudoFullscreen && `${PSEUDO_FULLSCREEN_CLASS} bg-background`,
+            )}
+          >
             <iframe
               ref={frameRef}
               src={c.body}
@@ -197,9 +213,13 @@ function ContentView() {
                   {t("open_in_new_tab")}
                 </a>
               </Button>
-              <Button onClick={openFullscreen} size="sm" variant="secondary" className="shadow">
-                <Maximize2 className="h-4 w-4 mr-1.5" />
-                {t("fullscreen")}
+              <Button onClick={toggle} size="sm" variant="secondary" className="shadow">
+                {isFullscreen ? (
+                  <Minimize2 className="h-4 w-4 mr-1.5" />
+                ) : (
+                  <Maximize2 className="h-4 w-4 mr-1.5" />
+                )}
+                {isFullscreen ? tr("Quitter le plein écran") : t("fullscreen")}
               </Button>
             </div>
           </div>
@@ -234,22 +254,17 @@ function HtmlViewer({
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [loaded, setLoaded] = useState(false);
 
-  const openFullscreen = () => {
-    const el = frameRef.current;
-    if (!el) return;
-    const req =
-      el.requestFullscreen ||
-      (el as any).webkitRequestFullscreen ||
-      (el as any).msRequestFullscreen;
-    if (req) req.call(el);
-  };
+  const { isFullscreen, isPseudoFullscreen, toggle } = useViewerFullscreen(frameRef, containerRef);
 
   const pct = Math.round(zoom * 100);
 
   return (
     <div
       ref={containerRef}
-      className="relative flex-1 min-h-0 w-full overflow-auto rounded-lg border"
+      className={cn(
+        "relative flex-1 min-h-0 w-full overflow-auto rounded-lg border bg-background",
+        isPseudoFullscreen && PSEUDO_FULLSCREEN_CLASS,
+      )}
     >
       {/*
         Uploaded lesson HTML is untrusted (any account with manage_content can
@@ -315,13 +330,17 @@ function HtmlViewer({
           <div className="w-px h-5 bg-border mx-0.5" />
           <Button
             size="icon"
-            variant="ghost"
+            variant={isFullscreen ? "secondary" : "ghost"}
             className="h-7 w-7"
-            onClick={openFullscreen}
-            title={tFullscreen}
-            aria-label={tFullscreen}
+            onClick={toggle}
+            title={isFullscreen ? tr("Quitter le plein écran") : tFullscreen}
+            aria-label={isFullscreen ? tr("Quitter le plein écran") : tFullscreen}
           >
-            <Maximize2 className="h-3.5 w-3.5" />
+            {isFullscreen ? (
+              <Minimize2 className="h-3.5 w-3.5" />
+            ) : (
+              <Maximize2 className="h-3.5 w-3.5" />
+            )}
           </Button>
         </div>
       )}
@@ -332,6 +351,88 @@ function HtmlViewer({
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
+
+/**
+ * Full screen for a viewer, with a fallback for browsers that have no
+ * Fullscreen API.
+ *
+ * iPhone is the reason this isn't just `requestFullscreen()`: iOS exposes
+ * the Fullscreen API on iPad but NOT on iPhone, where the only way in is
+ * `HTMLVideoElement.webkitEnterFullscreen()` — no use here, the target is an
+ * iframe. Every browser on iOS is WebKit, so Chrome and Firefox behave the
+ * same. The old code probed the three vendor methods and did nothing when
+ * none existed, which is why the button was silently dead on iPhone.
+ *
+ * So: use the real thing where it exists (desktop, Android — unchanged), and
+ * otherwise fill the viewport with CSS. That is as far as a web page can go
+ * on iPhone; Safari's own address and tab bars cannot be removed by a site.
+ */
+function useViewerFullscreen(
+  targetRef: React.RefObject<Element | null>,
+  containerRef: React.RefObject<HTMLElement | null>,
+) {
+  const [pseudo, setPseudo] = useState(false);
+  const [native, setNative] = useState(false);
+
+  useEffect(() => {
+    const sync = () => {
+      const el = document.fullscreenElement ?? (document as any).webkitFullscreenElement ?? null;
+      setNative(!!el && el === targetRef.current);
+    };
+    document.addEventListener("fullscreenchange", sync);
+    document.addEventListener("webkitfullscreenchange", sync);
+    return () => {
+      document.removeEventListener("fullscreenchange", sync);
+      document.removeEventListener("webkitfullscreenchange", sync);
+    };
+  }, [targetRef]);
+
+  // Pseudo-fullscreen covers the page, so the page behind it must not scroll.
+  useEffect(() => {
+    if (!pseudo) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPseudo(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = previous;
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [pseudo]);
+
+  const isFullscreen = native || pseudo;
+
+  const toggle = () => {
+    if (pseudo) {
+      setPseudo(false);
+      return;
+    }
+    if (native) {
+      const exit = document.exitFullscreen ?? (document as any).webkitExitFullscreen;
+      if (exit) Promise.resolve(exit.call(document)).catch(() => setNative(false));
+      return;
+    }
+    const el = targetRef.current as any;
+    const req = el?.requestFullscreen ?? el?.webkitRequestFullscreen ?? el?.msRequestFullscreen;
+    if (!req) {
+      // No Fullscreen API at all — the iPhone case.
+      setPseudo(!!containerRef.current);
+      return;
+    }
+    // A rejection (e.g. a permissions policy blocking it) should still give
+    // the user something, rather than an unhandled promise rejection.
+    Promise.resolve(req.call(el)).catch(() => setPseudo(!!containerRef.current));
+  };
+
+  return { isFullscreen, isPseudoFullscreen: pseudo, toggle };
+}
+
+/** Classes that turn a viewer container into a viewport-filling panel when
+ *  the browser can't do it natively. 100dvh, not 100vh: iOS Safari's toolbars
+ *  collapse, and 100vh would run underneath them. */
+const PSEUDO_FULLSCREEN_CLASS = "fixed inset-0 z-50 h-[100dvh] w-screen rounded-none border-0";
 
 function QuizRunner({
   items,
