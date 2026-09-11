@@ -521,13 +521,17 @@ function QuestionsPanel({
   };
 
   const parents = items.filter((q) => !q.parent_id);
-  // "Cas clinique n°N", numbered over the whole module in list order — not
-  // per group — so a case keeps the same number whichever grouping or filter
-  // the admin is looking through.
-  const caseNumberById = new Map<string, number>();
-  parents.forEach((q) => {
-    if (q.type === "cas_clinique") caseNumberById.set(q.id, caseNumberById.size + 1);
-  });
+  /** "Cas clinique n°N" within one displayed list. Numbering is per group, so
+   *  choosing a grouping renumbers each group from 1 rather than carrying the
+   *  module-wide positions over and showing gaps (n°3, n°7, n°12) inside a
+   *  group. With no grouping the list is one group, so it counts 1..N. */
+  const caseNumbersFor = (list: Question[]) => {
+    const numbers = new Map<string, number>();
+    list.forEach((q) => {
+      if (q.type === "cas_clinique") numbers.set(q.id, numbers.size + 1);
+    });
+    return numbers;
+  };
   const allSelected = parents.length > 0 && parents.every((q) => selected.has(q.id));
   const toggleSelect = (id: string) =>
     setSelected((prev) => {
@@ -847,6 +851,7 @@ function QuestionsPanel({
             <div className="space-y-2">
               {groups.map((g) => {
                 const gOpen = openGroups[g.key] ?? false;
+                const gCaseNumbers = caseNumbersFor(g.items);
                 const gSelectedCount = g.items.filter((q) => selected.has(q.id)).length;
                 const gAllSelected = g.items.length > 0 && gSelectedCount === g.items.length;
                 const gSomeSelected = gSelectedCount > 0 && gSelectedCount < g.items.length;
@@ -906,7 +911,7 @@ function QuestionsPanel({
                                   <div className="font-medium truncate">
                                     {q.type === "cas_clinique" && (
                                       <span className="text-primary">
-                                        {tr("Cas clinique")} n°{caseNumberById.get(q.id)} —{" "}
+                                        {tr("Cas clinique")} n°{gCaseNumbers.get(q.id)} —{" "}
                                       </span>
                                     )}
                                     {q.stem}
