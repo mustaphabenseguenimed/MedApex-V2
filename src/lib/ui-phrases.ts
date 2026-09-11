@@ -68,6 +68,7 @@ export const EN_PHRASES: Record<string, string> = {
   "Barré": "Strikethrough",
   "Bénéficiaire": "Beneficiary",
   "Cas clinique": "Clinical case",
+  "énoncé partagé": "shared stem",
   "Le JSON contient un cas clinique : un énoncé commun est créé et toutes les questions deviennent ses sous-questions.": "The JSON contains a clinical case: a shared vignette is created and every question becomes one of its sub-questions.",
   "Cet abonnement n'expirera jamais.": "This subscription will never expire.",
   "Cette section est réservée aux administrateurs.": "This section is reserved for administrators.",

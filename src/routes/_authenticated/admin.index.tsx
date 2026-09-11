@@ -521,6 +521,13 @@ function QuestionsPanel({
   };
 
   const parents = items.filter((q) => !q.parent_id);
+  // "Cas clinique n°N", numbered over the whole module in list order — not
+  // per group — so a case keeps the same number whichever grouping or filter
+  // the admin is looking through.
+  const caseNumberById = new Map<string, number>();
+  parents.forEach((q) => {
+    if (q.type === "cas_clinique") caseNumberById.set(q.id, caseNumberById.size + 1);
+  });
   const allSelected = parents.length > 0 && parents.every((q) => selected.has(q.id));
   const toggleSelect = (id: string) =>
     setSelected((prev) => {
@@ -896,7 +903,14 @@ function QuestionsPanel({
                             <div key={q.id} className="rounded-md border px-3 py-2 text-sm">
                               <div className="flex items-start justify-between gap-2">
                                 <div className="min-w-0 flex-1">
-                                  <div className="font-medium truncate">{q.stem}</div>
+                                  <div className="font-medium truncate">
+                                    {q.type === "cas_clinique" && (
+                                      <span className="text-primary">
+                                        {tr("Cas clinique")} n°{caseNumberById.get(q.id)} —{" "}
+                                      </span>
+                                    )}
+                                    {q.stem}
+                                  </div>
                                   <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
                                     <Badge variant="secondary" className="text-[10px]">
                                       {tr(QTYPE_LABEL[q.type])}
@@ -1045,13 +1059,13 @@ function QuestionsPanel({
                               </div>
                               {q.type === "cas_clinique" && children.length > 0 && (
                                 <div className="mt-2 space-y-1 border-l-2 border-muted pl-3">
-                                  {children.map((c) => (
+                                  {children.map((c, ci) => (
                                     <div
                                       key={c.id}
                                       className="text-xs text-muted-foreground flex items-center gap-1.5"
                                     >
                                       <span className="flex-1 truncate">
-                                        • [{tr(QTYPE_LABEL[c.type])}] {c.stem}
+                                        {ci + 1}. [{tr(QTYPE_LABEL[c.type])}] {c.stem}
                                       </span>
                                       {(isSuper || canManage) && (
                                         <EditQuestionDialog
