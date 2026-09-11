@@ -6,6 +6,76 @@ import { contentTypeFor, safeJoin, verifyModuleFileToken } from "@/lib/moduleFil
 
 type MfParams = { token: string; _splat?: string };
 
+// The iframe is sandboxed WITHOUT allow-same-origin (deliberately — see the
+// note on the iframe itself), which puts the document on an opaque origin.
+// There, merely *reading* localStorage, sessionStorage or document.cookie
+// throws a SecurityError rather than returning empty.
+//
+// That breaks lesson HTML that does nothing wrong: a résumé whose script
+// starts by restoring saved preferences dies on that first read, and every
+// control it was about to wire up — width slider, collapsible sommaire —
+// silently never works, while the same file behaves perfectly when opened
+// directly. Give the document its own in-memory storage so the read
+// succeeds. It stays fully walled off from the app's real storage (still an
+// opaque origin, nothing shared, nothing persisted across reloads); the
+// point is only that touching these APIs must not throw.
+//
+// Must run BEFORE the document's own scripts, so it is injected at the top
+// of <head> rather than before </body> like the snippets below.
+const STORAGE_SHIM_SNIPPET = `<script>
+(function () {
+  function memoryStorage() {
+    var data = Object.create(null);
+    return {
+      getItem: function (k) {
+        k = String(k);
+        return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null;
+      },
+      setItem: function (k, v) { data[String(k)] = String(v); },
+      removeItem: function (k) { delete data[String(k)]; },
+      clear: function () { data = Object.create(null); },
+      key: function (i) { var ks = Object.keys(data); return i < ks.length ? ks[i] : null; },
+      get length() { return Object.keys(data).length; }
+    };
+  }
+  function shim(name) {
+    try {
+      window[name].getItem("probe");
+      return; // real storage works (file opened directly) — leave it alone
+    } catch (e) {}
+    try {
+      Object.defineProperty(window, name, { value: memoryStorage(), configurable: true });
+    } catch (e) {}
+  }
+  shim("localStorage");
+  shim("sessionStorage");
+  try {
+    void document.cookie;
+  } catch (e) {
+    try {
+      var jar = "";
+      Object.defineProperty(Document.prototype, "cookie", {
+        configurable: true,
+        get: function () { return jar; },
+        set: function (v) { jar = String(v); }
+      });
+    } catch (e2) {}
+  }
+})();
+</script>`;
+
+/** Inject as early as possible: the document's own scripts must see the shim
+ *  already in place. */
+function injectStorageShim(html: string): string {
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head[^>]*>/i, (m) => m + STORAGE_SHIM_SNIPPET);
+  }
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html[^>]*>/i, (m) => m + STORAGE_SHIM_SNIPPET);
+  }
+  return STORAGE_SHIM_SNIPPET + html;
+}
+
 // Same deterrent as src/components/ContentProtection.tsx, but self-contained:
 // this HTML is rendered inside a sandboxed iframe with no allow-same-origin,
 // so the parent page's JS/CSS can never reach in — the only way to protect
@@ -81,7 +151,9 @@ const handler = createServerOnlyFn(async ({ params }: { params: MfParams }) => {
   const ct = contentTypeFor(objectPath);
   const isHtml = ct.startsWith("text/html");
   const body: BodyInit = isHtml
-    ? injectWatermark(injectContentProtection(new TextDecoder("utf-8").decode(buf)))
+    ? injectWatermark(
+        injectContentProtection(injectStorageShim(new TextDecoder("utf-8").decode(buf))),
+      )
     : buf;
   return new Response(body, {
     status: 200,
