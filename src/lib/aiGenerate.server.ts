@@ -10,6 +10,7 @@
 import { generateText, NoObjectGeneratedError, Output } from "ai";
 import type { z } from "zod";
 import { getExtractModelCandidates, type ExtractEngine } from "./ai-extract-provider.server";
+import { getGeminiProvider } from "./ai-provider.server";
 
 export type AiContent = Array<
   | { type: "text"; text: string }
@@ -106,15 +107,8 @@ const SAFETY_SETTINGS = [
  */
 export const TOTAL_DEADLINE_MS = 280_000;
 
-/** Shared model + retry loop, used by every structured AI call in the
- *  conversion pipeline so the retry policy lives in one place.
- *
- *  What a failure *means* decides whether we move to the next model. Only a
- *  model that is rate-limited or out of quota falls through to the next
- *  candidate — that is the one thing the weaker fallback model is there for,
- *  since it has its own quota pool. Any other failure (notably a schema miss)
- *  throws immediately: retrying it on a weaker model would trade extraction
- *  quality away silently, which is exactly what the fallback used to do. */
+/** A structured (schema-validated) AI call, over the shared model candidates
+ *  and retry policy in `runWithCandidates` below. */
 export async function generateWithFallback<T>(
   schema: z.ZodType<T>,
   content: AiContent,
@@ -129,38 +123,101 @@ export async function generateWithFallback<T>(
     deadlineAt?: number;
   },
 ): Promise<{ output: T; engine: ExtractEngine }> {
+  return runWithCandidates(
+    async (model, remainingMs) => {
+      const { output } = await generateText({
+        model,
+        output: Output.object({ schema }),
+        // Never let a single attempt outlive the overall budget, even if the
+        // caller asked for a longer per-attempt timeout.
+        abortSignal: AbortSignal.timeout(
+          Math.max(1000, Math.min(opts?.timeoutMs ?? 150_000, remainingMs)),
+        ),
+        messages: [{ role: "user", content: content as any }],
+        temperature: opts?.temperature ?? 0.2,
+        providerOptions: {
+          google: {
+            safetySettings: SAFETY_SETTINGS,
+            // "medium", not "high": high-effort thinking on every extraction
+            // call was the single biggest contributor to conversion latency.
+            // Medium keeps the reasoning pass that improved extraction
+            // accuracy, just with a smaller budget, at meaningfully lower cost
+            // per call.
+            ...(opts?.thinking ? { thinkingConfig: { thinkingLevel: "medium" } } : {}),
+          },
+        },
+      });
+      return output;
+    },
+    opts?.deadlineAt ?? Date.now() + TOTAL_DEADLINE_MS,
+  );
+}
+
+/**
+ * A web-grounded text call: same models, safety settings, timeout and retry
+ * policy as above, but with Google Search attached so the model can check a
+ * claim against current sources instead of only its training data.
+ *
+ * Text, not a schema, on purpose: Gemini rejects a `responseSchema` combined
+ * with tools, so a grounded call cannot use `Output.object`. Callers ask for
+ * a strict line format in the prompt and parse it leniently — an unreadable
+ * line has to mean "no answer", never a wrong one.
+ */
+export async function generateGroundedText(
+  prompt: string,
+  opts?: { temperature?: number; timeoutMs?: number; deadlineAt?: number },
+): Promise<{ text: string; sources: string[]; engine: ExtractEngine }> {
+  const google = getGeminiProvider();
+  if (!google) throw new Error("Moteur IA indisponible.");
+
+  const { output, engine } = await runWithCandidates(
+    async (model, remainingMs) => {
+      const result = await generateText({
+        model,
+        // Cast: @ai-sdk/google's provider-executed tool type doesn't line up
+        // with the `ai` package's Tool union across these two major versions.
+        // The wire shape is what Gemini wants — the name must be exactly
+        // "google_search" — only the generic parameters disagree.
+        tools: { google_search: google.tools.googleSearch({}) as any },
+        abortSignal: AbortSignal.timeout(
+          Math.max(1000, Math.min(opts?.timeoutMs ?? 120_000, remainingMs)),
+        ),
+        prompt,
+        temperature: opts?.temperature ?? 0.2,
+        providerOptions: { google: { safetySettings: SAFETY_SETTINGS } },
+      });
+      return result;
+    },
+    opts?.deadlineAt ?? Date.now() + TOTAL_DEADLINE_MS,
+  );
+
+  const sources = ((output.sources ?? []) as Array<{ sourceType?: string; url?: string }>)
+    .filter((s) => s.sourceType === "url" && typeof s.url === "string")
+    .map((s) => s.url as string);
+  return { text: output.text, sources, engine };
+}
+
+/**
+ * The model-candidate and retry loop every AI call in this pipeline shares.
+ *
+ * What a failure *means* decides whether we move to the next model. Only a
+ * model that is rate-limited or out of quota falls through to the next
+ * candidate — that is the one thing the weaker fallback model is there for,
+ * since it has its own quota pool. Any other failure (notably a schema miss)
+ * throws immediately: retrying it on a weaker model would trade extraction
+ * quality away silently, which is exactly what the fallback used to do.
+ *
+ * `attempt` receives the remaining budget so it can cap its own timeout: no
+ * single attempt may outlive the overall deadline.
+ */
+async function runWithCandidates<T>(
+  attempt: (model: any, remainingMs: number) => Promise<T>,
+  deadlineAt: number,
+): Promise<{ output: T; engine: ExtractEngine }> {
   const candidates = await getExtractModelCandidates();
   if (!candidates.length) throw new Error("Moteur IA indisponible.");
 
-  const deadlineAt = opts?.deadlineAt ?? Date.now() + TOTAL_DEADLINE_MS;
   const remaining = () => deadlineAt - Date.now();
-
-  const attempt = async (model: any) => {
-    const { output } = await generateText({
-      model,
-      output: Output.object({ schema }),
-      // Never let a single attempt outlive the overall budget, even if the
-      // caller asked for a longer per-attempt timeout.
-      abortSignal: AbortSignal.timeout(
-        Math.max(1000, Math.min(opts?.timeoutMs ?? 150_000, remaining())),
-      ),
-      messages: [{ role: "user", content: content as any }],
-      temperature: opts?.temperature ?? 0.2,
-      providerOptions: {
-        google: {
-          safetySettings: SAFETY_SETTINGS,
-          // "medium", not "high": high-effort thinking on every extraction
-          // call was the single biggest contributor to conversion latency.
-          // Medium keeps the reasoning pass that improved extraction
-          // accuracy, just with a smaller budget, at meaningfully lower cost
-          // per call.
-          ...(opts?.thinking ? { thinkingConfig: { thinkingLevel: "medium" } } : {}),
-        },
-      },
-    });
-    return output;
-  };
-
   let lastError: unknown = new Error("Aucun moteur IA configuré");
 
   outer: for (const candidate of candidates) {
@@ -169,7 +226,7 @@ export async function generateWithFallback<T>(
     for (let attemptNo = 0; attemptNo < 4; attemptNo++) {
       if (remaining() <= 0) break outer;
       try {
-        const out = await attempt(candidate.model);
+        const out = await attempt(candidate.model, remaining());
         return { output: out, engine: candidate.engine };
       } catch (error) {
         lastError = error;

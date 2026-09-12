@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useState, useEffect, useRef, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -49,7 +49,9 @@ import {
   extractDocxPlainText,
   generateQuestionsDocx,
   generateGroundedExplanations,
+  verifyAnswersGrounded,
 } from "@/lib/conversion.functions";
+import { answerLetters, sameAnswer } from "@/lib/answerVerdicts";
 import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
 import { alignByStems, type PreparedChunk } from "@/lib/questionChunks";
 import { readAsDataUrl, splitPdfIntoPageChunks, MAX_CHUNK_DATA_URL } from "@/lib/fileUtils";
@@ -237,6 +239,35 @@ type ChunkWarning = { filename: string; warning: string };
 
 /** A question whose recorded answer the explanation model thinks is wrong. */
 type AnswerDoubt = { index: number; doubt: string };
+
+/** A question whose answer key the web-grounded check actually changed. */
+type AnswerFix = { index: number; from: string; to: string; why: string };
+
+/** Answers Step 2 corrected after checking the lesson document and the web.
+ *  Every change is listed rather than applied quietly: the admin can see what
+ *  moved, and edit any of it back in the preview below. */
+function AnswerFixes({ fixes }: { fixes: AnswerFix[] }) {
+  const { tr } = useI18n();
+  if (!fixes.length) return null;
+  return (
+    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+      <p className="font-medium">
+        {tr("Réponses corrigées après vérification (cours + web) — vérifiez-les :")}
+      </p>
+      <ul className="mt-1 list-disc pl-4">
+        {fixes.map((f) => (
+          <li key={f.index}>
+            <span className="font-medium">
+              {tr("Question")} {f.index + 1}
+            </span>{" "}
+            : <span className="line-through">{f.from}</span> → <strong>{f.to}</strong>
+            {f.why ? ` — ${f.why}` : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 /** Questions where the explanation model disagreed with the recorded answer.
  *  It never overrides the answer — an upstream extraction mistake would
@@ -428,6 +459,9 @@ function SeparateResultsList({
 // but each one finishes fast and reliably instead of a large one failing
 // outright.
 const EXPLAIN_BATCH_SIZE = 15;
+// Smaller than the explanation batch: each of these calls runs web searches
+// and reasons over them, and only the disputed minority gets here at all.
+const VERIFY_BATCH_SIZE = 5;
 
 /** Retry a network-level failure (dropped mobile connection mid-upload shows up
  *  as a bare "Failed to fetch" TypeError from the browser) with backoff. Server
@@ -636,10 +670,14 @@ function QuestionsPreviewEditor({
   items,
   onChange,
   showExplanation,
+  corrected,
 }: {
   items: ExtractedQ[];
   onChange: (items: ExtractedQ[]) => void;
   showExplanation: boolean;
+  /** Positions whose answer key Step 2's web check changed, badged here so
+   *  the correction is visible where the admin reviews the questions. */
+  corrected?: Set<number>;
 }) {
   const { tr } = useI18n();
   const [editingIdx, setEditingIdx] = useState<Set<number>>(new Set());
@@ -715,6 +753,14 @@ function QuestionsPreviewEditor({
                   {q.type.toUpperCase()}
                 </Badge>
                 <span className="text-xs text-muted-foreground">Q{i + 1}</span>
+                {corrected?.has(i) && (
+                  <Badge
+                    variant="outline"
+                    className="border-amber-400 text-[10px] text-amber-700 dark:text-amber-300"
+                  >
+                    {tr("Réponse corrigée")}
+                  </Badge>
+                )}
                 <Button
                   size="sm"
                   variant="ghost"
@@ -2029,6 +2075,7 @@ function Step2Panel({
   const extractHtml = useServerFn(extractQuestionsFromHtmlChunk);
   const extractDocxText = useServerFn(extractDocxPlainText);
   const genExplanations = useServerFn(generateGroundedExplanations);
+  const verifyAnswers = useServerFn(verifyAnswersGrounded);
   const genDocx = useServerFn(generateQuestionsDocx);
 
   const [docxFiles, setDocxFiles] = useState<File[]>([]);
@@ -2045,6 +2092,7 @@ function Step2Panel({
   const [extracted, setExtracted] = useState<ExtractedQ[] | null>(null);
   const [chunkWarnings, setChunkWarnings] = useState<ChunkWarning[]>([]);
   const [answerDoubts, setAnswerDoubts] = useState<AnswerDoubt[]>([]);
+  const [answerFixes, setAnswerFixes] = useState<AnswerFix[]>([]);
   const [result, setResult] = useState<DocxResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -2060,12 +2108,14 @@ function Step2Panel({
   const [groupImportOpen, setGroupImportOpen] = useState<number | null>(null);
   const [libraryVersion, setLibraryVersion] = useState(0);
   const separate = !combineResults && docxFiles.length > 1;
+  const correctedSet = useMemo(() => new Set(answerFixes.map((f) => f.index)), [answerFixes]);
 
   const resetExtraction = () => {
     setExtracted(null);
     setFileGroups(null);
     setChunkWarnings([]);
     setAnswerDoubts([]);
+    setAnswerFixes([]);
     setResult(null);
     setGroupResults({});
     setShowImport(false);
@@ -2250,10 +2300,162 @@ function Step2Panel({
       // where the model produced nothing), so these stay index-aligned.
       const explanations = explanationParts.flatMap((r) => r.explanations);
       const doubts = explanationParts.flatMap((r) => r.doubts ?? []);
-      const withExplanations = flat.map((q, i) => ({
+      const proposed = explanationParts.flatMap((r) => r.proposed ?? []);
+      let withExplanations = flat.map((q, i) => ({
         ...q,
         explanation: explanations[i] ?? q.explanation,
       }));
+
+      // Second opinion, web-grounded, on the answers only — and only for the
+      // questions where the first pass read the answer differently from the
+      // document. A run where the document's key is right costs nothing here.
+      const disputed = withExplanations
+        .map((q, i) => ({ q, i }))
+        .filter(
+          ({ q, i }) =>
+            q.type !== "qroc" &&
+            (q.choices?.length ?? 0) > 0 &&
+            (!!doubts[i] || (proposed[i] != null && !sameAnswer(proposed[i], q.correct_indices))),
+        );
+
+      const fixes: AnswerFix[] = [];
+      // Seeded from every doubt, not just the disputed ones: a QROC's answer
+      // is free text and never auto-corrected, so flagging it is all we can
+      // do — it must not fall out of the report on its way past the check.
+      const unresolved = new Map<number, string>();
+      doubts.forEach((d, i) => {
+        if (d) unresolved.set(i, d);
+      });
+      let verifyFailed: string | null = null;
+
+      if (disputed.length) {
+        try {
+          setPhase(tr("Vérification des réponses (cours + web)"));
+          const verifyBatches: (typeof disputed)[] = [];
+          for (let i = 0; i < disputed.length; i += VERIFY_BATCH_SIZE) {
+            verifyBatches.push(disputed.slice(i, i + VERIFY_BATCH_SIZE));
+          }
+          const verdictParts = await withProgress(
+            verifyBatches.map(
+              (batch) => () =>
+                withRetry(() =>
+                  verifyAnswers({
+                    data: {
+                      items: batch.map(({ q, i }) => ({
+                        index: i,
+                        stem: q.stem,
+                        choices: q.choices ?? [],
+                        correct_indices: q.correct_indices,
+                        proposed_indices: proposed[i] ?? null,
+                        doubt: doubts[i] ?? null,
+                      })),
+                      referenceText,
+                      instructions: hint.trim() || undefined,
+                    },
+                    signal: controller.signal,
+                  }),
+                ),
+            ),
+            setProgress,
+            // 2, not 4: these calls each run web searches, and there are only
+            // ever a handful of them.
+            2,
+            controller.signal,
+          );
+          if (controller.signal.aborted) return;
+
+          const corrected = new Map<number, number[]>();
+          for (const v of verdictParts.flatMap((p) => p.verdicts)) {
+            const q = withExplanations[v.index];
+            if (!q) continue;
+            // "low" is not enough to overwrite an answer a human wrote down:
+            // it stays a doubt for the admin instead.
+            if (!v.final_indices || v.confidence === "low") {
+              unresolved.set(
+                v.index,
+                v.why || tr("vérification non concluante, réponse laissée telle quelle"),
+              );
+              continue;
+            }
+            if (sameAnswer(v.final_indices, q.correct_indices)) {
+              unresolved.delete(v.index); // checked and confirmed — nothing to report
+              continue;
+            }
+            corrected.set(v.index, v.final_indices);
+            unresolved.delete(v.index);
+            fixes.push({
+              index: v.index,
+              from: answerLetters(q.correct_indices),
+              to: answerLetters(v.final_indices),
+              why: v.why,
+            });
+          }
+
+          if (corrected.size) {
+            withExplanations = withExplanations.map((q, i) =>
+              corrected.has(i) ? { ...q, correct_indices: corrected.get(i)! } : q,
+            );
+            // The explanation written above argues for the OLD answer. Rewrite
+            // just those, so no question ships explaining an option it no
+            // longer marks correct.
+            setPhase(tr("Réécriture des explications corrigées"));
+            const fixedIdx = [...corrected.keys()].sort((a, b) => a - b);
+            const reBatches: number[][] = [];
+            for (let i = 0; i < fixedIdx.length; i += EXPLAIN_BATCH_SIZE) {
+              reBatches.push(fixedIdx.slice(i, i + EXPLAIN_BATCH_SIZE));
+            }
+            try {
+              const reParts = await withProgress(
+                reBatches.map(
+                  (batch) => () =>
+                    withRetry(() =>
+                      genExplanations({
+                        data: {
+                          items: batch.map((i) => ({
+                            stem: withExplanations[i].stem,
+                            choices: withExplanations[i].choices,
+                            correct_indices: withExplanations[i].correct_indices,
+                            model_answer: withExplanations[i].model_answer,
+                          })),
+                          referenceText,
+                          instructions: hint.trim() || undefined,
+                        },
+                        signal: controller.signal,
+                      }),
+                    ),
+                ),
+                setProgress,
+                4,
+                controller.signal,
+              );
+              if (controller.signal.aborted) return;
+              const rewritten = reBatches.flat();
+              const texts = reParts.flatMap((r) => r.explanations);
+              withExplanations = withExplanations.map((q, i) => {
+                const at = rewritten.indexOf(i);
+                return at >= 0 && texts[at] ? { ...q, explanation: texts[at] as string } : q;
+              });
+            } catch (reError: unknown) {
+              if ((reError as { name?: string })?.name === "AbortError") return;
+              // Keep the corrected answers — that is the valuable part — but
+              // drop the explanations written for the answers they replaced.
+              // An empty explanation is honest and already a reported state;
+              // one arguing for an option no longer marked correct is not.
+              withExplanations = withExplanations.map((q, i) =>
+                corrected.has(i) ? { ...q, explanation: null } : q,
+              );
+            }
+          }
+        } catch (verifyError: unknown) {
+          if ((verifyError as { name?: string })?.name === "AbortError") return;
+          // Web grounding can fail for reasons that have nothing to do with
+          // this document — search not enabled on the key, a 400 from the tool.
+          // The explanations from the pass above are already generated and
+          // good: keep them, leave every answer as the document had it, and
+          // report the disputes as unverified rather than losing the lot.
+          verifyFailed = friendlyError(verifyError, tr);
+        }
+      }
       if (groups) {
         let cursor = 0;
         setFileGroups(
@@ -2266,14 +2468,30 @@ function Step2Panel({
       } else {
         setExtracted(withExplanations);
       }
+      setAnswerFixes(fixes.sort((a, b) => a.index - b.index));
       setAnswerDoubts(
-        doubts.map((d, i) => (d ? { index: i, doubt: d } : null)).filter(Boolean) as AnswerDoubt[],
+        [...unresolved.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([index, doubt]) => ({ index, doubt })),
       );
-      const missing = explanations.filter((e) => !e).length;
+      // Counted on the final list, not on the model's raw replies: an
+      // explanation the document already carried still counts as present,
+      // and one dropped above because its answer changed counts as absent.
+      const missing = withExplanations.filter((q) => !q.explanation).length;
+      // Half the paper disputed is not sixty individual mistakes — it means
+      // the answer key was read wrong wholesale upstream (an offset column, a
+      // missed highlight colour), which is worth seeing as one fact.
+      const massDispute =
+        withExplanations.length >= 4 && disputed.length > withExplanations.length / 2;
       // Keep whatever the extraction step already reported — only this run's
       // own explanation warning is replaced.
       setChunkWarnings((prev) => [
-        ...prev.filter((w) => w.filename !== tr("Explications")),
+        ...prev.filter(
+          (w) =>
+            w.filename !== tr("Explications") &&
+            w.filename !== tr("Réponses") &&
+            w.filename !== tr("Vérification"),
+        ),
         ...(missing
           ? [
               {
@@ -2282,9 +2500,31 @@ function Step2Panel({
               },
             ]
           : []),
+        ...(verifyFailed
+          ? [
+              {
+                filename: tr("Vérification"),
+                warning: `${tr("vérification web des réponses impossible")} — ${verifyFailed}`,
+              },
+            ]
+          : []),
+        ...(massDispute
+          ? [
+              {
+                filename: tr("Réponses"),
+                warning: `${disputed.length}/${withExplanations.length} ${tr("réponses contestées — la détection des réponses de l'étape 1 est probablement décalée sur ce document, vérifiez la source avant d'utiliser ce fichier")}`,
+              },
+            ]
+          : []),
       ]);
       if (missing) {
         toast.warning(`${missing} ${tr("question(s) sans explication générée")}`);
+      } else if (verifyFailed) {
+        toast.warning(tr("Explications générées, mais la vérification web des réponses a échoué."));
+      } else if (fixes.length) {
+        toast.success(
+          `${fixes.length} ${tr("réponse(s) corrigée(s) — vérifiez avant de générer le fichier.")}`,
+        );
       } else {
         toast.success(tr("Explications générées — vérifiez avant de générer le fichier."));
       }
@@ -2543,6 +2783,7 @@ function Step2Panel({
         {(separate ? fileGroups : extracted) && busy !== "extract" && (
           <div className="space-y-3">
             <ChunkWarnings warnings={chunkWarnings} />
+            <AnswerFixes fixes={answerFixes} />
             <AnswerDoubts doubts={answerDoubts} />
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -2623,6 +2864,7 @@ function Step2Panel({
                   items={extracted ?? []}
                   onChange={setExtracted}
                   showExplanation
+                  corrected={correctedSet}
                 />
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
