@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { ExtractedQ } from "./questions.functions";
-import { caseHintsOnLead, toJsonObjects } from "./questionsJson";
+import { caseHintsOnLead, toJsonObjects, withoutRotationHints } from "./questionsJson";
 import { parseQuestionsJson } from "./structuredImport";
 
 const q = (over: Partial<ExtractedQ> = {}): ExtractedQ => ({
@@ -172,5 +172,59 @@ describe("caseHintsOnLead", () => {
     const items = [cas("Q1"), cas("Q2")];
     caseHintsOnLead(items);
     assert.equal(items[1].rotation_hint, "P3");
+  });
+});
+
+describe("withoutRotationHints", () => {
+  // Step 1 writes no rotation at all: what the model reads off a page is a
+  // guess, and once it lands in the .docx every later step attaches it to the
+  // questions read underneath it.
+  test("clears every rotation and année hint", () => {
+    const [out] = withoutRotationHints([
+      q({
+        rotation_hint: "P3",
+        year_hint: "2024",
+        rotation_hints: ["P3", "P4"],
+        year_hints: ["2023", "2024"],
+      }),
+    ]);
+    assert.equal(out.rotation_hint, null);
+    assert.equal(out.year_hint, null);
+    assert.equal(out.rotation_hints, null);
+    assert.equal(out.year_hints, null);
+  });
+
+  test("changes nothing else", () => {
+    const before = q({
+      stem: "Un énoncé ?",
+      case_stem: VIGNETTE,
+      course_hint: "Pneumologie",
+      rotation_hint: "P3",
+    });
+    const [after] = withoutRotationHints([before]);
+    assert.equal(after.stem, before.stem);
+    assert.equal(after.case_stem, VIGNETTE);
+    assert.equal(after.course_hint, "Pneumologie");
+    assert.deepEqual(after.choices, before.choices);
+  });
+
+  test("leaves a question that has no hint untouched", () => {
+    const items = [q()];
+    assert.equal(withoutRotationHints(items)[0], items[0], "same object, no needless copy");
+  });
+
+  test("does not mutate the input", () => {
+    const items = [q({ rotation_hint: "P3", year_hint: "2024" })];
+    withoutRotationHints(items);
+    assert.equal(items[0].rotation_hint, "P3");
+  });
+
+  // With no hints left, combinedRotation() returns null in toDocxItems and
+  // rotationParagraph writes nothing — that is how the .docx loses its
+  // "Rotation :" line.
+  test("a stripped question exports no Rotation in the .json either", () => {
+    const [node] = exported(withoutRotationHints([q({ rotation_hint: "P3", year_hint: "2024" })]));
+    assert.equal(node.Rotation, "");
+    assert.equal(node.Year, "");
   });
 });

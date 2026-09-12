@@ -78,6 +78,7 @@ import { parseQuestionsJson } from "@/lib/structuredImport";
 import {
   toJsonObjects,
   caseHintsOnLead,
+  withoutRotationHints,
   caseKey,
   stripHtml,
   splitRotationYear,
@@ -120,7 +121,7 @@ function combinedRotation(q: ExtractedQ): string | null {
   return parts.length ? parts.join(" ") : null;
 }
 
-function toDocxItems(qs: ExtractedQ[], rotationOverride?: string): DocxQuestionItem[] {
+function toDocxItems(qs: ExtractedQ[]): DocxQuestionItem[] {
   return qs.map((q) => ({
     stem: q.stem,
     choices: q.choices,
@@ -128,7 +129,7 @@ function toDocxItems(qs: ExtractedQ[], rotationOverride?: string): DocxQuestionI
     model_answer: q.model_answer,
     explanation: q.explanation,
     case_stem: q.case_stem,
-    rotation_hint: rotationOverride?.trim() || combinedRotation(q),
+    rotation_hint: combinedRotation(q),
   }));
 }
 
@@ -352,6 +353,7 @@ function SeparateResultsList({
   downloadAllBusy,
   generateLabel,
   showExplanation,
+  hideRotation,
   renderFooter,
 }: {
   groups: FileGroup[];
@@ -364,6 +366,7 @@ function SeparateResultsList({
   downloadAllBusy: boolean;
   generateLabel: string;
   showExplanation: boolean;
+  hideRotation?: boolean;
   renderFooter?: (index: number) => ReactNode;
 }) {
   const { tr } = useI18n();
@@ -414,6 +417,7 @@ function SeparateResultsList({
             items={g.items}
             onChange={(items) => onGroupChange(i, items)}
             showExplanation={showExplanation}
+            hideRotation={hideRotation}
           />
           {renderFooter?.(i)}
         </div>
@@ -643,6 +647,7 @@ function QuestionsPreviewEditor({
   items,
   onChange,
   showExplanation,
+  hideRotation,
   corrected,
   onlyIndices,
   proposals,
@@ -650,6 +655,10 @@ function QuestionsPreviewEditor({
   items: ExtractedQ[];
   onChange: (items: ExtractedQ[]) => void;
   showExplanation: boolean;
+  /** Step 1 deals in no rotation/année at all — it neither reads them nor
+   *  writes them into its .docx, so it hides both editors rather than
+   *  offering fields that go nowhere. */
+  hideRotation?: boolean;
   /** Positions whose answer key Step 2's web check changed, badged here so
    *  the correction is visible where the admin reviews the questions. */
   corrected?: Set<number>;
@@ -745,24 +754,26 @@ function QuestionsPreviewEditor({
                   placeholder={tr("Énoncé du cas clinique…")}
                   minHeight={60}
                 />
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <Input
-                    className="h-8"
-                    placeholder={tr("Rotation")}
-                    value={(items[caseLeadAt.get(groupKey) ?? i] ?? q).rotation_hint ?? ""}
-                    onChange={(e) =>
-                      updateCaseRotationYear(groupKey, { rotation_hint: e.target.value || null })
-                    }
-                  />
-                  <Input
-                    className="h-8"
-                    placeholder={tr("Année")}
-                    value={(items[caseLeadAt.get(groupKey) ?? i] ?? q).year_hint ?? ""}
-                    onChange={(e) =>
-                      updateCaseRotationYear(groupKey, { year_hint: e.target.value || null })
-                    }
-                  />
-                </div>
+                {!hideRotation && (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <Input
+                      className="h-8"
+                      placeholder={tr("Rotation")}
+                      value={(items[caseLeadAt.get(groupKey) ?? i] ?? q).rotation_hint ?? ""}
+                      onChange={(e) =>
+                        updateCaseRotationYear(groupKey, { rotation_hint: e.target.value || null })
+                      }
+                    />
+                    <Input
+                      className="h-8"
+                      placeholder={tr("Année")}
+                      value={(items[caseLeadAt.get(groupKey) ?? i] ?? q).year_hint ?? ""}
+                      onChange={(e) =>
+                        updateCaseRotationYear(groupKey, { year_hint: e.target.value || null })
+                      }
+                    />
+                  </div>
+                )}
               </div>
             )}
             <div className="space-y-2 rounded-md border bg-muted/30 p-3">
@@ -807,7 +818,7 @@ function QuestionsPreviewEditor({
                   {tr("Supprimer")}
                 </Button>
               </div>
-              {!groupKey && (
+              {!groupKey && !hideRotation && (
                 <div className="grid gap-2 sm:grid-cols-2">
                   <Input
                     className="h-8"
@@ -1287,7 +1298,6 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const extractImage = useServerFn(extractQuestionsFromImage);
   const genDocx = useServerFn(generateQuestionsDocx);
   const [files, setFiles] = useState<File[]>([]);
-  const [rotation, setRotation] = useState("");
   const { hint, setHint, saveHint } = useSavedHint("step1", tr);
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PdfChunkJob[] | null>(null);
@@ -1494,22 +1504,6 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      // A rotation/year header is often shown once per file (e.g. a cover
-      // page) rather than repeated on every page — since each page is sent
-      // to the AI as a separate chunk, only the chunk that actually shows it
-      // gets a hint. Once any page of a file yields one, propagate it to the
-      // rest of that same file's questions that came back without one.
-      const fileFallback = new Map<number, string>();
-      prepared.forEach((job, i) => {
-        if (fileFallback.has(job.fileIndex)) return;
-        for (const q of parts[i].questions) {
-          const detected = combinedRotation(q);
-          if (detected) {
-            fileFallback.set(job.fileIndex, detected);
-            break;
-          }
-        }
-      });
       // Carry a clinical-case vignette across a page break. The model is given
       // the previous page as context and asked to recopy the vignette itself,
       // but when it only manages to flag the continuation we fill the vignette
@@ -1538,12 +1532,11 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       // file's own questions together for its own .docx.
       const byFile = new Map<number, ExtractedQ[]>();
       prepared.forEach((job, i) => {
-        const withFallback = stitched[i].map((q) => {
-          if (combinedRotation(q)) return q;
-          const fallback = fileFallback.get(job.fileIndex);
-          return fallback ? { ...q, rotation_hint: fallback, year_hint: null } : q;
-        });
-        byFile.set(job.fileIndex, [...(byFile.get(job.fileIndex) ?? []), ...withFallback]);
+        // Step 1 carries no rotation/année: whatever the model read off the
+        // page is dropped here, so nothing can be shown, edited, or written
+        // into the .docx. Rotations are set in step 4.
+        const clean = withoutRotationHints(stitched[i]);
+        byFile.set(job.fileIndex, [...(byFile.get(job.fileIndex) ?? []), ...clean]);
       });
       const all: ExtractedQ[] = [...byFile.entries()]
         .sort((a, b) => a[0] - b[0])
@@ -1584,7 +1577,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     setResult(null);
     try {
       setPhase(tr("Génération du fichier Word"));
-      const items = toDocxItems(extracted, rotation);
+      const items = toDocxItems(extracted);
       const { base64 } = await withRetry(() =>
         genDocx({ data: { items, includeExplanations: false }, signal: controller.signal }),
       );
@@ -1601,7 +1594,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const generateGroupDocx = async (idx: number): Promise<DocxResult | null> => {
     const group = fileGroups?.[idx];
     if (!group || !group.items.length) return null;
-    const items = toDocxItems(group.items, rotation);
+    const items = toDocxItems(group.items);
     const { base64 } = await genDocx({ data: { items, includeExplanations: false } });
     const docResult: DocxResult = { base64, count: group.items.length };
     setGroupResults((prev) => ({ ...prev, [idx]: docResult }));
@@ -1693,19 +1686,6 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
               idPrefix="step1"
             />
           </div>
-        </div>
-        <div>
-          <Label>{tr("Rotation (optionnel — appliquée à toutes les questions)")}</Label>
-          <Input
-            placeholder={tr("ex. P3 2010")}
-            value={rotation}
-            onChange={(e) => setRotation(e.target.value)}
-          />
-          <p className="mt-1 text-xs text-muted-foreground">
-            {tr(
-              "Laissez vide pour que l'IA détecte automatiquement la rotation/année visible sur chaque page et l'écrive avant chaque question ou cas clinique.",
-            )}
-          </p>
         </div>
         <HintField
           hint={hint}
@@ -1821,6 +1801,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
                 downloadAllBusy={downloadAllBusy}
                 generateLabel={tr("Générer")}
                 showExplanation={false}
+                hideRotation
               />
             ) : (
               <>
@@ -1836,6 +1817,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
                   items={extracted}
                   onChange={setExtracted}
                   showExplanation={false}
+                  hideRotation
                 />
                 <Button onClick={generate} disabled={busy !== null || !extracted.length}>
                   {busy === "generate" ? (
