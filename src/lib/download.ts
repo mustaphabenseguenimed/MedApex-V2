@@ -11,6 +11,12 @@ export function downloadText(filename: string, text: string, mimeType = "applica
   downloadBlob(filename, new Blob([text], { type: mimeType }));
 }
 
+/** Same idea for a text result (the .json step 3 produces), so it can be
+ *  handed to the next step without a download/re-upload round trip. */
+export function textToFile(filename: string, text: string, mimeType = "application/json"): File {
+  return new File([text], filename, { type: mimeType });
+}
+
 /** Turn a base64-encoded result back into a File, so it can be fed straight
  *  into the next step's upload without a round trip through the disk. */
 export function base64ToFile(filename: string, base64: string, mimeType: string): File {

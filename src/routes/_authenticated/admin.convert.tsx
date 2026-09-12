@@ -65,6 +65,7 @@ import {
   downloadBase64,
   downloadText,
   base64ToFile,
+  textToFile,
   downloadZip,
   baseFilename,
 } from "@/lib/download";
@@ -745,8 +746,20 @@ function QuestionsPreviewEditor({
   const updateCaseStem = (key: string, html: string) => {
     onChange(items.map((it) => (caseKey(it) === key ? { ...it, case_stem: html } : it)));
   };
+  /** Rotation/année belong to the case itself, so they are stored on the
+   *  group's first member — the one carrying the shared vignette — and
+   *  cleared on its sub-questions, matching what step 4's "Appliquer" writes. */
   const updateCaseRotationYear = (key: string, patch: Partial<ExtractedQ>) => {
-    onChange(items.map((it) => (caseKey(it) === key ? { ...it, ...patch } : it)));
+    const lead = items.findIndex((it) => caseKey(it) === key);
+    onChange(
+      items.map((it, i) =>
+        caseKey(it) !== key
+          ? it
+          : i === lead
+            ? { ...it, ...patch }
+            : { ...it, rotation_hint: null, year_hint: null },
+      ),
+    );
   };
   const toggleEdit = (i: number) => {
     setEditingIdx((prev) => {
@@ -761,6 +774,10 @@ function QuestionsPreviewEditor({
   // buildQuestionsDocx already writes into the .docx.
   const caseNumbers = caseOrdinals(items);
   const caseHeaderAt = firstVisiblePerCase(items, onlyIndices);
+  // Where each case's rotation/année actually live (its first member), which
+  // under the review filter is not necessarily the question the header renders
+  // above.
+  const caseLeadAt = firstVisiblePerCase(items);
 
   if (onlyIndices && onlyIndices.size === 0) {
     return (
@@ -804,7 +821,7 @@ function QuestionsPreviewEditor({
                   <Input
                     className="h-8"
                     placeholder={tr("Rotation")}
-                    value={q.rotation_hint ?? ""}
+                    value={(items[caseLeadAt.get(groupKey) ?? i] ?? q).rotation_hint ?? ""}
                     onChange={(e) =>
                       updateCaseRotationYear(groupKey, { rotation_hint: e.target.value || null })
                     }
@@ -812,7 +829,7 @@ function QuestionsPreviewEditor({
                   <Input
                     className="h-8"
                     placeholder={tr("Année")}
-                    value={q.year_hint ?? ""}
+                    value={(items[caseLeadAt.get(groupKey) ?? i] ?? q).year_hint ?? ""}
                     onChange={(e) =>
                       updateCaseRotationYear(groupKey, { year_hint: e.target.value || null })
                     }
@@ -3141,8 +3158,8 @@ function Step3Panel({
 }: {
   incomingFile?: File | null;
   onConsumed?: () => void;
-  /** From the library's "Continuer" action only — step 3's own fresh result
-   *  has no immediate continue button, matching the rest of this panel. */
+  /** Hands the generated .json straight to step 4 — from this panel's own
+   *  result card, or from the library's "Continuer" action. */
   onContinue?: (file: File, srcKind: SrcKind) => void;
 }) {
   const { tr } = useI18n();
@@ -3407,6 +3424,22 @@ function Step3Panel({
                 <FileDown className="mr-1.5 h-4 w-4" />
                 {tr("Télécharger")}
               </Button>
+              {onContinue && (
+                <Button
+                  onClick={() =>
+                    onContinue(
+                      textToFile(
+                        `questions_${Date.now()}.json`,
+                        JSON.stringify(result.objects, null, 2),
+                      ),
+                      "json",
+                    )
+                  }
+                >
+                  <ArrowRight className="mr-1.5 h-4 w-4" />
+                  {tr("Continuer vers l'étape 4 (même fichier)")}
+                </Button>
+              )}
               <SaveToLibraryButton
                 step={3}
                 sourceFilenames={docxFiles.map((f) => f.name)}
@@ -3688,9 +3721,16 @@ function Step4FileBlock({
     for (let g = 0; g < n; g++) {
       const [start, end] = ranges[g];
       const e = entries[g];
-      for (let k = start; k < end; k++) {
-        if (e.rotation.trim()) next[k].rotation_hint = e.rotation.trim();
-        if (e.year.trim()) next[k].year_hint = e.year.trim();
+      // A clinical case gets its rotation/année on the shared vignette only —
+      // the group's first member, which is the one every consumer reads it
+      // from (toJsonObjects, buildQuestionsDocx, and the import's case row).
+      // Writing it onto each sub-question as well gave them a rotation of
+      // their own, which is what detached them from their case downstream.
+      if (e.rotation.trim()) next[start].rotation_hint = e.rotation.trim();
+      if (e.year.trim()) next[start].year_hint = e.year.trim();
+      for (let k = start + 1; k < end; k++) {
+        next[k].rotation_hint = null;
+        next[k].year_hint = null;
       }
     }
     setApplied(next);

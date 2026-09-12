@@ -9,6 +9,7 @@ import {
   stripBold,
   isUnreadableOnDark,
 } from "./htmlColors";
+import { splitPerOptionExplanation } from "./explanationFormat";
 import { getExtractModelCandidates, type ExtractEngine } from "./ai-extract-provider.server";
 import {
   generateWithFallback,
@@ -125,52 +126,6 @@ function normalizeQuestions(result: { questions: ExtractedQ[]; total_visible?: n
     })),
     total_visible: result.total_visible ?? undefined,
   };
-}
-
-/**
- * If an explanation string bundles multiple per-option justifications inside a
- * single paragraph (e.g. "A. ... B) ... C - ..."), split them into a <ul> with
- * one <li> per option. Otherwise return the input unchanged.
- */
-function splitPerOptionExplanation(html: string): string {
-  if (!html) return html;
-  // Only touch flat content: skip if it already contains a list or multiple blocks.
-  if (/<(ul|ol|li|table|h[1-6])\b/i.test(html)) return html;
-  const blocks = html.match(/<p\b[^>]*>[\s\S]*?<\/p>/gi);
-  const inner =
-    blocks && blocks.length === 1
-      ? blocks[0].replace(/^<p\b[^>]*>/i, "").replace(/<\/p>\s*$/i, "")
-      : blocks && blocks.length > 1
-        ? null
-        : html;
-  if (inner === null) return html;
-  // Match markers like "A.", "A)", "A -", "A:" (letters A-H, case-insensitive)
-  // that appear at start-of-string or right after whitespace/<br>.
-  const markerRe = /(?:^|(?<=>|\s|\u00a0))([A-Ha-h])\s*[.)\-:]\s+/g;
-  const positions: { idx: number; letter: string; end: number }[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = markerRe.exec(inner)) !== null) {
-    positions.push({
-      idx: m.index + (m[0].length - m[0].trimStart().length),
-      letter: m[1].toUpperCase(),
-      end: markerRe.lastIndex,
-    });
-  }
-  if (positions.length < 2) return html;
-  const items: string[] = [];
-  for (let i = 0; i < positions.length; i++) {
-    const start = positions[i].end;
-    const stop = i + 1 < positions.length ? positions[i + 1].idx : inner.length;
-    const body = inner
-      .slice(start, stop)
-      .trim()
-      .replace(/<br\s*\/?>\s*$/i, "");
-    if (!body) continue;
-    items.push(`<p><strong>${positions[i].letter}.</strong> ${body}</p>`);
-  }
-  if (items.length < 2) return html;
-  // Separate each per-option explanation with a visible horizontal rule.
-  return items.join("<hr />");
 }
 
 /**

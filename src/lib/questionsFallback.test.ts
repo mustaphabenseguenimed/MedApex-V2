@@ -113,3 +113,40 @@ describe("numbered question starts that must still count", () => {
     assert.match(plain(qs[0].stem), /FNS/);
   });
 });
+
+// The .docx Step 2 writes puts a per-proposition explanation in ONE paragraph
+// with soft breaks (see linesParagraph in questionsDocxBuilder.ts), so mammoth
+// hands this shape to Step 3. Reading it through stripTags used to collapse
+// the numbered items into a single run-on paragraph.
+describe("an explanation written as lines stays lines", () => {
+  const withExplanation =
+    p(
+      "<strong>Question 1</strong>",
+      "Devant ce tableau, vous évoquez :",
+      "A. Pneumothorax spontané partiel.",
+      "B. Bulle d'emphysème géante.",
+      "Réponse correcte : A",
+    ) +
+    "<p>Explication :<br />1. Vrai, le décollement est partiel.<br />2. Faux, la bulle est localisée.</p>";
+
+  test("one paragraph per item", () => {
+    const [q] = parseQuestionsLocally(withExplanation);
+    const parts = (q.explanation ?? "").match(/<p>[\s\S]*?<\/p>/g) ?? [];
+    assert.equal(parts.length, 2);
+    assert.equal(plain(parts[0]), "1. Vrai, le décollement est partiel.");
+    assert.equal(plain(parts[1]), "2. Faux, la bulle est localisée.");
+  });
+
+  test("the keyword itself is not kept as an item", () => {
+    const [q] = parseQuestionsLocally(withExplanation);
+    assert.doesNotMatch(plain(q.explanation ?? ""), /Explication/);
+  });
+
+  test("a single-line explanation is still one paragraph", () => {
+    const html =
+      p("<strong>Question 1</strong>", "Un énoncé ?", "A. un", "B. deux", "Réponse correcte : A") +
+      "<p>Explication : la réponse A est la seule compatible.</p>";
+    const [q] = parseQuestionsLocally(html);
+    assert.equal(q.explanation, "<p>la réponse A est la seule compatible.</p>");
+  });
+});

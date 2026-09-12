@@ -24,6 +24,34 @@ export function caseKey(q: { case_stem?: string | null }): string {
     .trim();
 }
 
+/** The lenient key the conversion tool groups cases by (admin.convert.tsx and
+ *  questionsDocxBuilder.ts both use it): lowercased and truncated, so a
+ *  vignette the AI re-typed slightly between chunks still counts as one case. */
+function lenientCaseKey(q: { case_stem?: string | null }): string {
+  return caseKey(q).toLowerCase().slice(0, 80);
+}
+
+/**
+ * Give every question of a clinical case the exact same `case_stem`.
+ *
+ * The conversion tool groups cases leniently while the insert below groups on
+ * the full énoncé, so two sub-questions whose vignettes differ by a re-typed
+ * word — one case on screen — used to be inserted as two `cas_clinique`
+ * parents, splitting the case's questions between them. Taking the group's
+ * first énoncé for all of its members makes both groupings agree.
+ */
+export function canonicalizeCaseStems<T extends { case_stem?: string | null }>(items: T[]): T[] {
+  const canonical = new Map<string, string>();
+  for (const q of items) {
+    const k = lenientCaseKey(q);
+    if (k && q.case_stem && !canonical.has(k)) canonical.set(k, q.case_stem);
+  }
+  return items.map((q) => {
+    const stem = canonical.get(lenientCaseKey(q));
+    return !stem || stem === q.case_stem ? q : { ...q, case_stem: stem };
+  });
+}
+
 /**
  * Insert questions into a module, grouping any sharing a `case_stem` under a
  * shared `cas_clinique` parent (inserted first, so its real id can be used
@@ -33,7 +61,8 @@ export async function importQuestionsToModule(
   supabase: typeof supabaseClient,
   params: { moduleId: string; moduleYear: number; items: ImportableQuestion[] },
 ): Promise<{ count: number; caseCount: number }> {
-  const { moduleId, moduleYear, items } = params;
+  const { moduleId, moduleYear } = params;
+  const items = canonicalizeCaseStems(params.items);
   if (items.length === 0) return { count: 0, caseCount: 0 };
 
   const { data: maxRow } = await (supabase as any)
