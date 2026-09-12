@@ -10,6 +10,21 @@ import {
   generateGroundedText,
 } from "./aiGenerate.server";
 import { answerLetters, parseAnswerVerdicts } from "./answerVerdicts";
+import { buildReferenceBlock } from "./referenceDocs";
+
+/** Reference sources for one Step 2 run: course chapters as PDF or Word,
+ *  plus any pasted notes, each labelled so the model can tell them apart.
+ *  Ten files is well past any real lesson; the per-file ceiling is a sanity
+ *  bound, not the working limit — `buildReferenceBlock` is what fits them
+ *  into each prompt's actual character budget. */
+const ReferenceDocsSchema = z
+  .array(z.object({ name: z.string().max(300), text: z.string().max(500_000) }))
+  .max(10)
+  .optional();
+
+/** How much of the prompt each call spends on reference material. */
+const EXPLAIN_REFERENCE_BUDGET = 150_000;
+const VERIFY_REFERENCE_BUDGET = 60_000;
 
 /** Plain-text extraction from an uploaded reference .docx (course notes,
  *  textbook excerpt, …) — no image/formatting handling needed, just text
@@ -103,19 +118,15 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
           )
           .min(1)
           .max(60),
-        // Generous sanity ceiling only — the handler below truncates to
-        // 150k before it ever reaches the prompt. This must stay above that
-        // truncation point, or a normal-sized reference document (a course
-        // chapter easily runs past 200k characters) fails validation before
-        // the intended truncation gets a chance to run, surfacing a raw
-        // Zod error instead of just quietly using less of the document.
-        referenceText: z.string().max(500_000).optional(),
+        referenceDocs: ReferenceDocsSchema,
         instructions: z.string().max(5000).optional(),
       })
       .parse(input),
   )
   .handler(async ({ data, context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
+
+    const reference = buildReferenceBlock(data.referenceDocs ?? [], EXPLAIN_REFERENCE_BUDGET);
 
     const questionsBlock = data.items
       .map((q, i) => {
@@ -135,8 +146,8 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
       .join("\n\n");
 
     const prompt = [
-      "Tu es un enseignant de médecine. On te donne une liste de questions de QCM/QROC avec leur bonne réponse déjà connue, et éventuellement un document de référence.",
-      "Pour CHAQUE question, rédige une explication claire et concise justifiant la réponse correcte : base-toi sur le document de référence quand il est pertinent, sinon sur des connaissances médicales fiables. Ne recopie pas l'énoncé ni les options.",
+      "Tu es un enseignant de médecine. On te donne une liste de questions de QCM/QROC avec leur bonne réponse déjà connue, et éventuellement un ou plusieurs documents de référence (chacun introduit par une ligne « === nom du fichier === »).",
+      "Pour CHAQUE question, rédige une explication claire et concise justifiant la réponse correcte : base-toi sur les documents de référence quand ils sont pertinents, sinon sur des connaissances médicales fiables. Ne recopie pas l'énoncé ni les options.",
       // Numbered, not lettered: association questions carry their items as
       // "1. … 5." in the stem, and the .docx writer turns each <li> into its
       // own line, so the numbers line up with what the reader is looking at.
@@ -150,8 +161,8 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
       "Questions :",
       questionsBlock,
       "",
-      data.referenceText
-        ? `Document de référence (source d'information) :\n${data.referenceText.slice(0, 150_000)}`
+      reference.block
+        ? `Documents de référence (sources d'information) :\n${reference.block}`
         : "Aucun document de référence fourni : base-toi sur tes connaissances médicales générales.",
       data.instructions ? `\nInstructions supplémentaires de l'admin :\n${data.instructions}` : "",
     ].join("\n");
@@ -171,6 +182,7 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
         doubts: data.items.map((_, i) => byIndex.get(i)?.answer_doubt ?? null),
         proposed: data.items.map((_, i) => byIndex.get(i)?.proposed_indices ?? null),
         confidence: data.items.map((_, i) => byIndex.get(i)?.answer_confidence ?? null),
+        referenceTruncated: reference.truncated,
       };
     } catch (error) {
       // A schema miss that survived every retry means this batch produced
@@ -182,6 +194,7 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
           doubts: data.items.map(() => null),
           proposed: data.items.map(() => null),
           confidence: data.items.map(() => null),
+          referenceTruncated: reference.truncated,
         };
       }
       throw friendlyGatewayError(error);
@@ -217,13 +230,15 @@ export const verifyAnswersGrounded = createServerFn({ method: "POST" })
           )
           .min(1)
           .max(20),
-        referenceText: z.string().max(500_000).optional(),
+        referenceDocs: ReferenceDocsSchema,
         instructions: z.string().max(5000).optional(),
       })
       .parse(input),
   )
   .handler(async ({ data, context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
+
+    const reference = buildReferenceBlock(data.referenceDocs ?? [], VERIFY_REFERENCE_BUDGET);
 
     const questionsBlock = data.items
       .map((q) =>
@@ -237,7 +252,7 @@ export const verifyAnswersGrounded = createServerFn({ method: "POST" })
 
     const prompt = [
       "Tu es un enseignant de médecine. Pour chaque question ci-dessous, la réponse notée dans le document de cours et la première lecture de l'IA divergent. Tranche.",
-      "Utilise la recherche web pour vérifier les faits auprès de sources médicales fiables et à jour (recommandations de sociétés savantes, références universitaires), en plus du document de référence fourni.",
+      "Utilise la recherche web pour vérifier les faits auprès de sources médicales fiables et à jour (recommandations de sociétés savantes, références universitaires), en plus des documents de référence fournis.",
       "",
       "Réponds UNIQUEMENT par une ligne par question, strictement à ce format, sans autre texte :",
       "[index] FINAL=<lettres de la bonne réponse, ex. B ou AC, ou - si tu ne peux pas trancher> CONF=<high|medium|low> WHY=<une phrase courte en français>",
@@ -247,8 +262,8 @@ export const verifyAnswersGrounded = createServerFn({ method: "POST" })
       "Questions :",
       questionsBlock,
       "",
-      data.referenceText
-        ? `Document de référence (cours source) :\n${data.referenceText.slice(0, 60_000)}`
+      reference.block
+        ? `Documents de référence (cours source) :\n${reference.block}`
         : "Aucun document de référence fourni.",
       data.instructions ? `\nInstructions supplémentaires de l'admin :\n${data.instructions}` : "",
     ].join("\n");
