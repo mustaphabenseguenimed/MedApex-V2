@@ -75,6 +75,13 @@ import { importQuestionsToModule, type ImportableQuestion } from "@/lib/importQu
 import { MultiSearchableSelect } from "@/components/ui/multi-searchable-select";
 import type { SearchableOption } from "@/components/ui/searchable-select";
 import { parseQuestionsJson } from "@/lib/structuredImport";
+import {
+  toJsonObjects,
+  caseHintsOnLead,
+  caseKey,
+  stripHtml,
+  splitRotationYear,
+} from "@/lib/questionsJson";
 import { ConversionLibrary, SaveToLibraryButton } from "@/components/ConversionLibrary";
 
 export const Route = createFileRoute("/_authenticated/admin/convert")({
@@ -85,20 +92,6 @@ export const Route = createFileRoute("/_authenticated/admin/convert")({
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 // ---- shared helpers ---------------------------------------------------------
-
-// Truncated, normalized prefix rather than an exact match: the AI can retype
-// the same shared vignette with tiny differences (trailing punctuation, a
-// dropped <br>, minor whitespace) across two adjacent chunks — an exact
-// compare would silently break the cas-clinique grouping and orphan the
-// continuation question as a standalone.
-function caseKey(q: { case_stem?: string | null }): string {
-  return (q.case_stem ?? "")
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase()
-    .slice(0, 80);
-}
 
 /** Index ranges [start, end) of each group in an extracted list — a
  *  standalone question is its own group of 1, a cas clinique's consecutive
@@ -119,34 +112,12 @@ function groupIndexRanges(items: ExtractedQ[]): [number, number][] {
   return ranges;
 }
 
-function stripHtml(html: string | null | undefined): string {
-  return (html ?? "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 /** "Rotation" and "Year" are written as one combined "Rotation : Pn <year>"
  *  line in the generated .docx (per spec), so on the way in we merge the two
  *  hints into a single string. */
 function combinedRotation(q: ExtractedQ): string | null {
   const parts = [q.rotation_hint, q.year_hint].filter(Boolean) as string[];
   return parts.length ? parts.join(" ") : null;
-}
-
-/** On the way back out (reading a generated .docx), the combined rotation
- *  line usually lands entirely in rotation_hint with year_hint left null —
- *  split it back into separate "Rotation"/"Year" values for the JSON step. */
-function splitRotationYear(q: ExtractedQ): { rotation: string; year: string } {
-  if (q.year_hint) return { rotation: q.rotation_hint ?? "", year: q.year_hint };
-  const raw = (q.rotation_hint ?? "").trim();
-  if (!raw) return { rotation: "", year: "" };
-  const m = raw.match(/^(\S+)\s+(.*)$/);
-  return m ? { rotation: m[1], year: m[2].trim() } : { rotation: raw, year: "" };
 }
 
 function toDocxItems(qs: ExtractedQ[], rotationOverride?: string): DocxQuestionItem[] {
@@ -188,49 +159,6 @@ function firstVisiblePerCase(
     if (!k || (visible && !visible.has(i))) return;
     if (!out.has(k)) out.set(k, i);
   });
-  return out;
-}
-
-function toJsonObjects(qs: ExtractedQ[]): unknown[] {
-  const out: unknown[] = [];
-  let i = 0;
-  while (i < qs.length) {
-    const key = caseKey(qs[i]);
-    if (key) {
-      const group: ExtractedQ[] = [];
-      while (i < qs.length && caseKey(qs[i]) === key) {
-        group.push(qs[i]);
-        i++;
-      }
-      const { rotation, year } = splitRotationYear(group[0]);
-      out.push({
-        Rotation: rotation,
-        Year: year,
-        "cas clinique stem": stripHtml(key),
-        questions: group.map((g) => ({
-          stem: stripHtml(g.stem),
-          choices: g.choices ? g.choices.map((c) => stripHtml(c)) : null,
-          correct_indices: g.correct_indices ?? null,
-          // Keep explanation as HTML (not stripped) so images survive the
-          // JSON round trip — structuredImport.ts already passes an
-          // already-HTML explanation through untouched on the way back in.
-          explanation: g.explanation || null,
-        })),
-      });
-    } else {
-      const q = qs[i];
-      const { rotation, year } = splitRotationYear(q);
-      out.push({
-        Rotation: rotation,
-        Year: year,
-        stem: stripHtml(q.stem),
-        choices: q.choices ? q.choices.map((c) => stripHtml(c)) : null,
-        correct_indices: q.correct_indices ?? null,
-        explanation: q.explanation || null,
-      });
-      i++;
-    }
-  }
   return out;
 }
 
@@ -3607,7 +3535,7 @@ function Step4FileBlock({
     setShowImport(false);
     try {
       const text = await file.text();
-      const qs = parseQuestionsJson(text);
+      const qs = caseHintsOnLead(parseQuestionsJson(text));
       setParsed(qs);
       toast.success(`${qs.length} ${tr("question(s) chargées depuis le JSON")}`);
     } catch (e: any) {
@@ -3694,7 +3622,7 @@ function Step4FileBlock({
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      const qs: ExtractedQ[] = parts.flatMap((p) => p.questions);
+      const qs: ExtractedQ[] = caseHintsOnLead(parts.flatMap((p) => p.questions));
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
       const warnings = collectChunkWarnings(parts, tr);
       setParsed(qs);
@@ -3719,7 +3647,7 @@ function Step4FileBlock({
     const n = Math.min(entries.length, ranges.length);
     const next = parsed.map((q) => ({ ...q }));
     for (let g = 0; g < n; g++) {
-      const [start, end] = ranges[g];
+      const [start] = ranges[g];
       const e = entries[g];
       // A clinical case gets its rotation/année on the shared vignette only —
       // the group's first member, which is the one every consumer reads it
@@ -3728,12 +3656,10 @@ function Step4FileBlock({
       // their own, which is what detached them from their case downstream.
       if (e.rotation.trim()) next[start].rotation_hint = e.rotation.trim();
       if (e.year.trim()) next[start].year_hint = e.year.trim();
-      for (let k = start + 1; k < end; k++) {
-        next[k].rotation_hint = null;
-        next[k].year_hint = null;
-      }
     }
-    setApplied(next);
+    // Not just the groups a capture page covered: a sub-question can already
+    // carry a rotation read off the document, and those must go too.
+    setApplied(caseHintsOnLead(next));
     setShowImport(false);
     toast.success(`${tr("Rotation/Année appliquées à")} ${n} ${tr("question(s)/cas.")}`);
   };
