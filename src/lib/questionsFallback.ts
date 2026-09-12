@@ -11,6 +11,7 @@
  */
 
 import { buildQuestionUnits, splitBlocks, isOptionLine, unitNumber } from "./questionChunks";
+import { explanationLines } from "./explanationFormat";
 
 export type LocalQuestion = {
   type: "qcm" | "qcs" | "qroc";
@@ -94,6 +95,21 @@ function parseAnswerLetters(raw: string, optionCount: number): number[] {
     .sort((a, b) => a - b);
 }
 
+/** Drop the "Explication :" keyword from a block's HTML, leaving any inline
+ *  markup that wrapped it in place. */
+function stripExplanationKeyword(html: string): string {
+  return html.replace(
+    /^((?:\s*<[^>]+>\s*)*)([^<]*)/,
+    (_m, tags: string, text: string) => tags + text.replace(EXPLANATION_LINE, "$1"),
+  );
+}
+
+/** Add an explanation block as one paragraph per line it was written on, so a
+ *  per-proposition explanation stays one item per line all the way through. */
+function pushExplanation(parts: string[], html: string): void {
+  for (const line of explanationLines(html)) parts.push(`<p>${line}</p>`);
+}
+
 function parseUnit(
   unitHtml: string,
   header: {
@@ -150,13 +166,16 @@ function parseUnit(
     const explMatch = text.match(EXPLANATION_LINE);
     if (explMatch) {
       inExplanation = true;
-      const rest = explMatch[1]?.trim();
-      if (rest) explanationParts.push(`<p>${rest}</p>`);
+      // Read the HTML, not the flattened text: the .docx this parser usually
+      // re-reads writes a per-proposition explanation as ONE paragraph whose
+      // items are separated by soft breaks, so `stripTags` here is what used
+      // to collapse "1. … 2. … 3. …" into a single run-on line.
+      pushExplanation(explanationParts, stripExplanationKeyword(inner));
       continue;
     }
 
     if (inExplanation) {
-      explanationParts.push(`<p>${inner}</p>`);
+      pushExplanation(explanationParts, inner);
       continue;
     }
 
@@ -191,10 +210,10 @@ function parseUnit(
       // stem, with no "Réponse:"/"Explication:" keyword, is the answer text
       // itself — never part of the question. Treating it as stem would hide
       // the correct answer inside the question the student is meant to solve.
-      explanationParts.push(`<p>${inner}</p>`);
+      pushExplanation(explanationParts, inner);
     } else {
       // Trailing prose after the options with no keyword = explanation.
-      explanationParts.push(`<p>${inner}</p>`);
+      pushExplanation(explanationParts, inner);
     }
   }
 
