@@ -260,6 +260,17 @@ export const verifyAnswersGrounded = createServerFn({ method: "POST" })
       );
       return { verdicts, sources };
     } catch (error) {
-      throw friendlyGatewayError(error);
+      const friendly = friendlyGatewayError(error);
+      // Google meters grounded web search on its own, much tighter allowance
+      // than plain generation, so this is the one call in the pipeline that
+      // runs out while everything else still works. Say that, instead of the
+      // generic "Quota IA atteint" that reads like the whole AI budget is
+      // gone — the explanations for this run were generated normally.
+      if (/quota|rate.?limit|trop de requêtes|RESOURCE_EXHAUSTED/i.test(friendly.message)) {
+        throw new Error(
+          "Quota de recherche web atteint (Google limite la recherche séparément des autres appels IA). Les explications, elles, ont bien été générées.",
+        );
+      }
+      throw friendly;
     }
   });

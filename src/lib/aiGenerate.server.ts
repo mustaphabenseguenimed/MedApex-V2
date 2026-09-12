@@ -189,6 +189,13 @@ export async function generateGroundedText(
       return result;
     },
     opts?.deadlineAt ?? Date.now() + TOTAL_DEADLINE_MS,
+    // One attempt per model, not four. Google meters grounded search
+    // separately from and far more tightly than plain generation, so the
+    // usual failure here is a quota that will not clear in twenty seconds —
+    // eight attempts into that wall just makes the admin wait minutes for
+    // the same answer. The second candidate still gets a try, which is what
+    // rescues a genuine per-minute rate limit.
+    1,
   );
 
   const sources = ((output.sources ?? []) as Array<{ sourceType?: string; url?: string }>)
@@ -209,10 +216,14 @@ export async function generateGroundedText(
  *
  * `attempt` receives the remaining budget so it can cap its own timeout: no
  * single attempt may outlive the overall deadline.
+ *
+ * `maxAttempts` is per model, and defaults to the four tries every
+ * extraction and explanation call has always had.
  */
 async function runWithCandidates<T>(
   attempt: (model: any, remainingMs: number) => Promise<T>,
   deadlineAt: number,
+  maxAttempts = 4,
 ): Promise<{ output: T; engine: ExtractEngine }> {
   const candidates = await getExtractModelCandidates();
   if (!candidates.length) throw new Error("Moteur IA indisponible.");
@@ -221,9 +232,9 @@ async function runWithCandidates<T>(
   let lastError: unknown = new Error("Aucun moteur IA configuré");
 
   outer: for (const candidate of candidates) {
-    // Up to 4 tries per model: transient 429/5xx get a real backoff (Google
-    // tells us how long to wait), schema misses get an immediate retry.
-    for (let attemptNo = 0; attemptNo < 4; attemptNo++) {
+    // Transient 429/5xx get a real backoff (Google tells us how long to
+    // wait), schema misses get an immediate retry.
+    for (let attemptNo = 0; attemptNo < maxAttempts; attemptNo++) {
       if (remaining() <= 0) break outer;
       try {
         const out = await attempt(candidate.model, remaining());
@@ -231,13 +242,13 @@ async function runWithCandidates<T>(
       } catch (error) {
         lastError = error;
         if (isTransient(error)) {
-          if (attemptNo < 3 && remaining() > 0) {
+          if (attemptNo < maxAttempts - 1 && remaining() > 0) {
             await sleep(Math.min(retryDelayMs(error, attemptNo), Math.max(0, remaining())));
             continue;
           }
           break; // out of patience on this model — the next one has its own quota
         }
-        if (NoObjectGeneratedError.isInstance(error) && attemptNo < 2) continue;
+        if (NoObjectGeneratedError.isInstance(error) && attemptNo < maxAttempts - 2) continue;
         // Not a quota problem: a weaker model would not do better, and moving
         // to one would hide the failure behind lower-quality output.
         throw friendlyGatewayError(error);
