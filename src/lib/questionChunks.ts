@@ -322,7 +322,19 @@ export function buildQuestionUnits(html: string, detectCases = true): QuestionUn
     // stem it sits in.
     const bare = texts
       .map((_t, i) => i)
-      .filter((i) => !keywordStarts.has(i) && isQuestionStart(texts[i]));
+      .filter((i) => !keywordStarts.has(i) && isQuestionStart(texts[i]))
+      // A numbered line sitting directly under a question heading is that
+      // question's own stem, not a second question. Papers routinely carry
+      // two numberings — the heading the compiler added and the original
+      // exam's number on the stem line:
+      //   Question 16
+      //   30. Devant ce tableau radiologique, vous évoquez…
+      //   A. …
+      // Counting both split every such question in two: a heading with no
+      // body (dropped outright, since it parses to an empty stem) and a body
+      // labelled 30 instead of 16 — which is exactly how a paper reads
+      // "détectée(s) 4 / lue(s) 2" with numbering like 16, 30, 17, 31.
+      .filter((i) => i === 0 || !keywordStarts.has(i - 1));
     const separated = (from: number, to: number) => {
       for (let k = from + 1; k < to; k++) {
         if (LETTERED_OPTION_LINE.test(texts[k]) || keywordStarts.has(k)) return true;
@@ -443,11 +455,27 @@ export function countQuestions(html: string): number {
 const LEADING_NUMBER =
   /^\s*(?:<[^>]+>\s*)*(?:Q(?:uestion)?|QCM|QCS|QROC|Cas)?\s*[N°#]?\s*(\d{1,3})\b/i;
 export function questionNumbers(html: string, detectCases = true): (number | null)[] {
-  return buildQuestionUnits(html, detectCases).map((u) => {
-    const first = stripTags(splitBlocks(u.html)[0] ?? "");
-    const m = first.match(LEADING_NUMBER);
-    return m ? Number(m[1]) : null;
-  });
+  return buildQuestionUnits(html, detectCases).map((u) => unitNumber(u.html));
+}
+
+/** The number one already-segmented question declares in its own marker. */
+export function unitNumber(unitHtml: string): number | null {
+  const first = stripTags(splitBlocks(unitHtml)[0] ?? "");
+  const m = first.match(LEADING_NUMBER);
+  return m ? Number(m[1]) : null;
+}
+
+/** Where the document's numbering first jumps, as "20 → 34", or null when it
+ *  runs clean. Naming the break beats listing every number: the admin can go
+ *  straight to that page instead of scanning a list of eighty. */
+export function firstNumberingBreak(numbers: (number | null)[]): string | null {
+  for (let i = 1; i < numbers.length; i++) {
+    const prev = numbers[i - 1];
+    const cur = numbers[i];
+    if (prev == null || cur == null) return "numérotation illisible";
+    if (cur !== prev + 1 && cur !== 1) return `${prev} → ${cur}`;
+  }
+  return null;
 }
 
 /**

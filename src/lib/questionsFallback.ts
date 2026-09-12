@@ -10,7 +10,7 @@
  *   Explication : …  → explanation
  */
 
-import { buildQuestionUnits, splitBlocks, isOptionLine } from "./questionChunks";
+import { buildQuestionUnits, splitBlocks, isOptionLine, unitNumber } from "./questionChunks";
 
 export type LocalQuestion = {
   type: "qcm" | "qcs" | "qroc";
@@ -113,6 +113,16 @@ function parseUnit(
   // the stem (multi-paragraph QCM/QCS stem, options still to come) or is
   // already the QROC answer (no options anywhere in the unit).
   const hasAnyOptionLine = blocks.some((b) => isOptionLine(stripTags(b)));
+  // When the unit answers with lettered options, a numbered line is not one
+  // of them: it is an item of the proposition list the letters refer to
+  // ("1. FNS … A. 1+2"), and belongs to the stem. A numbered line only counts
+  // as an option in a paper that numbers its options instead of lettering
+  // them, which is exactly when no lettered line appears.
+  // OPTION_PREFIX is the lettered form only, so it doubles as the test for
+  // "does this paper letter its options" (isOptionLine also accepts digits).
+  const hasLetteredOption = blocks.some((b) => OPTION_PREFIX.test(stripTags(b)));
+  const isOption = (text: string) =>
+    hasLetteredOption ? OPTION_PREFIX.test(text) : isOptionLine(text);
 
   const stemParts: string[] = [];
   const choices: string[] = [];
@@ -150,7 +160,13 @@ function parseUnit(
       continue;
     }
 
-    if (isOptionLine(text)) {
+    // A unit never opens with an option: the chunker cut the unit at this
+    // line precisely because it starts a question. On a paper numbered "1."
+    // rather than "Question 1", that opening line also matches the option
+    // pattern — classifying it as one left the question with no stem at all,
+    // so it was dropped outright and the admin was told the mode had simply
+    // "read" fewer questions than it detected.
+    if (isOption(text) && (stemParts.length > 0 || choices.length > 0)) {
       choices.push(stripOptionPrefix(inner).trim());
       continue;
     }
@@ -211,8 +227,19 @@ function parseUnit(
 
 /** Parse every question found in an HTML chunk. Never throws. */
 export function parseQuestionsLocally(html: string): LocalQuestion[] {
+  return parseQuestionsLocallyReporting(html).questions;
+}
+
+/** Same parse, plus the numbers of the questions it had to give up on — so a
+ *  shortfall can be reported as "questions 17, 19 non lues" instead of a bare
+ *  count the admin cannot act on. */
+export function parseQuestionsLocallyReporting(html: string): {
+  questions: LocalQuestion[];
+  droppedNumbers: (number | null)[];
+} {
   const units = buildQuestionUnits(html);
   const out: LocalQuestion[] = [];
+  const droppedNumbers: (number | null)[] = [];
   for (const unit of units) {
     try {
       const header = { ...unit.header };
@@ -226,9 +253,10 @@ export function parseQuestionsLocally(html: string): LocalQuestion[] {
       }
       const q = parseUnit(unit.html, header);
       if (q) out.push(q);
+      else droppedNumbers.push(unitNumber(unit.html));
     } catch {
-      // skip malformed unit
+      droppedNumbers.push(unitNumber(unit.html));
     }
   }
-  return out;
+  return { questions: out, droppedNumbers };
 }

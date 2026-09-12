@@ -21,11 +21,12 @@ import {
   chunkUnits,
   numberingIsContiguous,
   questionNumbers,
+  firstNumberingBreak,
   textToHtml,
   type PreparedChunk,
   type QHeader,
 } from "./questionChunks";
-import { parseQuestionsLocally } from "./questionsFallback";
+import { parseQuestionsLocally, parseQuestionsLocallyReporting } from "./questionsFallback";
 
 export type ExtractResult = {
   questions: ExtractedQ[];
@@ -826,8 +827,9 @@ export const extractQuestionsFromHtmlChunk = createServerFn({ method: "POST" })
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
     if (data.allowNoAi) {
       // Zero-credit path: rules-based local parsing, no AI call at all.
+      const local = parseQuestionsLocallyReporting(data.html);
       const { questions } = normalizeQuestions({
-        questions: parseQuestionsLocally(data.html) as ExtractedQ[],
+        questions: local.questions as ExtractedQ[],
       });
       const expected = data.expected ?? 0;
       // `expected` comes from the same segmentation as the parse, so it can
@@ -836,15 +838,21 @@ export const extractQuestionsFromHtmlChunk = createServerFn({ method: "POST" })
       // document's own numbering, which is the far more common miss.
       const numbers = questionNumbers(data.html, data.detectCases ?? true);
       const gap = numbers.length > 0 && !numberingIsContiguous(numbers);
+      // Name the questions, not just how many: "questions 17, 19 non lues"
+      // sends the admin to two pages, "2 lue(s) sur 4" sends them to all of
+      // them.
+      const droppedLabel = local.droppedNumbers.filter((n): n is number => n != null).join(", ");
       return {
         questions,
         engine: "local" as ExtractEngine,
         expected,
         warning:
           expected > 0 && questions.length < expected
-            ? `${expected} question(s) détectée(s), ${questions.length} lue(s) par le mode sans IA`
+            ? droppedLabel
+              ? `${expected - questions.length} question(s) détectée(s) mais non lue(s) par le mode sans IA : n°${droppedLabel}. Décochez-le pour relire ce fichier avec l'IA.`
+              : `${expected} question(s) détectée(s), ${questions.length} lue(s) par le mode sans IA`
             : gap
-              ? `Numérotation discontinue (${numbers.filter(Boolean).join(", ")}) — le mode sans IA a probablement sauté des questions. Décochez-le pour relire ce fichier avec l'IA.`
+              ? `Numérotation discontinue (${firstNumberingBreak(numbers) ?? "?"}) — le mode sans IA a probablement sauté des questions. Décochez-le pour relire ce fichier avec l'IA.`
               : undefined,
       } satisfies ExtractResult;
     }

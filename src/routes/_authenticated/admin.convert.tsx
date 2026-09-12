@@ -55,7 +55,12 @@ import {
 import { answerLetters, sameAnswer } from "@/lib/answerVerdicts";
 import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
 import { alignByStems, type PreparedChunk } from "@/lib/questionChunks";
-import { readAsDataUrl, splitPdfIntoPageChunks, MAX_CHUNK_DATA_URL } from "@/lib/fileUtils";
+import {
+  readAsDataUrl,
+  splitPdfIntoPageChunks,
+  yieldToBrowser,
+  MAX_CHUNK_DATA_URL,
+} from "@/lib/fileUtils";
 import {
   downloadBase64,
   downloadText,
@@ -1373,15 +1378,28 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     try {
       const chunkJobs: PdfChunkJob[] = [];
       for (const [fileIndex, file] of files.entries()) {
+        const label = files.length > 1 ? ` — ${file.name}` : "";
+        setPhase(`${tr("Lecture du fichier")}${label}`);
+        setProgress(null);
+        // Yield before the first heavy step so the phase above actually
+        // paints: every step from here on holds the main thread.
+        await yieldToBrowser();
         const bytes = await file.arrayBuffer();
         // One page per call, plus the preceding page as context only, so a
         // clinical case whose vignette starts on the previous page is still
         // visible to the call that handles its continuation questions.
-        const chunks = await splitPdfIntoPageChunks(bytes, 1, 1);
+        setPhase(`${tr("Découpage des pages")}${label}`);
+        const split = await splitPdfIntoPageChunks(bytes, 1, 1, {
+          onProgress: (done, total) => setProgress({ done, total }),
+        });
+        const chunks = split.chunks;
         // A text-based PDF gives a real per-page question count — a far better
         // completeness anchor than the model's own self-report, which tends to
         // under-count exactly when it has overlooked a question. Scanned pages
         // have no text layer, so they keep the self-reported behaviour (0).
+        setPhase(`${tr("Analyse du texte")}${label}`);
+        setProgress(null);
+        await yieldToBrowser();
         const expectedPerPage = await countQuestionsPerPage(bytes);
 
         // Extracting a page with pdf-lib copies every resource it references,
@@ -1389,11 +1407,43 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         // copy can be nearly the size of the whole file. When that happens the
         // chunk can't be sent as PDF bytes at all — re-render those pages
         // instead, which bounds the payload no matter how large the source is.
-        const oversized = chunks.some((c) => c.dataUrl.length > MAX_CHUNK_DATA_URL);
+        const oversized =
+          split.tooHeavyToSplit || chunks.some((c) => c.dataUrl.length > MAX_CHUNK_DATA_URL);
         let rendered: string[] = [];
         if (oversized) {
+          setPhase(`${tr("Conversion des pages en images")}${label}`);
+          setProgress(null);
+          await yieldToBrowser();
           const { renderPdfPages } = await import("@/lib/pdfText");
-          rendered = await renderPdfPages(bytes.slice(0), { maxBytes: 1_200_000 });
+          rendered = await renderPdfPages(bytes.slice(0), {
+            maxBytes: 1_200_000,
+            onProgress: (done, total) => setProgress({ done, total }),
+          });
+        }
+
+        // Nothing to split from (the pages are too heavy to send as PDF at
+        // all), so every page goes as a rendered image, with the previous one
+        // carried as context when the pair still fits.
+        if (split.tooHeavyToSplit) {
+          for (let pageIndex = 0; pageIndex < rendered.length; pageIndex++) {
+            const image = rendered[pageIndex];
+            if (!image) continue;
+            const previous = pageIndex > 0 ? rendered[pageIndex - 1] : undefined;
+            const contextImage =
+              previous && image.length + previous.length <= MAX_CHUNK_DATA_URL
+                ? previous
+                : undefined;
+            chunkJobs.push({
+              dataUrl: "",
+              imageDataUrl: image,
+              contextImageDataUrl: contextImage,
+              filename: `${file.name} (p${pageIndex + 1})`,
+              fileIndex,
+              contextPages: contextImage ? 1 : 0,
+              expected: expectedPerPage[pageIndex] ?? 0,
+            });
+          }
+          continue;
         }
 
         for (const chunk of chunks) {
@@ -1443,6 +1493,8 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       toast.error(friendlyError(e, tr));
     } finally {
       setUploading(false);
+      setPhase(null);
+      setProgress(null);
     }
   };
 
