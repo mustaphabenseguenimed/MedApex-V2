@@ -34,7 +34,12 @@ import {
 import { toast } from "sonner";
 import { useAdminPermissions } from "@/hooks/use-permissions";
 import { useConfirm } from "@/hooks/use-confirm";
-import { deadlineFor, isExpired, YEAR_DEADLINE, BUNDLE_DEADLINE } from "@/lib/deadlines";
+import {
+  isExpired,
+  parseDeadline,
+  DEFAULT_YEAR_DEADLINE,
+  DEFAULT_BUNDLE_DEADLINE,
+} from "@/lib/deadlines";
 import { SCOPE_ORDER, scopeLabel, type AccessScope } from "@/lib/scopes";
 import { useI18n } from "@/lib/i18n";
 
@@ -79,6 +84,7 @@ function AccessAdmin() {
   const [grantScope, setGrantScope] = useState<AccessScope>("both");
   const [editing, setEditing] = useState<Ent | null>(null);
   const [busy, setBusy] = useState(false);
+  const [cfg, setCfg] = useState<{ year_deadline: string; bundle_deadline: string } | null>(null);
 
   const loadUsers = async () => {
     const { data, error } = await supabase.rpc("list_all_users");
@@ -94,10 +100,25 @@ function AccessAdmin() {
       .select("id, user_id, year, is_bundle, scope, created_at, expires_at");
     setAllEnts((data as Ent[]) ?? []);
   };
+  const loadCfg = async () => {
+    const { data } = await supabase
+      .from("pricing_config")
+      .select("year_deadline, bundle_deadline")
+      .eq("id", 1)
+      .maybeSingle();
+    setCfg((data as { year_deadline: string; bundle_deadline: string } | null) ?? null);
+  };
   useEffect(() => {
     loadUsers();
     loadAllEnts();
+    loadCfg();
   }, []);
+  // These are the deadlines a fresh grant (or the "Défaut" quick-set in the
+  // expiry dialog) uses — the same two values that gate free-offer claims
+  // and payment approvals, set once from Admin → Tarifs and applied to
+  // every user, new or existing.
+  const yearDeadline = parseDeadline(cfg?.year_deadline, DEFAULT_YEAR_DEADLINE);
+  const bundleDeadline = parseDeadline(cfg?.bundle_deadline, DEFAULT_BUNDLE_DEADLINE);
 
   const loadEnts = async (uid: string) => {
     const { data } = await supabase
@@ -135,7 +156,7 @@ function AccessAdmin() {
       year: isBundle ? null : Number(grantYear),
       is_bundle: isBundle,
       scope: grantScope,
-      expires_at: deadlineFor(isBundle).toISOString(),
+      expires_at: (isBundle ? bundleDeadline : yearDeadline).toISOString(),
     };
     const { error } = await supabase.from("user_entitlements").insert(payload);
     if (error) toast.error(error.message);
@@ -379,6 +400,8 @@ function AccessAdmin() {
       <EditExpiryDialog
         row={editing}
         busy={busy}
+        yearDeadline={yearDeadline}
+        bundleDeadline={bundleDeadline}
         onClose={() => setEditing(null)}
         onSave={async (val) => {
           if (!editing) return;
@@ -406,15 +429,20 @@ function EditExpiryDialog({
   onClose,
   onSave,
   busy,
+  yearDeadline,
+  bundleDeadline,
 }: {
   row: Ent | null;
   onClose: () => void;
   onSave: (val: string | null) => void;
   busy: boolean;
+  yearDeadline: Date;
+  bundleDeadline: Date;
 }) {
   const { tr } = useI18n();
   const [value, setValue] = useState("");
   const [mode, setMode] = useState<"date" | "lifetime">("date");
+  const defaultDeadline = row?.is_bundle ? bundleDeadline : yearDeadline;
 
   useEffect(() => {
     if (!row) return;
@@ -423,12 +451,11 @@ function EditExpiryDialog({
       setValue(toLocalInput(new Date(row.expires_at)));
     } else {
       setMode("lifetime");
-      setValue(toLocalInput(deadlineFor(row.is_bundle)));
+      setValue(toLocalInput(row.is_bundle ? bundleDeadline : yearDeadline));
     }
-  }, [row]);
+  }, [row, yearDeadline, bundleDeadline]);
 
   if (!row) return null;
-  const defaultDeadline = row.is_bundle ? BUNDLE_DEADLINE : YEAR_DEADLINE;
 
   return (
     <Dialog open={!!row} onOpenChange={(o) => !o && onClose()}>

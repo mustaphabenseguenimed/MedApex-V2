@@ -27,7 +27,13 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
-import { YEAR_DEADLINE, BUNDLE_DEADLINE, isSalesClosed, formatDeadline } from "@/lib/deadlines";
+import {
+  DEFAULT_YEAR_DEADLINE,
+  DEFAULT_BUNDLE_DEADLINE,
+  parseDeadline,
+  isSalesClosed,
+  formatDeadline,
+} from "@/lib/deadlines";
 import { useI18n } from "@/lib/i18n";
 import { scopeLabel, owns as ownsScope, type AccessScope } from "@/lib/scopes";
 
@@ -65,6 +71,8 @@ type Config = {
   bundle_sessions_sale_price_dzd: number | null;
   bundle_sessions_on_sale: boolean;
   bundle_sessions_free: boolean;
+  year_deadline: string;
+  bundle_deadline: string;
 };
 type Entitlement = { year: number | null; is_bundle: boolean; scope: AccessScope };
 type PaymentMethod = {
@@ -226,6 +234,8 @@ function StorePage() {
         r.status === "pending" && r.is_bundle === isBundle && r.year === y && r.scope === scope,
     );
   const currency = config?.currency ?? "DZD";
+  const yearDeadline = parseDeadline(config?.year_deadline, DEFAULT_YEAR_DEADLINE);
+  const bundleDeadline = parseDeadline(config?.bundle_deadline, DEFAULT_BUNDLE_DEADLINE);
 
   const openProof = async (path: string) => {
     const { data, error } = await supabase.storage
@@ -289,7 +299,7 @@ function StorePage() {
                 {bundleOffers(config).map((o) => {
                   const owned = owns(true, null, o.scope);
                   const pending = pendingFor(true, null, o.scope);
-                  const closed = isSalesClosed(true);
+                  const closed = isSalesClosed(bundleDeadline);
                   const isClaiming = claiming === `bundle-${o.scope}`;
                   return (
                     <div key={o.scope} className="rounded-lg border bg-background/60 p-4 space-y-2">
@@ -360,7 +370,7 @@ function StorePage() {
                 })}
               </div>
               <p className="text-xs text-muted-foreground">
-                {t("offer_valid_until")} {formatDeadline(BUNDLE_DEADLINE)}.
+                {t("offer_valid_until")} {formatDeadline(bundleDeadline)}.
               </p>
             </CardContent>
           </Card>
@@ -370,12 +380,12 @@ function StorePage() {
           <div className="mb-3 flex items-baseline justify-between gap-3 flex-wrap">
             <h2 className="text-lg font-semibold">{t("or_year_by_year")}</h2>
             <p className="text-xs text-muted-foreground">
-              {t("offers_valid_until")} {formatDeadline(YEAR_DEADLINE)}.
+              {t("offers_valid_until")} {formatDeadline(yearDeadline)}.
             </p>
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {prices.map((p) => {
-              const closed = isSalesClosed(false);
+              const closed = isSalesClosed(yearDeadline);
               const offers = yearOffers(p);
               return (
                 <Card key={p.year}>
