@@ -499,6 +499,8 @@ const EXPLAIN_BATCH_SIZE = 15;
 // Smaller than the explanation batch: each of these calls runs web searches
 // and reasons over them, and only the disputed minority gets here at all.
 const VERIFY_BATCH_SIZE = 5;
+/** Mirrors the server's own cap on `referenceDocs`. */
+const MAX_REFERENCE_FILES = 10;
 
 /** Retry a network-level failure (dropped mobile connection mid-upload shows up
  *  as a bare "Failed to fetch" TypeError from the browser) with backoff. Server
@@ -2163,8 +2165,9 @@ function Step2Panel({
   const genDocx = useServerFn(generateQuestionsDocx);
 
   const [docxFiles, setDocxFiles] = useState<File[]>([]);
-  const [refMode, setRefMode] = useState<"pdf" | "docx" | "text">("text");
-  const [refFile, setRefFile] = useState<File | null>(null);
+  // Several sources at once: course chapters as PDF or Word, in any mix,
+  // plus anything pasted into the box. All of it is used together.
+  const [refFiles, setRefFiles] = useState<File[]>([]);
   const [refText, setRefText] = useState("");
   const { hint, setHint, saveHint } = useSavedHint("step2", tr);
   const [allowNoAi, setAllowNoAi] = useState(false);
@@ -2343,22 +2346,59 @@ function Step2Panel({
     setBusy("explain");
     setProgress(null);
     try {
-      setPhase(tr("Préparation du document de référence"));
-      let referenceText: string | undefined;
-      if (refMode === "text") {
-        referenceText = refText.trim() || undefined;
-      } else if (refMode === "pdf" && refFile) {
-        const { extractPdfText } = await import("@/lib/pdfText");
-        const bytes = await refFile.arrayBuffer();
-        const { pages } = await extractPdfText(bytes);
-        referenceText = pages.join("\n");
-      } else if (refMode === "docx" && refFile) {
-        const refDataUrl = await readAsDataUrl(refFile);
-        const { text } = await withRetry(() =>
-          extractDocxText({ data: { docxDataUrl: refDataUrl }, signal: controller.signal }),
+      const referenceDocs: { name: string; text: string }[] = [];
+      const emptyRefs: string[] = [];
+      const skippedRefs: string[] = [];
+      // The server accepts ten reference documents; going over would fail the
+      // whole run on a raw validation error, so the extras are dropped here
+      // with something readable instead.
+      const refsToRead = refFiles.slice(0, MAX_REFERENCE_FILES);
+      if (refFiles.length > refsToRead.length) {
+        toast.warning(
+          `${tr("Seuls les")} ${MAX_REFERENCE_FILES} ${tr("premiers documents de référence sont utilisés")}`,
         );
-        referenceText = text;
       }
+      for (let r = 0; r < refsToRead.length; r++) {
+        const file = refsToRead[r];
+        setPhase(
+          `${tr("Lecture des documents de référence")} (${r + 1}/${refsToRead.length}) — ${file.name}`,
+        );
+        let text = "";
+        if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") {
+          const { extractPdfText } = await import("@/lib/pdfText");
+          const { pages } = await extractPdfText(await file.arrayBuffer());
+          text = pages.join("\n");
+        } else if (!/\.docx$/i.test(file.name)) {
+          // The picker asks for PDF or .docx, but nothing stops a .doc or an
+          // image being chosen anyway. Skipping it with a warning beats
+          // failing the whole run on a validation error from the server.
+          skippedRefs.push(file.name);
+          continue;
+        } else {
+          const dataUrl = await readAsDataUrl(file);
+          const res = await withRetry(() =>
+            extractDocxText({ data: { docxDataUrl: dataUrl }, signal: controller.signal }),
+          );
+          text = res.text;
+        }
+        if (controller.signal.aborted) return;
+        // A scanned PDF has no text layer, so it would contribute an empty
+        // section while looking like it had been taken into account.
+        if (text.trim()) referenceDocs.push({ name: file.name, text });
+        else emptyRefs.push(file.name);
+      }
+      if (refText.trim()) referenceDocs.push({ name: tr("Texte collé"), text: refText.trim() });
+      if (skippedRefs.length) {
+        toast.warning(
+          `${tr("Format non pris en charge, ignoré :")} ${skippedRefs.join(", ")} (${tr("PDF ou .docx uniquement")})`,
+        );
+      }
+      if (emptyRefs.length) {
+        toast.warning(
+          `${tr("Aucun texte extrait de")} ${emptyRefs.join(", ")} — ${tr("PDF scanné ?")}`,
+        );
+      }
+      const reference = referenceDocs.length ? referenceDocs : undefined;
 
       // Batches run in parallel — sequential batches were the main bottleneck
       // for documents with more than EXPLAIN_BATCH_SIZE questions.
@@ -2379,7 +2419,7 @@ function Step2Panel({
                     correct_indices: q.correct_indices,
                     model_answer: q.model_answer,
                   })),
-                  referenceText,
+                  referenceDocs: reference,
                   instructions: hint.trim() || undefined,
                 },
                 signal: controller.signal,
@@ -2403,6 +2443,8 @@ function Step2Panel({
       const explanations = explanationParts.flatMap((r) => r.explanations);
       const doubts = explanationParts.flatMap((r) => r.doubts ?? []);
       const proposed = explanationParts.flatMap((r) => r.proposed ?? []);
+      // Same reference for every batch, so any batch's report is the answer.
+      const refTruncated = explanationParts[0]?.referenceTruncated ?? [];
       let withExplanations = flat.map((q, i) => ({
         ...q,
         explanation: explanations[i] ?? q.explanation,
@@ -2451,7 +2493,7 @@ function Step2Panel({
                         proposed_indices: proposed[i] ?? null,
                         doubt: doubts[i] ?? null,
                       })),
-                      referenceText,
+                      referenceDocs: reference,
                       instructions: hint.trim() || undefined,
                     },
                     signal: controller.signal,
@@ -2519,7 +2561,7 @@ function Step2Panel({
                             correct_indices: withExplanations[i].correct_indices,
                             model_answer: withExplanations[i].model_answer,
                           })),
-                          referenceText,
+                          referenceDocs: reference,
                           instructions: hint.trim() || undefined,
                         },
                         signal: controller.signal,
@@ -2603,13 +2645,22 @@ function Step2Panel({
           (w) =>
             w.filename !== tr("Explications") &&
             w.filename !== tr("Réponses") &&
-            w.filename !== tr("Vérification"),
+            w.filename !== tr("Vérification") &&
+            w.filename !== tr("Référence"),
         ),
         ...(missing
           ? [
               {
                 filename: tr("Explications"),
                 warning: `${missing} ${tr("question(s) sans explication générée")}`,
+              },
+            ]
+          : []),
+        ...(refTruncated.length
+          ? [
+              {
+                filename: tr("Référence"),
+                warning: `${tr("trop de texte de référence pour un seul appel — raccourci pour")} ${refTruncated.join(", ")}`,
               },
             ]
           : []),
@@ -2771,36 +2822,29 @@ function Step2Panel({
           </Label>
         </div>
         <div>
-          <Label>{tr("Document de référence (source des explications)")}</Label>
-          <Select value={refMode} onValueChange={(v) => setRefMode(v as typeof refMode)}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="text">{tr("Texte collé")}</SelectItem>
-              <SelectItem value="pdf">{tr("Fichier PDF")}</SelectItem>
-              <SelectItem value="docx">{tr("Fichier Word")}</SelectItem>
-            </SelectContent>
-          </Select>
-          {refMode === "text" ? (
-            <Textarea
-              className="mt-2"
-              rows={6}
-              placeholder={tr("Collez ici le contenu du cours / document de référence…")}
-              value={refText}
-              onChange={(e) => setRefText(e.target.value)}
-            />
-          ) : (
-            <Input
-              className="mt-2"
-              type="file"
-              accept={refMode === "pdf" ? "application/pdf,.pdf" : `.docx,${DOCX_MIME}`}
-              onChange={(e) => setRefFile(e.target.files?.[0] ?? null)}
-            />
+          <Label>{tr("Documents de référence (sources des explications)")}</Label>
+          <Input
+            className="mt-2"
+            type="file"
+            accept={`application/pdf,.pdf,.docx,${DOCX_MIME}`}
+            multiple
+            onChange={(e) => setRefFiles(Array.from(e.target.files ?? []))}
+          />
+          {refFiles.length > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {refFiles.map((f) => f.name).join(", ")}
+            </p>
           )}
+          <Textarea
+            className="mt-2"
+            rows={4}
+            placeholder={tr("…et/ou collez ici du texte de cours supplémentaire")}
+            value={refText}
+            onChange={(e) => setRefText(e.target.value)}
+          />
           <p className="mt-1 text-xs text-muted-foreground">
             {tr(
-              "Optionnel : laissez vide pour générer les explications à partir des connaissances générales de l'IA.",
+              "Optionnel : plusieurs PDF et fichiers Word peuvent être ajoutés ensemble, avec le texte collé. Laissez vide pour générer les explications à partir des connaissances générales de l'IA.",
             )}
           </p>
         </div>
