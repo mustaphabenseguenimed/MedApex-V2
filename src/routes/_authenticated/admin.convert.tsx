@@ -29,6 +29,7 @@ import {
   EyeOff,
   Trash2,
   Sparkles,
+  ListChecks,
   Plus,
   X,
 } from "lucide-react";
@@ -164,6 +165,26 @@ function caseOrdinals(qs: { case_stem?: string | null }[]): Map<string, number> 
   return out;
 }
 
+/** For each clinical case, the first position that is actually on screen.
+ *
+ *  The shared vignette is normally rendered above the first question of its
+ *  case. Under the review filter that question is often hidden, so without
+ *  this the reviewer would judge a sub-question with no vignette at all —
+ *  the header has to move to the first *visible* member of the group.
+ */
+function firstVisiblePerCase(
+  qs: { case_stem?: string | null }[],
+  visible?: Set<number>,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  qs.forEach((q, i) => {
+    const k = caseKey(q);
+    if (!k || (visible && !visible.has(i))) return;
+    if (!out.has(k)) out.set(k, i);
+  });
+  return out;
+}
+
 function toJsonObjects(qs: ExtractedQ[]): unknown[] {
   const out: unknown[] = [];
   let i = 0;
@@ -237,8 +258,10 @@ function applyChunkContexts(questions: ExtractedQ[], chunk: PreparedChunk): Extr
 
 type ChunkWarning = { filename: string; warning: string };
 
-/** A question whose recorded answer the explanation model thinks is wrong. */
-type AnswerDoubt = { index: number; doubt: string };
+/** A question whose recorded answer the explanation model thinks is wrong.
+ *  `proposed` is that model's own reading of the answer, offered in the
+ *  review below as a one-click fix rather than applied on its own. */
+type AnswerDoubt = { index: number; doubt: string; proposed: number[] | null };
 
 /** A question whose answer key the web-grounded check actually changed. */
 type AnswerFix = { index: number; from: string; to: string; why: string };
@@ -246,7 +269,7 @@ type AnswerFix = { index: number; from: string; to: string; why: string };
 /** Answers Step 2 corrected after checking the lesson document and the web.
  *  Every change is listed rather than applied quietly: the admin can see what
  *  moved, and edit any of it back in the preview below. */
-function AnswerFixes({ fixes }: { fixes: AnswerFix[] }) {
+function AnswerFixes({ fixes, onReview }: { fixes: AnswerFix[]; onReview?: () => void }) {
   const { tr } = useI18n();
   if (!fixes.length) return null;
   return (
@@ -265,7 +288,20 @@ function AnswerFixes({ fixes }: { fixes: AnswerFix[] }) {
           </li>
         ))}
       </ul>
+      {onReview && <ReviewTheseButton onReview={onReview} />}
     </div>
+  );
+}
+
+/** Jumps straight into the filtered review of the flagged questions, so the
+ *  admin does not have to hunt for question 77 in a list of eighty. */
+function ReviewTheseButton({ onReview }: { onReview: () => void }) {
+  const { tr } = useI18n();
+  return (
+    <Button size="sm" variant="outline" className="mt-2 h-7 px-2 text-xs" onClick={onReview}>
+      <ListChecks className="mr-1 h-3.5 w-3.5" />
+      {tr("Revoir ces questions")}
+    </Button>
   );
 }
 
@@ -273,7 +309,7 @@ function AnswerFixes({ fixes }: { fixes: AnswerFix[] }) {
  *  It never overrides the answer — an upstream extraction mistake would
  *  otherwise be silently dressed up as a confident explanation of the wrong
  *  option, so it is put in front of the admin instead. */
-function AnswerDoubts({ doubts }: { doubts: AnswerDoubt[] }) {
+function AnswerDoubts({ doubts, onReview }: { doubts: AnswerDoubt[]; onReview?: () => void }) {
   const { tr } = useI18n();
   if (!doubts.length) return null;
   return (
@@ -291,6 +327,7 @@ function AnswerDoubts({ doubts }: { doubts: AnswerDoubt[] }) {
           </li>
         ))}
       </ul>
+      {onReview && <ReviewTheseButton onReview={onReview} />}
     </div>
   );
 }
@@ -671,6 +708,8 @@ function QuestionsPreviewEditor({
   onChange,
   showExplanation,
   corrected,
+  onlyIndices,
+  proposals,
 }: {
   items: ExtractedQ[];
   onChange: (items: ExtractedQ[]) => void;
@@ -678,6 +717,14 @@ function QuestionsPreviewEditor({
   /** Positions whose answer key Step 2's web check changed, badged here so
    *  the correction is visible where the admin reviews the questions. */
   corrected?: Set<number>;
+  /** When set, only these positions are rendered. Deliberately a render-time
+   *  skip rather than a filtered `items`: every edit path here is positional
+   *  (`updateItem`, `removeItem`, case grouping, the Q-number), so a shorter
+   *  array would write changes to the wrong question. */
+  onlyIndices?: Set<number>;
+  /** The AI's own reading of the answer, per position — offered as a
+   *  one-click fix on the questions under review. */
+  proposals?: Map<number, number[]>;
 }) {
   const { tr } = useI18n();
   const [editingIdx, setEditingIdx] = useState<Set<number>>(new Set());
@@ -706,13 +753,32 @@ function QuestionsPreviewEditor({
   // be told apart while reviewing — matching the "Cas clinique n°N" numbering
   // buildQuestionsDocx already writes into the .docx.
   const caseNumbers = caseOrdinals(items);
+  const caseHeaderAt = firstVisiblePerCase(items, onlyIndices);
+
+  if (onlyIndices && onlyIndices.size === 0) {
+    return (
+      <p className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
+        {tr("Aucune question à vérifier.")}
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-3">
       {items.map((q, i) => {
+        if (onlyIndices && !onlyIndices.has(i)) return null;
         const groupKey = caseKey(q);
-        const isNewCaseGroup = groupKey !== "" && (i === 0 || groupKey !== caseKey(items[i - 1]));
+        // Unfiltered, this stays the original contiguity rule to the letter:
+        // a case split into two blocks by other questions keeps a vignette
+        // above each block. Only under the filter does it become
+        // "first visible member", where one vignette at the top is right.
+        const isNewCaseGroup =
+          groupKey !== "" &&
+          (onlyIndices
+            ? caseHeaderAt.get(groupKey) === i
+            : i === 0 || groupKey !== caseKey(items[i - 1]));
         const editing = editingIdx.has(i);
+        const proposal = proposals?.get(i);
         return (
           <div key={i}>
             {isNewCaseGroup && (
@@ -803,6 +869,24 @@ function QuestionsPreviewEditor({
                     value={q.year_hint ?? ""}
                     onChange={(e) => updateItem(i, { year_hint: e.target.value || null })}
                   />
+                </div>
+              )}
+              {proposal && !sameAnswer(proposal, q.correct_indices) && (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-200">
+                  <span>
+                    {tr("Réponse du document")} :{" "}
+                    <strong>{answerLetters(q.correct_indices)}</strong> — {tr("l'IA propose")} :{" "}
+                    <strong>{answerLetters(proposal)}</strong>
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="ml-auto h-7 px-2 text-xs"
+                    onClick={() => updateItem(i, { correct_indices: [...proposal] })}
+                  >
+                    <Check className="mr-1 h-3.5 w-3.5" />
+                    {tr("Appliquer")}
+                  </Button>
                 </div>
               )}
               {!editing ? (
@@ -2093,6 +2177,7 @@ function Step2Panel({
   const [chunkWarnings, setChunkWarnings] = useState<ChunkWarning[]>([]);
   const [answerDoubts, setAnswerDoubts] = useState<AnswerDoubt[]>([]);
   const [answerFixes, setAnswerFixes] = useState<AnswerFix[]>([]);
+  const [reviewOnly, setReviewOnly] = useState(false);
   const [result, setResult] = useState<DocxResult | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -2109,6 +2194,22 @@ function Step2Panel({
   const [libraryVersion, setLibraryVersion] = useState(0);
   const separate = !combineResults && docxFiles.length > 1;
   const correctedSet = useMemo(() => new Set(answerFixes.map((f) => f.index)), [answerFixes]);
+  // Everything worth a second look: the answers the web check changed, and
+  // the ones it could not settle (or could not reach, on a quota failure).
+  const flaggedSet = useMemo(
+    () => new Set([...answerFixes.map((f) => f.index), ...answerDoubts.map((d) => d.index)]),
+    [answerFixes, answerDoubts],
+  );
+  const proposals = useMemo(() => {
+    const m = new Map<number, number[]>();
+    for (const d of answerDoubts) if (d.proposed) m.set(d.index, d.proposed);
+    return m;
+  }, [answerDoubts]);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const reviewFlagged = () => {
+    setReviewOnly(true);
+    previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   const resetExtraction = () => {
     setExtracted(null);
@@ -2116,6 +2217,7 @@ function Step2Panel({
     setChunkWarnings([]);
     setAnswerDoubts([]);
     setAnswerFixes([]);
+    setReviewOnly(false);
     setResult(null);
     setGroupResults({});
     setShowImport(false);
@@ -2472,7 +2574,18 @@ function Step2Panel({
       setAnswerDoubts(
         [...unresolved.entries()]
           .sort((a, b) => a[0] - b[0])
-          .map(([index, doubt]) => ({ index, doubt })),
+          // Carry the model's own reading of the answer, but only when it
+          // actually differs from what the document says — offering
+          // "l'IA propose : B" for an answer already set to B is noise.
+          .map(([index, doubt]) => ({
+            index,
+            doubt,
+            proposed:
+              proposed[index] != null &&
+              !sameAnswer(proposed[index], withExplanations[index]?.correct_indices)
+                ? (proposed[index] as number[])
+                : null,
+          })),
       );
       // Counted on the final list, not on the model's raw replies: an
       // explanation the document already carried still counts as present,
@@ -2783,8 +2896,8 @@ function Step2Panel({
         {(separate ? fileGroups : extracted) && busy !== "extract" && (
           <div className="space-y-3">
             <ChunkWarnings warnings={chunkWarnings} />
-            <AnswerFixes fixes={answerFixes} />
-            <AnswerDoubts doubts={answerDoubts} />
+            <AnswerFixes fixes={answerFixes} onReview={separate ? undefined : reviewFlagged} />
+            <AnswerDoubts doubts={answerDoubts} onReview={separate ? undefined : reviewFlagged} />
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
@@ -2860,11 +2973,34 @@ function Step2Panel({
               />
             ) : (
               <>
+                {flaggedSet.size > 0 && (
+                  <div ref={previewRef} className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={reviewOnly ? "default" : "outline"}
+                      onClick={() => setReviewOnly((v) => !v)}
+                    >
+                      <ListChecks className="mr-1.5 h-4 w-4" />
+                      {reviewOnly
+                        ? tr("Tout afficher")
+                        : `${tr("À vérifier uniquement")} (${flaggedSet.size})`}
+                    </Button>
+                    {reviewOnly && (
+                      <span className="text-xs text-muted-foreground">
+                        {tr(
+                          "Les autres questions sont masquées, pas supprimées — elles restent dans le fichier généré.",
+                        )}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <QuestionsPreviewEditor
                   items={extracted ?? []}
                   onChange={setExtracted}
                   showExplanation
                   corrected={correctedSet}
+                  onlyIndices={reviewOnly ? flaggedSet : undefined}
+                  proposals={proposals}
                 />
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
