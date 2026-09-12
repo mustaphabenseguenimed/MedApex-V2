@@ -137,7 +137,12 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
     const prompt = [
       "Tu es un enseignant de médecine. On te donne une liste de questions de QCM/QROC avec leur bonne réponse déjà connue, et éventuellement un document de référence.",
       "Pour CHAQUE question, rédige une explication claire et concise justifiant la réponse correcte : base-toi sur le document de référence quand il est pertinent, sinon sur des connaissances médicales fiables. Ne recopie pas l'énoncé ni les options.",
-      "MISE EN FORME de explanation: si tu justifies plusieurs propositions, retourne une liste HTML <ul><li><strong>A.</strong> …</li><li><strong>B.</strong> …</li></ul>, une <li> par proposition, jamais plusieurs justifications collées dans un même <p>. Si l'explication est unique et globale, garde un simple <p>.",
+      // Numbered, not lettered: association questions carry their items as
+      // "1. … 5." in the stem, and the .docx writer turns each <li> into its
+      // own line, so the numbers line up with what the reader is looking at.
+      // The numbers are literal text inside a <ul> rather than an <ol>, or
+      // the browser's own list marker would render them twice ("1. 1. …").
+      "MISE EN FORME de explanation: si tu justifies plusieurs propositions, retourne une liste HTML <ul><li><strong>1.</strong> …</li><li><strong>2.</strong> …</li></ul> — une <li> par proposition, NUMÉROTÉE 1, 2, 3… dans l'ordre des propositions, jamais plusieurs justifications collées dans un même <p> ou une même <li>. Si l'explication est unique et globale, garde un simple <p>.",
       "N'écris JAMAIS que la réponse fournie est fausse dans le champ explanation : rédige toujours l'explication de la réponse indiquée. En revanche, si cette réponse te paraît médicalement erronée, remplis EN PLUS le champ answer_doubt avec une phrase courte disant ce qui te semble être la bonne réponse et pourquoi. Laisse answer_doubt à null quand la réponse fournie est correcte — c'est le cas le plus fréquent, ne le remplis pas par excès de prudence.",
       "DÉTERMINE AUSSI la réponse par toi-même, sans supposer que la réponse fournie est juste : remplis proposed_indices avec les indices 0-based que TU juges corrects d'après le document de référence et tes connaissances médicales, et answer_confidence avec high, medium ou low. Pour une QROC, laisse proposed_indices à null. Le plus souvent proposed_indices sera identique à la réponse fournie — c'est normal, ne cherche pas à t'en écarter.",
       "Réponds pour toutes les questions listées ci-dessous, une entrée par index, dans n'importe quel ordre mais sans en omettre.",
