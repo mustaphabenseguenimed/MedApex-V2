@@ -7,6 +7,8 @@
  * sending those pages as images/PDF to the AI.
  */
 
+import { yieldToBrowser } from "./fileUtils";
+
 export type PdfTextResult = {
   /** Extracted text, page by page (empty string for scanned pages). */
   pages: string[];
@@ -109,7 +111,11 @@ async function renderPageToCanvas(
  */
 export async function renderPdfPages(
   bytes: ArrayBuffer,
-  opts?: { scale?: number; maxBytes?: number },
+  opts?: {
+    scale?: number;
+    maxBytes?: number;
+    onProgress?: (done: number, total: number) => void;
+  },
 ): Promise<string[]> {
   const pdfjs = await getPdfjs();
   const doc = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
@@ -130,6 +136,10 @@ export async function renderPdfPages(
       }
     }
     images.push(out);
+    opts?.onProgress?.(i, doc.numPages);
+    // Rendering and JPEG-encoding a page is solid main-thread CPU; without
+    // this the tab is unresponsive for the whole document.
+    await yieldToBrowser();
   }
 
   try {
