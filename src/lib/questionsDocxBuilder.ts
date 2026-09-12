@@ -41,6 +41,46 @@ function stripHtml(html: string): string {
     .trim();
 }
 
+/** Split text or light HTML into the lines it was meant to be read as.
+ *
+ *  An association question carries its numbered items inside the stem
+ *  ("Associer …:\n1. FNS\n2. CRP…"), and a per-proposition explanation
+ *  arrives as an HTML list. `stripHtml` alone flattens both into one long
+ *  line, which is how they used to land in the .docx. */
+function textLines(html: string): string[] {
+  const withBreaks = (html ?? "")
+    // Block and list boundaries are line boundaries.
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|div|li|h[1-6]|tr)>/gi, "\n")
+    .replace(/<li\b[^>]*>/gi, "\n");
+  return withBreaks
+    .split("\n")
+    .map((line) => stripHtml(line))
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * One paragraph whose lines are separated by *soft* breaks, not by paragraph
+ * breaks.
+ *
+ * This matters beyond looks. Step 2 routinely re-reads the .docx Step 1
+ * wrote, and `questionChunks.ts` splits that document on paragraph elements
+ * (`<p>`, `<li>`, `<div>`) while treating a `<br>` as ordinary whitespace.
+ * Real paragraphs here would turn "1. FNS + groupage" into its own block,
+ * which `OPTION_LINE` reads as an answer option and `QUESTION_START_BARE`
+ * as a possible new question — corrupting the re-read of the app's own
+ * output. A soft break renders as a new line in Word and collapses back to
+ * the same single block on the way in.
+ */
+function linesParagraph(lines: string[], prefix?: string): Paragraph {
+  const all = prefix ? [prefix, ...lines] : lines;
+  return new Paragraph({
+    children: all.map(
+      (line, i) => new TextRun(i === 0 ? { text: line } : { text: line, break: 1 }),
+    ),
+  });
+}
+
 function answerLine(item: DocxQuestionItem): string {
   if (item.choices && item.choices.length) {
     const letters = (item.correct_indices ?? []).map((i) => LETTERS[i] ?? String(i + 1));
@@ -60,7 +100,7 @@ function questionParagraphs(
 ): Paragraph[] {
   const paras: Paragraph[] = [
     new Paragraph({ children: [new TextRun({ text: `Question ${qNum}`, bold: true })] }),
-    new Paragraph({ text: stripHtml(item.stem) }),
+    linesParagraph(textLines(item.stem)),
   ];
   if (item.choices && item.choices.length) {
     item.choices.forEach((c, i) => {
@@ -69,7 +109,12 @@ function questionParagraphs(
   }
   paras.push(new Paragraph({ text: answerLine(item) }));
   if (includeExplanations && item.explanation) {
-    paras.push(new Paragraph({ text: `Explication : ${stripHtml(item.explanation)}` }));
+    const lines = textLines(item.explanation);
+    paras.push(
+      lines.length > 1
+        ? linesParagraph(lines, "Explication :")
+        : new Paragraph({ text: `Explication : ${lines[0] ?? ""}` }),
+    );
   }
   paras.push(new Paragraph({ text: "" }));
   return paras;
@@ -104,7 +149,7 @@ export async function buildQuestionsDocx(
           children: [new TextRun({ text: `Cas clinique n°${caseNum} :`, bold: true })],
         }),
       );
-      children.push(new Paragraph({ text: stripHtml(group[0].case_stem ?? "") }));
+      children.push(linesParagraph(textLines(group[0].case_stem ?? "")));
       for (const sub of group) {
         qNum++;
         children.push(...questionParagraphs(sub, qNum, includeExplanations));
