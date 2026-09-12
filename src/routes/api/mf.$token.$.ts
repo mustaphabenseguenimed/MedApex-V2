@@ -124,6 +124,85 @@ function injectWatermark(html: string): string {
     : html + WATERMARK_SNIPPET;
 }
 
+// Not every résumé ships its own collapsible sommaire, and the app can't add
+// one from outside: the same missing allow-same-origin that protects us also
+// means the parent page cannot touch this DOM. So the button is injected
+// here, inside the document, where it can actually find the table of
+// contents.
+//
+// Deliberately timid. It only appears when a table of contents is identified
+// with reasonable confidence, and it stands down entirely when the document
+// already has a control of its own — a résumé that brought its own toggle
+// must not end up with two. When nothing is found, nothing is added.
+const SOMMAIRE_TOGGLE_SNIPPET = `<script>
+(function () {
+  function ready(fn) {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fn);
+    else fn();
+  }
+  function findToc() {
+    var direct = document.querySelector(
+      "#toc, #sommaire, #table-of-contents, .toc, .sommaire, [data-toc], nav.toc, nav#sommaire"
+    );
+    if (direct) return direct;
+    var landmarks = document.querySelectorAll("nav, aside");
+    for (var i = 0; i < landmarks.length; i++) {
+      if (landmarks[i].querySelectorAll('a[href^="#"]').length >= 3) return landmarks[i];
+    }
+    // Last resort: a link-dense block that isn't prose.
+    var best = null, bestCount = 4;
+    var blocks = document.querySelectorAll("div, ul, ol, section");
+    for (var j = 0; j < blocks.length; j++) {
+      var links = blocks[j].querySelectorAll('a[href^="#"]').length;
+      if (links > bestCount && blocks[j].querySelectorAll("p").length <= 2) {
+        best = blocks[j];
+        bestCount = links;
+      }
+    }
+    return best;
+  }
+  function hasOwnToggle() {
+    var controls = document.querySelectorAll("button, a, [role=button], input[type=checkbox]");
+    for (var i = 0; i < controls.length; i++) {
+      var c = controls[i];
+      var hay = [c.textContent || "", c.getAttribute("aria-label") || "", c.id || "",
+                 typeof c.className === "string" ? c.className : ""].join(" ");
+      if (/sommaire|table des mati|replier|masquer|toggle-toc|toc-toggle/i.test(hay)) return true;
+    }
+    return false;
+  }
+  ready(function () {
+    if (hasOwnToggle()) return;
+    var toc = findToc();
+    if (!toc) return;
+    var hidden = false;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Masquer le sommaire";
+    btn.setAttribute("aria-expanded", "true");
+    btn.style.cssText = [
+      "position:fixed", "bottom:12px", "right:12px", "z-index:2147483646",
+      "font:500 13px/1.2 system-ui,sans-serif", "padding:8px 12px", "border-radius:999px",
+      "border:1px solid rgba(120,120,120,0.35)", "background:#fff", "color:#111",
+      "box-shadow:0 2px 8px rgba(0,0,0,0.18)", "cursor:pointer"
+    ].join(";");
+    btn.addEventListener("click", function () {
+      hidden = !hidden;
+      toc.style.display = hidden ? "none" : "";
+      btn.textContent = hidden ? "Afficher le sommaire" : "Masquer le sommaire";
+      btn.setAttribute("aria-expanded", hidden ? "false" : "true");
+    });
+    document.body.appendChild(btn);
+  });
+})();
+</script>`;
+
+function injectSommaireToggle(html: string): string {
+  return /<\/body>/i.test(html)
+    ? html.replace(/<\/body>/i, `${SOMMAIRE_TOGGLE_SNIPPET}</body>`)
+    : html + SOMMAIRE_TOGGLE_SNIPPET;
+}
+
 // createServerOnlyFn marks this closure as server-only. TanStack Start's
 // import-protection plugin recognizes this boundary and allows the
 // .server.ts import inside it, even though this route file is technically
@@ -152,7 +231,9 @@ const handler = createServerOnlyFn(async ({ params }: { params: MfParams }) => {
   const isHtml = ct.startsWith("text/html");
   const body: BodyInit = isHtml
     ? injectWatermark(
-        injectContentProtection(injectStorageShim(new TextDecoder("utf-8").decode(buf))),
+        injectSommaireToggle(
+          injectContentProtection(injectStorageShim(new TextDecoder("utf-8").decode(buf))),
+        ),
       )
     : buf;
   return new Response(body, {
