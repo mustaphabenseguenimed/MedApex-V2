@@ -20,6 +20,15 @@ import { useI18n } from "@/lib/i18n";
 import { ModuleScopeGate } from "@/lib/scopes";
 import { cn } from "@/lib/utils";
 
+// Reading width for html lessons, in px. Not every résumé ships its own
+// width control, so the app provides one for all of them; HTML_WIDTH_MAX
+// means "no limit" and is where the old binary "largeur maximale" toggle
+// lands when migrated.
+const HTML_WIDTH_MIN = 720;
+const HTML_WIDTH_DEFAULT = 1152; // matches the max-w-6xl used for everything else
+const HTML_WIDTH_MAX = 2400;
+const HTML_WIDTH_STEP = 48;
+
 export const Route = createFileRoute("/_authenticated/modules/$moduleId/$contentId")({
   component: ContentGate,
 });
@@ -50,21 +59,28 @@ function ContentView() {
   const [fileUrl, setFileUrl] = useState<string>("");
   const [htmlUrl, setHtmlUrl] = useState<string>("");
   const [htmlZoom, setHtmlZoom] = useState(1);
-  const [wideHtml, setWideHtml] = useState(false);
+  // Reading width, in px. HTML_WIDTH_MAX means "no limit" — the old boolean
+  // "largeur maximale" toggle is migrated onto this scale on first read.
+  const [htmlWidth, setHtmlWidth] = useState(HTML_WIDTH_DEFAULT);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const issueToken = useServerFn(issueModuleFileToken);
 
-  // Restore/persist the html viewer's zoom + "largeur maximale" prefs
-  // per lesson (same storage key the viewer used before this was lifted
-  // up here so the width toggle can also resize the page's own <main>).
+  // Restore/persist the html viewer's zoom + width prefs per lesson (same
+  // storage key the viewer used before this was lifted up here so the width
+  // control can also resize the page's own <main>).
   useEffect(() => {
     if (!contentId) return;
     try {
       const raw = localStorage.getItem(`html-viewer:${contentId}`);
       if (raw) {
-        const p = JSON.parse(raw) as { zoom?: number; wide?: boolean };
+        const p = JSON.parse(raw) as { zoom?: number; wide?: boolean; width?: number };
         if (typeof p.zoom === "number") setHtmlZoom(clamp(p.zoom, 0.25, 3));
-        if (typeof p.wide === "boolean") setWideHtml(p.wide);
+        if (typeof p.width === "number") {
+          setHtmlWidth(clamp(p.width, HTML_WIDTH_MIN, HTML_WIDTH_MAX));
+        } else if (typeof p.wide === "boolean") {
+          // Migrate the old binary toggle: "largeur maximale" was no limit.
+          setHtmlWidth(p.wide ? HTML_WIDTH_MAX : HTML_WIDTH_DEFAULT);
+        }
       }
     } catch {
       /* ignore */
@@ -76,12 +92,12 @@ function ContentView() {
     try {
       localStorage.setItem(
         `html-viewer:${contentId}`,
-        JSON.stringify({ zoom: htmlZoom, wide: wideHtml }),
+        JSON.stringify({ zoom: htmlZoom, width: htmlWidth }),
       );
     } catch {
       /* ignore */
     }
-  }, [contentId, htmlZoom, wideHtml]);
+  }, [contentId, htmlZoom, htmlWidth]);
 
   // PDF and link viewers are mutually exclusive, so one container ref serves
   // whichever is on screen.
@@ -131,9 +147,15 @@ function ContentView() {
         </div>
       </header>
       <main
-        className={`mx-auto w-full px-4 md:px-6 py-2 md:py-4 flex-1 min-h-0 flex flex-col ${
-          c?.kind === "html" && wideHtml ? "max-w-none" : "max-w-6xl"
-        }`}
+        className={cn(
+          "mx-auto w-full px-4 md:px-6 py-2 md:py-4 flex-1 min-h-0 flex flex-col",
+          c?.kind !== "html" && "max-w-6xl",
+        )}
+        style={
+          c?.kind === "html"
+            ? { maxWidth: htmlWidth >= HTML_WIDTH_MAX ? "none" : `${htmlWidth}px` }
+            : undefined
+        }
       >
         <h1 className="text-lg md:text-2xl font-semibold mb-2 shrink-0 truncate">
           {c?.title ?? "…"}
@@ -146,8 +168,8 @@ function ContentView() {
               tFullscreen={t("fullscreen")}
               zoom={htmlZoom}
               onZoomChange={setHtmlZoom}
-              wide={wideHtml}
-              onToggleWide={() => setWideHtml((w) => !w)}
+              width={htmlWidth}
+              onWidthChange={setHtmlWidth}
             />
           ) : (
             <div className="flex-1 min-h-0 w-full rounded-lg border flex items-center justify-center text-muted-foreground">
@@ -238,16 +260,16 @@ function HtmlViewer({
   tFullscreen,
   zoom,
   onZoomChange,
-  wide,
-  onToggleWide,
+  width,
+  onWidthChange,
 }: {
   url: string;
   title: string;
   tFullscreen: string;
   zoom: number;
   onZoomChange: (updater: (z: number) => number) => void;
-  wide: boolean;
-  onToggleWide: () => void;
+  width: number;
+  onWidthChange: (w: number) => void;
 }) {
   const { tr } = useI18n();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -319,14 +341,25 @@ function HtmlViewer({
           <div className="w-px h-5 bg-border mx-0.5" />
           <Button
             size="icon"
-            variant={wide ? "secondary" : "ghost"}
+            variant="ghost"
             className="h-7 w-7"
-            onClick={onToggleWide}
-            title={wide ? tr("Largeur par défaut") : tr("Largeur maximale")}
-            aria-label={wide ? tr("Largeur par défaut") : tr("Largeur maximale")}
+            onClick={() => onWidthChange(HTML_WIDTH_DEFAULT)}
+            title={tr("Largeur par défaut")}
+            aria-label={tr("Largeur par défaut")}
           >
             <ArrowLeftRight className="h-3.5 w-3.5" />
           </Button>
+          <input
+            type="range"
+            min={HTML_WIDTH_MIN}
+            max={HTML_WIDTH_MAX}
+            step={HTML_WIDTH_STEP}
+            value={width}
+            onChange={(e) => onWidthChange(Number(e.target.value))}
+            className="h-7 w-16 md:w-24 cursor-pointer accent-primary"
+            title={tr("Largeur de lecture")}
+            aria-label={tr("Largeur de lecture")}
+          />
           <div className="w-px h-5 bg-border mx-0.5" />
           <Button
             size="icon"
