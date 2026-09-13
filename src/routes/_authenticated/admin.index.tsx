@@ -565,6 +565,8 @@ function QuestionsPanel({
     load();
   }, [moduleId]);
 
+  const confirm = useConfirm();
+
   const remove = async (q: Question) => {
     const { error } = await (supabase as any).from("questions").delete().eq("id", q.id);
     if (error) toast.error(error.message);
@@ -1264,6 +1266,25 @@ function QuestionsPanel({
                                             folders={folders}
                                             onSaved={load}
                                           />
+                                        )}
+                                        {(isSuper || canManage) && (
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-7 px-1.5 text-destructive hover:text-destructive"
+                                            title={tr("Supprimer cette question")}
+                                            onClick={async () => {
+                                              if (
+                                                await confirm(
+                                                  tr("Supprimer cette question du cas clinique ?"),
+                                                  { variant: "destructive" },
+                                                )
+                                              )
+                                                remove(c);
+                                            }}
+                                          >
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                          </Button>
                                         )}
                                       </div>
                                     ))}
