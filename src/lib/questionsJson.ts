@@ -118,6 +118,22 @@ export function caseHintsOnLead<T extends ExtractedQ>(items: T[]): T[] {
   return out;
 }
 
+/**
+ * Strip every rotation/année hint from a question list.
+ *
+ * Step 1 (PDF → DOCX) does not deal in rotations at all: what the model reads
+ * off a page is a guess, and once written into the document it is attached by
+ * `parseContextHints` to every unit read underneath it in the later steps.
+ * Rotations are set in step 4, from the capture PDF the admin provides.
+ */
+export function withoutRotationHints<T extends ExtractedQ>(items: T[]): T[] {
+  return items.map((q) =>
+    q.rotation_hint || q.year_hint || q.rotation_hints || q.year_hints
+      ? { ...q, rotation_hint: null, year_hint: null, rotation_hints: null, year_hints: null }
+      : q,
+  );
+}
+
 /** Group the extracted questions into the app's own .json shape: one object
  *  per clinical case (its énoncé plus its sub-questions) or per standalone
  *  question, each carrying its rotation/année. */

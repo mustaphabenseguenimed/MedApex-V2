@@ -56,7 +56,24 @@ import {
   CalendarClock,
   FileCog,
 } from "lucide-react";
-import { ImagePlus, Sparkles, ChevronDown, ChevronRight, RefreshCw, BookOpen } from "lucide-react";
+import {
+  ImagePlus,
+  Sparkles,
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
+  BookOpen,
+  GripVertical,
+  FolderInput,
+} from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { canMoveInto, isMovable, planMove } from "@/lib/questionMove";
 import { useIsAdmin } from "@/hooks/use-admin";
 import { useAdminPermissions } from "@/hooks/use-permissions";
 import { useServerFn } from "@tanstack/react-start";
@@ -457,6 +474,56 @@ const QTYPE_LABEL: Record<QType, string> = {
   cas_clinique: "Cas clinique",
 };
 
+/** The same two moves without a drag — HTML5 drag events never fire on touch,
+ *  so every movable row also carries this menu. */
+function MoveMenu({
+  question,
+  cases,
+  caseNumbers,
+  onMove,
+}: {
+  question: Question;
+  /** Every clinical case of the module, in list order. */
+  cases: Question[];
+  caseNumbers: Map<string, number>;
+  onMove: (dragged: Question, target: Question | null) => void;
+}) {
+  const { tr } = useI18n();
+  const targets = cases.filter((c) => canMoveInto(question, c));
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-1.5"
+          title={tr("Déplacer vers un cas clinique")}
+        >
+          <FolderInput className="h-3.5 w-3.5" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="max-h-72 w-72 overflow-y-auto">
+        <DropdownMenuLabel className="text-xs">{tr("Déplacer vers")}</DropdownMenuLabel>
+        {question.parent_id && (
+          <DropdownMenuItem onClick={() => onMove(question, null)}>
+            {tr("Hors cas clinique")}
+          </DropdownMenuItem>
+        )}
+        {targets.map((c) => (
+          <DropdownMenuItem key={c.id} onClick={() => onMove(question, c)}>
+            <span className="truncate">
+              {tr("Cas clinique")} n°{caseNumbers.get(c.id)} — {c.stem}
+            </span>
+          </DropdownMenuItem>
+        ))}
+        {!targets.length && !question.parent_id && (
+          <DropdownMenuItem disabled>{tr("Aucun cas clinique")}</DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function QuestionsPanel({
   moduleId,
   year,
@@ -609,6 +676,72 @@ function QuestionsPanel({
     ]);
     if (error) toast.error(error.message);
     else load();
+  };
+
+  // ---- moving a question between clinical cases ----------------------------
+  // A sub-question used to be stuck under whichever case it was imported into:
+  // the edit dialog has no parent selector, and ▲▼ only reorder top-level
+  // questions. Dragging it onto another case (or onto the "sortir" strip) is
+  // one `parent_id` update; `planMove` holds the rules and the new sort order.
+
+  const [dragging, setDragging] = useState<Question | null>(null);
+  /** Case id currently hovered, or "__out" for the leave-the-case strip. */
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const caseParents = parents.filter((p) => p.type === "cas_clinique");
+  const allCaseNumbers = caseNumbersFor(parents);
+
+  const moveToCase = async (dragged: Question, target: Question | null) => {
+    setDragging(null);
+    setDropTarget(null);
+    const siblings = target ? items.filter((c) => c.parent_id === target.id) : parents;
+    const patch = planMove(dragged, target, siblings);
+    if (!patch) return; // dropped where it already was — nothing to write
+    const { error } = await supabase.from("questions").update(patch).eq("id", dragged.id);
+    if (error) toast.error(error.message);
+    else {
+      toast.success(
+        target
+          ? `${tr("Question déplacée vers")} ${tr("Cas clinique")} n°${allCaseNumbers.get(target.id) ?? ""}`
+          : tr("Question sortie du cas clinique"),
+      );
+      load();
+    }
+  };
+
+  /** Drag props for a row that can be moved — on the grip handle only, so
+   *  selecting the question text with the mouse still works. */
+  const gripProps = (q: Question) => ({
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      e.dataTransfer.setData("text/plain", q.id);
+      e.dataTransfer.effectAllowed = "move";
+      setDragging(q);
+    },
+    onDragEnd: () => {
+      setDragging(null);
+      setDropTarget(null);
+    },
+  });
+
+  /** Is the drag in flight allowed to land here? */
+  const canDropHere = (target: Question | null) => !!dragging && canMoveInto(dragging, target);
+
+  /** Drop props for a destination (a clinical case, or null to leave one). */
+  const dropProps = (target: Question | null) => {
+    const key = target ? target.id : "__out";
+    if (!dragging || !canMoveInto(dragging, target)) return {};
+    return {
+      onDragOver: (e: React.DragEvent) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        setDropTarget(key);
+      },
+      onDragLeave: () => setDropTarget((t) => (t === key ? null : t)),
+      onDrop: (e: React.DragEvent) => {
+        e.preventDefault();
+        moveToCase(dragging, target);
+      },
+    };
   };
 
   const groups = (() => {
@@ -849,6 +982,16 @@ function QuestionsPanel({
             </p>
           ) : (
             <div className="space-y-2">
+              {dragging?.parent_id && (
+                <div
+                  {...dropProps(null)}
+                  className={`rounded-md border border-dashed p-2 text-center text-xs text-muted-foreground ${
+                    dropTarget === "__out" ? "border-primary bg-primary/5 text-primary" : ""
+                  }`}
+                >
+                  {tr("Déposer ici pour sortir du cas clinique")}
+                </div>
+              )}
               {groups.map((g) => {
                 const gOpen = openGroups[g.key] ?? false;
                 const gCaseNumbers = caseNumbersFor(g.items);
@@ -904,11 +1047,27 @@ function QuestionsPanel({
                           const canDel = isSuper || canManage;
                           const canEdit = canManage;
                           const children = items.filter((c) => c.parent_id === q.id);
+                          const isDropTarget = dropTarget === q.id;
                           return (
-                            <div key={q.id} className="rounded-md border px-3 py-2 text-sm">
+                            <div
+                              key={q.id}
+                              {...dropProps(q)}
+                              className={`rounded-md border px-3 py-2 text-sm ${
+                                isDropTarget ? "border-primary ring-2 ring-primary/40" : ""
+                              }`}
+                            >
                               <div className="flex items-start justify-between gap-2">
                                 <div className="min-w-0 flex-1">
                                   <div className="font-medium truncate">
+                                    {canManage && isMovable(q) && (
+                                      <span
+                                        {...gripProps(q)}
+                                        className="mr-1.5 inline-flex cursor-grab align-middle text-muted-foreground active:cursor-grabbing"
+                                        title={tr("Glisser vers un cas clinique")}
+                                      >
+                                        <GripVertical className="h-3.5 w-3.5" />
+                                      </span>
+                                    )}
                                     {q.type === "cas_clinique" && (
                                       <span className="text-primary">
                                         {tr("Cas clinique")} n°{gCaseNumbers.get(q.id)} —{" "}
@@ -1006,6 +1165,14 @@ function QuestionsPanel({
                                       </Button>
                                     </>
                                   )}
+                                  {canManage && isMovable(q) && (
+                                    <MoveMenu
+                                      question={q}
+                                      cases={caseParents}
+                                      caseNumbers={allCaseNumbers}
+                                      onMove={moveToCase}
+                                    />
+                                  )}
                                   {canEdit && (
                                     <EditQuestionDialog
                                       question={q}
@@ -1062,28 +1229,53 @@ function QuestionsPanel({
                                   )}
                                 </div>
                               </div>
-                              {q.type === "cas_clinique" && children.length > 0 && (
-                                <div className="mt-2 space-y-1 border-l-2 border-muted pl-3">
-                                  {children.map((c, ci) => (
-                                    <div
-                                      key={c.id}
-                                      className="text-xs text-muted-foreground flex items-center gap-1.5"
-                                    >
-                                      <span className="flex-1 truncate">
-                                        {ci + 1}. [{tr(QTYPE_LABEL[c.type])}] {c.stem}
-                                      </span>
-                                      {(isSuper || canManage) && (
-                                        <EditQuestionDialog
-                                          question={c}
-                                          rotations={rotations}
-                                          folders={folders}
-                                          onSaved={load}
-                                        />
-                                      )}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
+                              {q.type === "cas_clinique" &&
+                                (children.length > 0 || canDropHere(q)) && (
+                                  <div className="mt-2 space-y-1 border-l-2 border-muted pl-3">
+                                    {children.map((c, ci) => (
+                                      <div
+                                        key={c.id}
+                                        className="text-xs text-muted-foreground flex items-center gap-1.5"
+                                      >
+                                        {canManage && isMovable(c) && (
+                                          <span
+                                            {...gripProps(c)}
+                                            className="cursor-grab active:cursor-grabbing"
+                                            title={tr("Glisser vers un autre cas clinique")}
+                                          >
+                                            <GripVertical className="h-3.5 w-3.5" />
+                                          </span>
+                                        )}
+                                        <span className="flex-1 truncate">
+                                          {ci + 1}. [{tr(QTYPE_LABEL[c.type])}] {c.stem}
+                                        </span>
+                                        {canManage && isMovable(c) && (
+                                          <MoveMenu
+                                            question={c}
+                                            cases={caseParents}
+                                            caseNumbers={allCaseNumbers}
+                                            onMove={moveToCase}
+                                          />
+                                        )}
+                                        {(isSuper || canManage) && (
+                                          <EditQuestionDialog
+                                            question={c}
+                                            rotations={rotations}
+                                            folders={folders}
+                                            onSaved={load}
+                                          />
+                                        )}
+                                      </div>
+                                    ))}
+                                    {/* Only while a legal drag is in flight — a case with no
+                                        questions has nothing to drop onto otherwise. */}
+                                    {canDropHere(q) && (
+                                      <div className="rounded border border-dashed px-2 py-1 text-[11px] text-muted-foreground">
+                                        {tr("Déposer ici pour ajouter à ce cas clinique")}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                             </div>
                           );
                         })}
