@@ -80,11 +80,13 @@ import { parseQuestionsJson } from "@/lib/structuredImport";
 import { isRetryable, retryDelays, pickConcurrency, currentConnection } from "@/lib/retry";
 import { useScreenWakeLock } from "@/hooks/use-wake-lock";
 import {
+  cancelConversionJob,
   createConversionJob,
   getConversionJob,
   runConversionJob,
   listConversionJobs,
 } from "@/lib/conversionJobs.functions";
+import { canCancel, isTerminal } from "@/lib/conversionJobs";
 import {
   toJsonObjects,
   caseHintsOnLead,
@@ -1334,14 +1336,16 @@ function BackgroundJobCard({
   recent,
   onOpen,
   onResume,
+  onCancel,
 }: {
   job: JobSnapshot | null;
   recent: RecentJob[];
   onOpen: (id: string) => void;
   onResume: () => void;
+  onCancel: () => void;
 }) {
   const { tr } = useI18n();
-  const others = recent.filter((r) => r.id !== job?.id && r.status !== "done");
+  const others = recent.filter((r) => r.id !== job?.id && !isTerminal(r.status));
   if (!job && !others.length) return null;
   const pct = job && job.totalPages ? Math.round((job.donePages / job.totalPages) * 100) : 0;
   return (
@@ -1355,21 +1359,34 @@ function BackgroundJobCard({
                 ? tr("Terminée")
                 : job.status === "error"
                   ? tr("Échec")
-                  : tr("En cours")}
+                  : job.status === "cancelled"
+                    ? tr("Annulée")
+                    : tr("En cours")}
             </Badge>
             {job.status !== "done" && job.status !== "error" && (
               <span className="text-xs text-muted-foreground">
                 {job.donePages}/{job.totalPages || "?"} {tr("page(s)")}
               </span>
             )}
-            {job.status !== "done" && (
+            {!isTerminal(job.status) && (
               <Button size="sm" variant="ghost" className="ml-auto h-7" onClick={onResume}>
                 <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
                 {tr("Relancer")}
               </Button>
             )}
+            {canCancel(job.status) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-destructive hover:text-destructive"
+                onClick={onCancel}
+              >
+                <X className="mr-1.5 h-3.5 w-3.5" />
+                {tr("Annuler")}
+              </Button>
+            )}
           </div>
-          {job.totalPages > 0 && job.status !== "done" && (
+          {job.totalPages > 0 && !isTerminal(job.status) && (
             <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
               <div className="h-full bg-primary transition-all" style={{ width: `${pct}%` }} />
             </div>
@@ -1426,6 +1443,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const runJob = useServerFn(runConversionJob);
   const readJob = useServerFn(getConversionJob);
   const listJobs = useServerFn(listConversionJobs);
+  const cancelJob = useServerFn(cancelConversionJob);
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<JobSnapshot | null>(null);
   const [recentJobs, setRecentJobs] = useState<RecentJob[]>([]);
@@ -1762,6 +1780,21 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     void runJob({ data: { jobId: id } }).catch(() => {});
   };
 
+  const cancelBackgroundJob = async (id: string) => {
+    try {
+      const { cancelled } = await cancelJob({ data: { jobId: id } });
+      toast[cancelled ? "success" : "info"](
+        cancelled ? tr("Conversion annulée") : tr("La conversion était déjà terminée"),
+      );
+      // Show the outcome straight away rather than waiting for the next poll.
+      const snapshot = (await readJob({ data: { jobId: id } })) as JobSnapshot;
+      setJob(snapshot);
+      void refreshJobs();
+    } catch (e) {
+      toast.error(friendlyError(e, tr));
+    }
+  };
+
   const refreshJobs = async () => {
     try {
       const { jobs } = await listJobs({ data: undefined });
@@ -1832,6 +1865,9 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           toast.error(snapshot.error ?? tr("Échec de la conversion"));
           return;
         }
+        // Cancelled counts as finished: stop watching, and above all stop
+        // starting new passes.
+        if (isTerminal(snapshot.status)) return;
         if (snapshot.resumable) kickJob(jobId);
       } catch {
         // A poll that fails (the phone is offline for a moment) is not a
@@ -2017,6 +2053,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             setJob(null);
           }}
           onResume={() => jobId && kickJob(jobId)}
+          onCancel={() => jobId && cancelBackgroundJob(jobId)}
         />
         <StepProgress
           phase={phase}

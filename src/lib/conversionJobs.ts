@@ -118,3 +118,13 @@ export function statusAfterPass(
   if (totalPages > 0 && read >= totalPages) return "done";
   return progressed ? "running" : "done";
 }
+
+/** A job nobody will touch again: finished, failed, or cancelled. */
+export function isTerminal(status: string): boolean {
+  return status === "done" || status === "error" || status === "cancelled";
+}
+
+/** Only work that is still in flight can be called off. */
+export function canCancel(status: string): boolean {
+  return status === "pending" || status === "running";
+}

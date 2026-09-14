@@ -3,6 +3,8 @@ import { describe, test } from "node:test";
 import type { ExtractedQ } from "./questions.functions";
 import {
   applyPage,
+  canCancel,
+  isTerminal,
   flattenQuestions,
   JOB_DEADLINE_MARGIN_MS,
   leaseExpired,
@@ -160,5 +162,25 @@ describe("statusAfterPass", () => {
   test("a pass that read nothing ends the job rather than looping", () => {
     assert.equal(statusAfterPass(2, [page(0, [])], [0], false), "done");
     assert.equal(statusAfterPass(0, [], [], false), "done");
+  });
+});
+
+describe("job status rules", () => {
+  test("only work still in flight can be cancelled", () => {
+    assert.equal(canCancel("pending"), true);
+    assert.equal(canCancel("running"), true);
+    assert.equal(canCancel("done"), false);
+    assert.equal(canCancel("error"), false);
+    assert.equal(canCancel("cancelled"), false, "cancelling twice is not a thing");
+  });
+
+  // The watcher keeps polling and re-kicking while a job is not terminal, so
+  // a cancelled job has to count as finished or it would be resumed.
+  test("cancelled counts as finished, like done and error", () => {
+    assert.equal(isTerminal("cancelled"), true);
+    assert.equal(isTerminal("done"), true);
+    assert.equal(isTerminal("error"), true);
+    assert.equal(isTerminal("running"), false);
+    assert.equal(isTerminal("pending"), false);
   });
 });
