@@ -31,6 +31,7 @@ import {
   Sparkles,
   ListChecks,
   Plus,
+  RefreshCw,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -75,6 +76,8 @@ import { importQuestionsToModule, type ImportableQuestion } from "@/lib/importQu
 import { MultiSearchableSelect } from "@/components/ui/multi-searchable-select";
 import type { SearchableOption } from "@/components/ui/searchable-select";
 import { parseQuestionsJson } from "@/lib/structuredImport";
+import { isRetryable, retryDelays, pickConcurrency, currentConnection } from "@/lib/retry";
+import { useScreenWakeLock } from "@/hooks/use-wake-lock";
 import {
   toJsonObjects,
   caseHintsOnLead,
@@ -444,15 +447,14 @@ const MAX_REFERENCE_FILES = 10;
  *  as a bare "Failed to fetch" TypeError from the browser) with backoff. Server
  *  errors that actually reached the backend are not retried here — the server
  *  functions already retry AI-transient failures themselves. */
-async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, cancelled?: () => boolean): Promise<T> {
+  const delays = retryDelays();
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
     } catch (e: any) {
-      const isNetworkError =
-        e instanceof TypeError || /failed to fetch|network/i.test(String(e?.message ?? ""));
-      if (!isNetworkError || attempt >= retries) throw e;
-      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      if (attempt >= delays.length || !isRetryable(e, cancelled?.() ?? false)) throw e;
+      await new Promise((r) => setTimeout(r, delays[attempt]));
     }
   }
 }
@@ -1275,9 +1277,10 @@ async function countQuestionsPerPage(bytes: ArrayBuffer): Promise<number[]> {
       import("@/lib/pdfText"),
       import("@/lib/questionChunks"),
     ]);
-    // extractPdfText transfers the buffer to the pdf.js worker; hand it a copy
-    // so the caller can still use the original for splitting.
-    const { pages, scannedPages } = await extractPdfText(bytes.slice(0));
+    // The buffer is consumed here: extractPdfText transfers it to the pdf.js
+    // worker, so the caller must be done with it (step 1 re-reads the file
+    // for the split rather than keeping a second copy alive).
+    const { pages, scannedPages } = await extractPdfText(bytes);
     const scanned = new Set(scannedPages);
     return pages.map((text, i) => (scanned.has(i) ? 0 : countQuestions(textToHtml(text))));
   } catch {
@@ -1285,6 +1288,9 @@ async function countQuestionsPerPage(bytes: ArrayBuffer): Promise<number[]> {
     return [];
   }
 }
+
+/** What one page's extraction call gives back. */
+type PageResult = { questions: ExtractedQ[]; warning?: string };
 
 type DocxResult = {
   base64: string;
@@ -1301,6 +1307,11 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const { hint, setHint, saveHint } = useSavedHint("step1", tr);
   const [uploading, setUploading] = useState(false);
   const [prepared, setPrepared] = useState<PdfChunkJob[] | null>(null);
+  /** One entry per prepared page: its extraction, or null when it failed. */
+  const [pageResults, setPageResults] = useState<(PageResult | null)[] | null>(null);
+  /** Indices into `prepared` whose page failed and can be retried on its own. */
+  const [failedPages, setFailedPages] = useState<number[]>([]);
+  const wakeLock = useScreenWakeLock();
   const [busy, setBusy] = useState<"extract" | "generate" | null>(null);
   const [extracted, setExtracted] = useState<ExtractedQ[] | null>(null);
   const [chunkWarnings, setChunkWarnings] = useState<{ filename: string; warning: string }[]>([]);
@@ -1339,23 +1350,32 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         // Yield before the first heavy step so the phase above actually
         // paints: every step from here on holds the main thread.
         await yieldToBrowser();
-        const bytes = await file.arrayBuffer();
-        // One page per call, plus the preceding page as context only, so a
-        // clinical case whose vignette starts on the previous page is still
-        // visible to the call that handles its continuation questions.
-        setPhase(`${tr("Découpage des pages")}${label}`);
-        const split = await splitPdfIntoPageChunks(bytes, 1, 1, {
-          onProgress: (done, total) => setProgress({ done, total }),
-        });
-        const chunks = split.chunks;
         // A text-based PDF gives a real per-page question count — a far better
         // completeness anchor than the model's own self-report, which tends to
         // under-count exactly when it has overlooked a question. Scanned pages
         // have no text layer, so they keep the self-reported behaviour (0).
+        //
+        // This runs FIRST, on a buffer nothing else holds: pdf.js transfers it
+        // to its worker, so reading the file again afterwards costs one read
+        // instead of keeping a second full copy of the PDF alive next to the
+        // first — which is what used to put three copies of a 30 MB scan in a
+        // phone's memory before a single request went out.
         setPhase(`${tr("Analyse du texte")}${label}`);
+        const expectedPerPage = await countQuestionsPerPage(await file.arrayBuffer());
         setProgress(null);
         await yieldToBrowser();
-        const expectedPerPage = await countQuestionsPerPage(bytes);
+        // One page per call, plus the preceding page as context only, so a
+        // clinical case whose vignette starts on the previous page is still
+        // visible to the call that handles its continuation questions.
+        //
+        // Read inline rather than into a local: nothing after the split needs
+        // the whole file, so the browser can drop those bytes as soon as it
+        // returns instead of holding them for the rest of the upload.
+        setPhase(`${tr("Découpage des pages")}${label}`);
+        const split = await splitPdfIntoPageChunks(await file.arrayBuffer(), 1, 1, {
+          onProgress: (done, total) => setProgress({ done, total }),
+        });
+        const chunks = split.chunks;
 
         // Extracting a page with pdf-lib copies every resource it references,
         // so for a PDF that shares one image pool across pages a single-page
@@ -1370,7 +1390,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           setProgress(null);
           await yieldToBrowser();
           const { renderPdfPages } = await import("@/lib/pdfText");
-          rendered = await renderPdfPages(bytes.slice(0), {
+          rendered = await renderPdfPages(await file.arrayBuffer(), {
             maxBytes: 1_200_000,
             onProgress: (done, total) => setProgress({ done, total }),
           });
@@ -1453,57 +1473,75 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     }
   };
 
-  const extract = async () => {
-    if (!prepared) return;
+  /** One page's extraction, as a call. */
+  const callForJob = (job: PdfChunkJob, signal: AbortSignal) =>
+    // Pages whose sub-PDF was too large to send were re-rendered at upload
+    // time and go through the image path instead.
+    job.imageDataUrl
+      ? extractImage({
+          data: {
+            imageDataUrl: job.imageDataUrl,
+            contextImageDataUrl: job.contextImageDataUrl,
+            detectCases: true,
+            hint: hint.trim() || undefined,
+            expected: job.expected,
+          },
+          signal,
+        })
+      : extractPdfChunk({
+          data: {
+            pdfDataUrl: job.dataUrl,
+            filename: job.filename,
+            detectCases: true,
+            hint: hint.trim() || undefined,
+            contextPages: job.contextPages,
+            expected: job.expected,
+          },
+          signal,
+        });
+
+  /**
+   * Run the given pages and fold their results into `previous`.
+   *
+   * A page that fails after its retries is recorded and skipped, never thrown:
+   * on a phone one dropped upload used to reject the whole run and discard
+   * every page already converted. The failures come back as a list the admin
+   * can retry on its own.
+   */
+  const runPages = async (indices: number[], previous: (PageResult | null)[]) => {
+    if (!prepared || !indices.length) return;
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy("extract");
-    setExtracted(null);
-    setChunkWarnings([]);
-    setResult(null);
-    setFileGroups(null);
-    setGroupResults({});
     setProgress(null);
+    wakeLock.acquire();
+    const results = previous.slice();
+    const failed: number[] = [];
     try {
-      // Fire every PDF chunk at once instead of one at a time — this is the
-      // main driver of wall-clock time for a multi-page/multi-file upload.
-      // Each chunk also retries on a dropped connection (common on mobile).
       setPhase(tr("Extraction des questions"));
-      const parts = await withProgress(
-        prepared.map(
-          (job) => () =>
-            withRetry(() =>
-              // Pages whose sub-PDF was too large to send were re-rendered at
-              // upload time and go through the image path instead.
-              job.imageDataUrl
-                ? extractImage({
-                    data: {
-                      imageDataUrl: job.imageDataUrl,
-                      contextImageDataUrl: job.contextImageDataUrl,
-                      detectCases: true,
-                      hint: hint.trim() || undefined,
-                      expected: job.expected,
-                    },
-                    signal: controller.signal,
-                  })
-                : extractPdfChunk({
-                    data: {
-                      pdfDataUrl: job.dataUrl,
-                      filename: job.filename,
-                      detectCases: true,
-                      hint: hint.trim() || undefined,
-                      contextPages: job.contextPages,
-                      expected: job.expected,
-                    },
-                    signal: controller.signal,
-                  }),
-            ),
-        ),
+      await withProgress(
+        indices.map((idx) => async () => {
+          try {
+            results[idx] = await withRetry(
+              () => callForJob(prepared[idx], controller.signal),
+              () => controller.signal.aborted,
+            );
+          } catch (e) {
+            if (controller.signal.aborted) throw e; // the admin cancelled
+            results[idx] = null;
+            failed.push(idx);
+          }
+        }),
         setProgress,
-        2,
+        // More in flight when the connection says it can take it; two on a
+        // slow or metered one, which is what every device used to get.
+        pickConcurrency(currentConnection()),
         controller.signal,
       );
       if (controller.signal.aborted) return;
+      setPageResults(results);
+      setFailedPages(failed.sort((a, b) => a - b));
+
       // Carry a clinical-case vignette across a page break. The model is given
       // the previous page as context and asked to recopy the vignette itself,
       // but when it only manages to flag the continuation we fill the vignette
@@ -1511,7 +1549,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       let lastCaseStem: string | null = null;
       let lastCaseFile: number | null = null;
       const stitched: ExtractedQ[][] = prepared.map((job, i) => {
-        const questions = parts[i].questions.map((q) => {
+        const questions = (results[i]?.questions ?? []).map((q) => {
           if (q.case_stem) return q;
           if (q.continues_previous_page && lastCaseFile === job.fileIndex && lastCaseStem) {
             return { ...q, case_stem: lastCaseStem };
@@ -1541,32 +1579,63 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       const all: ExtractedQ[] = [...byFile.entries()]
         .sort((a, b) => a[0] - b[0])
         .flatMap(([, qs]) => qs);
-      if (!all.length) throw new Error(tr("Aucune question détectée"));
+      if (!all.length && !failed.length) throw new Error(tr("Aucune question détectée"));
       // A chunk's own self-check + automatic re-split (server-side) already
       // recovers most shortfalls — this only fires for whatever's left over
       // (e.g. a genuinely illegible single page), so the admin isn't ever
       // told a file is complete when a page may still be missing questions.
       const warnings = prepared
         .map((job, i) =>
-          parts[i].warning ? { filename: job.filename, warning: parts[i].warning! } : null,
+          results[i]?.warning ? { filename: job.filename, warning: results[i]!.warning! } : null,
         )
         .filter((w): w is { filename: string; warning: string } => w != null);
-      setExtracted(all);
-      setFileGroups(files.map((f, i) => ({ filename: f.name, items: byFile.get(i) ?? [] })));
+      // Null, not an empty list, when every page failed: an empty preview
+      // editor under the failure card would just be noise.
+      setExtracted(all.length ? all : null);
+      setFileGroups(
+        all.length ? files.map((f, i) => ({ filename: f.name, items: byFile.get(i) ?? [] })) : null,
+      );
       setChunkWarnings(warnings);
-      toast.success(`${all.length} ${tr("question(s) extraites — vérifiez avant de générer.")}`);
+      if (all.length) {
+        toast.success(`${all.length} ${tr("question(s) extraites — vérifiez avant de générer.")}`);
+      }
       if (warnings.length) {
         toast.warning(
           `${warnings.length} ${tr("page(s)/lot(s) possiblement incomplet(s) — voir le détail ci-dessous.")}`,
         );
       }
+      if (failed.length) {
+        toast.error(`${failed.length} ${tr("page(s) non converties — réessayez-les ci-dessous.")}`);
+      }
     } catch (e: any) {
       if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
     } finally {
+      wakeLock.release();
       setBusy(null);
       setPhase(null);
       setProgress(null);
     }
+  };
+
+  const extract = async () => {
+    if (!prepared) return;
+    setExtracted(null);
+    setChunkWarnings([]);
+    setResult(null);
+    setFileGroups(null);
+    setGroupResults({});
+    setFailedPages([]);
+    setPageResults(null);
+    await runPages(
+      prepared.map((_, i) => i),
+      prepared.map(() => null),
+    );
+  };
+
+  /** Re-run only the pages that failed, keeping everything already converted. */
+  const retryFailedPages = async () => {
+    if (!prepared || !failedPages.length) return;
+    await runPages(failedPages, pageResults ?? prepared.map(() => null));
   };
 
   const generate = async () => {
@@ -1772,6 +1841,18 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           <p className="text-sm text-muted-foreground">
             {prepared.length} {tr("page(s)/lot(s) prêt(s) — cliquez sur Extraire.")}
           </p>
+        )}
+        {failedPages.length > 0 && busy === null && (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+            <span className="flex-1">
+              {failedPages.length}{" "}
+              {tr("page(s) n'ont pas pu être converties (connexion). Les autres sont conservées.")}
+            </span>
+            <Button size="sm" variant="outline" onClick={retryFailedPages}>
+              <RefreshCw className="mr-1.5 h-4 w-4" />
+              {tr("Réessayer ces pages")}
+            </Button>
+          </div>
         )}
         {extracted && busy !== "extract" && (
           <div className="space-y-3">
