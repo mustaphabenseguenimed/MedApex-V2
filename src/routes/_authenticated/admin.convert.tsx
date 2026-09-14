@@ -31,6 +31,7 @@ import {
   Sparkles,
   ListChecks,
   Plus,
+  CloudUpload,
   RefreshCw,
   X,
 } from "lucide-react";
@@ -78,6 +79,12 @@ import type { SearchableOption } from "@/components/ui/searchable-select";
 import { parseQuestionsJson } from "@/lib/structuredImport";
 import { isRetryable, retryDelays, pickConcurrency, currentConnection } from "@/lib/retry";
 import { useScreenWakeLock } from "@/hooks/use-wake-lock";
+import {
+  createConversionJob,
+  getConversionJob,
+  runConversionJob,
+  listConversionJobs,
+} from "@/lib/conversionJobs.functions";
 import {
   toJsonObjects,
   caseHintsOnLead,
@@ -1292,11 +1299,110 @@ async function countQuestionsPerPage(bytes: ArrayBuffer): Promise<number[]> {
 /** What one page's extraction call gives back. */
 type PageResult = { questions: ExtractedQ[]; warning?: string };
 
+/** A background conversion as the page renders it. */
+type JobSnapshot = {
+  id: string;
+  filename: string;
+  status: string;
+  totalPages: number;
+  donePages: number;
+  failedPages: number[];
+  error: string | null;
+  resumable: boolean;
+  questions: ExtractedQ[];
+  warnings: { filename: string; warning: string }[];
+};
+type RecentJob = {
+  id: string;
+  filename: string;
+  status: string;
+  totalPages: number;
+  donePages: number;
+  createdAt: string;
+};
+
 type DocxResult = {
   base64: string;
   count: number;
   warnings?: { filename: string; warning: string }[];
 };
+
+/** The state of a server-side conversion, plus the ones still running so a
+ *  job started on a phone can be picked up from another device. */
+function BackgroundJobCard({
+  job,
+  recent,
+  onOpen,
+  onResume,
+}: {
+  job: JobSnapshot | null;
+  recent: RecentJob[];
+  onOpen: (id: string) => void;
+  onResume: () => void;
+}) {
+  const { tr } = useI18n();
+  const others = recent.filter((r) => r.id !== job?.id && r.status !== "done");
+  if (!job && !others.length) return null;
+  const pct = job && job.totalPages ? Math.round((job.donePages / job.totalPages) * 100) : 0;
+  return (
+    <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-sm">
+      {job && (
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">{job.filename}</span>
+            <Badge variant={job.status === "error" ? "destructive" : "secondary"}>
+              {job.status === "done"
+                ? tr("Terminée")
+                : job.status === "error"
+                  ? tr("Échec")
+                  : tr("En cours")}
+            </Badge>
+            {job.status !== "done" && job.status !== "error" && (
+              <span className="text-xs text-muted-foreground">
+                {job.donePages}/{job.totalPages || "?"} {tr("page(s)")}
+              </span>
+            )}
+            {job.status !== "done" && (
+              <Button size="sm" variant="ghost" className="ml-auto h-7" onClick={onResume}>
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                {tr("Relancer")}
+              </Button>
+            )}
+          </div>
+          {job.totalPages > 0 && job.status !== "done" && (
+            <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
+              <div className="h-full bg-primary transition-all" style={{ width: `${pct}%` }} />
+            </div>
+          )}
+          {job.failedPages.length > 0 && (
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              {job.failedPages.length}{" "}
+              {tr("page(s) en échec — « Relancer » les reprend, les autres sont conservées.")}
+            </p>
+          )}
+          {job.error && <p className="text-xs text-destructive">{job.error}</p>}
+        </div>
+      )}
+      {others.length > 0 && (
+        <div className="space-y-1 border-t pt-2">
+          <p className="text-xs text-muted-foreground">{tr("Conversions en cours")}</p>
+          {others.map((r) => (
+            <button
+              key={r.id}
+              onClick={() => onOpen(r.id)}
+              className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-accent"
+            >
+              <span className="flex-1 truncate">{r.filename}</span>
+              <span className="text-muted-foreground">
+                {r.donePages}/{r.totalPages || "?"}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const { tr } = useI18n();
@@ -1312,6 +1418,17 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   /** Indices into `prepared` whose page failed and can be retried on its own. */
   const [failedPages, setFailedPages] = useState<number[]>([]);
   const wakeLock = useScreenWakeLock();
+
+  // ---- background conversion ------------------------------------------------
+  // The in-page path above dies with the tab; this one hands the PDF to the
+  // server and just watches the job, so a pocketed phone keeps converting.
+  const createJob = useServerFn(createConversionJob);
+  const runJob = useServerFn(runConversionJob);
+  const readJob = useServerFn(getConversionJob);
+  const listJobs = useServerFn(listConversionJobs);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [job, setJob] = useState<JobSnapshot | null>(null);
+  const [recentJobs, setRecentJobs] = useState<RecentJob[]>([]);
   const [busy, setBusy] = useState<"extract" | "generate" | null>(null);
   const [extracted, setExtracted] = useState<ExtractedQ[] | null>(null);
   const [chunkWarnings, setChunkWarnings] = useState<{ filename: string; warning: string }[]>([]);
@@ -1638,6 +1755,103 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     await runPages(failedPages, pageResults ?? prepared.map(() => null));
   };
 
+  /** Nudge the server to work on a job; the request holds open for minutes,
+   *  which is the point — the conversion continues even if this page goes
+   *  away. Failures are recorded on the row, so nothing is reported here. */
+  const kickJob = (id: string) => {
+    void runJob({ data: { jobId: id } }).catch(() => {});
+  };
+
+  const refreshJobs = async () => {
+    try {
+      const { jobs } = await listJobs({ data: undefined });
+      setRecentJobs(jobs);
+    } catch {
+      // The list is a convenience; its absence must not break the panel.
+    }
+  };
+
+  /** Upload the PDF straight to storage and let the server convert it. */
+  const startBackgroundJob = async () => {
+    if (!files.length) {
+      toast.error(tr("Ajoutez un fichier PDF"));
+      return;
+    }
+    const file = files[0];
+    setUploading(true);
+    try {
+      setPhase(tr("Envoi du fichier"));
+      // Straight to the bucket, not through a server function: the platform
+      // caps a request body at a few megabytes, and this is the whole PDF.
+      const path = `jobs/${crypto.randomUUID()}.pdf`;
+      const { error } = await supabase.storage
+        .from("conversion-library")
+        .upload(path, file, { contentType: "application/pdf" });
+      if (error) throw new Error(error.message);
+      const { jobId: id } = await createJob({
+        data: { storagePath: path, filename: file.name, hint: hint.trim() || undefined },
+      });
+      setJobId(id);
+      setJob(null);
+      kickJob(id);
+      toast.success(tr("Conversion lancée — vous pouvez verrouiller le téléphone."));
+      if (files.length > 1) {
+        toast.info(tr("La conversion en arrière-plan traite un fichier à la fois."));
+      }
+      void refreshJobs();
+    } catch (e) {
+      toast.error(friendlyError(e, tr));
+    } finally {
+      setUploading(false);
+      setPhase(null);
+    }
+  };
+
+  // Watch the job until it finishes, and restart a pass whenever one ended
+  // with pages left (an invocation has a ceiling; the row carries the cursor).
+  useEffect(() => {
+    if (!jobId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      try {
+        const snapshot = (await readJob({ data: { jobId } })) as JobSnapshot;
+        if (stopped) return;
+        setJob(snapshot);
+        if (snapshot.status === "done") {
+          setExtracted(withoutRotationHints(snapshot.questions));
+          setFileGroups(null);
+          setChunkWarnings(snapshot.warnings);
+          toast.success(
+            `${snapshot.questions.length} ${tr("question(s) extraites — vérifiez avant de générer.")}`,
+          );
+          void refreshJobs();
+          return;
+        }
+        if (snapshot.status === "error") {
+          toast.error(snapshot.error ?? tr("Échec de la conversion"));
+          return;
+        }
+        if (snapshot.resumable) kickJob(jobId);
+      } catch {
+        // A poll that fails (the phone is offline for a moment) is not a
+        // failure of the job: keep watching.
+      }
+      if (!stopped) timer = setTimeout(tick, 5000);
+    };
+    timer = setTimeout(tick, 2000);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
+
+  useEffect(() => {
+    void refreshJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const generate = async () => {
     if (!extracted || !extracted.length) return;
     const controller = new AbortController();
@@ -1781,7 +1995,29 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             )}
             {tr("Extraire les questions")}
           </Button>
+          <Button
+            variant="secondary"
+            onClick={startBackgroundJob}
+            disabled={uploading || busy !== null || !files.length}
+          >
+            <CloudUpload className="mr-1.5 h-4 w-4" />
+            {tr("Convertir en arrière-plan")}
+          </Button>
         </div>
+        <p className="text-xs text-muted-foreground">
+          {tr(
+            "En arrière-plan : le fichier est envoyé une fois et converti sur le serveur — vous pouvez verrouiller le téléphone ou fermer l'onglet, et revenir plus tard.",
+          )}
+        </p>
+        <BackgroundJobCard
+          job={job}
+          recent={recentJobs}
+          onOpen={(id) => {
+            setJobId(id);
+            setJob(null);
+          }}
+          onResume={() => jobId && kickJob(jobId)}
+        />
         <StepProgress
           phase={phase}
           progress={progress}

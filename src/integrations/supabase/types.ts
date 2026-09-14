@@ -139,6 +139,57 @@ export type Database = {
           },
         ];
       };
+      conversion_jobs: {
+        Row: {
+          created_at: string;
+          created_by: string;
+          done_pages: number;
+          error: string | null;
+          failed_pages: number[];
+          filename: string;
+          hint: string | null;
+          id: string;
+          lease_until: string | null;
+          pages: Json;
+          status: string;
+          storage_path: string;
+          total_pages: number;
+          updated_at: string;
+        };
+        Insert: {
+          created_at?: string;
+          created_by: string;
+          done_pages?: number;
+          error?: string | null;
+          failed_pages?: number[];
+          filename: string;
+          hint?: string | null;
+          id?: string;
+          lease_until?: string | null;
+          pages?: Json;
+          status?: string;
+          storage_path: string;
+          total_pages?: number;
+          updated_at?: string;
+        };
+        Update: {
+          created_at?: string;
+          created_by?: string;
+          done_pages?: number;
+          error?: string | null;
+          failed_pages?: number[];
+          filename?: string;
+          hint?: string | null;
+          id?: string;
+          lease_until?: string | null;
+          pages?: Json;
+          status?: string;
+          storage_path?: string;
+          total_pages?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       flashcards: {
         Row: {
           back: string;
