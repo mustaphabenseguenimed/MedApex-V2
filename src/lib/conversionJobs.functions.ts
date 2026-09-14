@@ -158,6 +158,33 @@ export const listConversionJobs = createServerFn({ method: "POST" })
   });
 
 /**
+ * Call off a conversion that is still running.
+ *
+ * The row is the only thing a worker and the page share, so cancelling is a
+ * write to it: the worker checks between pages and stops, and the claim in
+ * `runConversionJob` only accepts pending or running, so nothing picks it up
+ * afterwards. Pages already read stay on the row.
+ */
+export const cancelConversionJob = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) => z.object({ jobId: z.string().uuid() }).parse(input))
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    await assertAdminPermission(supabase, userId, "manage_quiz");
+    const { data: row, error } = await supabase
+      .from("conversion_jobs")
+      .update({ status: "cancelled", lease_until: null, updated_at: nowIso() })
+      .eq("id", data.jobId)
+      .in("status", ["pending", "running"])
+      .select("id")
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    // Not an error: the job finished (or was already cancelled) while the
+    // click was in flight.
+    return { cancelled: !!row };
+  });
+
+/**
  * Convert as many pages as this invocation has time for.
  *
  * Claims the job first: a lease keeps two callers (the phone and a laptop,
@@ -242,6 +269,8 @@ export const runConversionJob = createServerFn({ method: "POST" })
           status: "running",
           lease: leaseIso(),
         });
+        // The page can call the job off mid-run; the row is where it says so.
+        if (await wasCancelled(supabase, job.id)) return { claimed: true, status: "cancelled" };
       }
 
       const status = statusAfterPass(totalPages, pages, failed, progressed);
@@ -264,7 +293,8 @@ export const runConversionJob = createServerFn({ method: "POST" })
           lease_until: null,
           updated_at: nowIso(),
         })
-        .eq("id", job.id);
+        .eq("id", job.id)
+        .in("status", ["pending", "running"]);
       throw e;
     }
   });
@@ -299,5 +329,18 @@ async function saveProgress(
       lease_until: state.lease,
       updated_at: nowIso(),
     })
-    .eq("id", jobId);
+    .eq("id", jobId)
+    // Only ever writes over work in flight: a job cancelled while this page
+    // was being read must not be flipped back to running or done.
+    .in("status", ["pending", "running"]);
+}
+
+/** Has the page called this job off since the last page? */
+async function wasCancelled(supabase: Db, jobId: string): Promise<boolean> {
+  const { data } = await supabase
+    .from("conversion_jobs")
+    .select("status")
+    .eq("id", jobId)
+    .maybeSingle();
+  return data?.status === "cancelled";
 }
