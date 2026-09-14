@@ -85,21 +85,33 @@ export const MAX_CHUNK_DATA_URL = 3_500_000;
  * still make one page's copy as large as the whole document, which is what
  * the splitter's first-chunk probe catches.
  */
-export function pdfSplitWouldExceedBudget(byteLength: number, pageCount: number): boolean {
-  return ((byteLength / Math.max(1, pageCount)) * 4) / 3 > MAX_CHUNK_DATA_URL;
+export function pdfSplitWouldExceedBudget(
+  byteLength: number,
+  pageCount: number,
+  maxDataUrl = MAX_CHUNK_DATA_URL,
+): boolean {
+  return ((byteLength / Math.max(1, pageCount)) * 4) / 3 > maxDataUrl;
 }
 
 export async function splitPdfIntoPageChunks(
   bytes: ArrayBuffer,
   pagesPerChunk = 3,
   contextPages = 0,
-  opts?: { onProgress?: (done: number, total: number) => void },
+  opts?: {
+    onProgress?: (done: number, total: number) => void;
+    /** Ceiling for one chunk's data URL. The default is the browser→server
+     *  request budget; the background worker splits on the server, where the
+     *  only ceiling that matters is what the model accepts inline, so it
+     *  passes a far larger one and never has to fall back to page images. */
+    maxDataUrl?: number;
+  },
 ): Promise<PdfSplit> {
+  const maxDataUrl = opts?.maxDataUrl ?? MAX_CHUNK_DATA_URL;
   const { PDFDocument } = await import("pdf-lib");
   const src = await PDFDocument.load(bytes);
   const totalPages = src.getPageCount();
 
-  if (pdfSplitWouldExceedBudget(bytes.byteLength, totalPages)) {
+  if (pdfSplitWouldExceedBudget(bytes.byteLength, totalPages, maxDataUrl)) {
     return { chunks: [], tooHeavyToSplit: true, totalPages };
   }
 
@@ -122,7 +134,7 @@ export async function splitPdfIntoPageChunks(
 
     let from = ctxStart;
     let dataUrl = await build(from, end);
-    if (from < start && dataUrl.length > MAX_CHUNK_DATA_URL) {
+    if (from < start && dataUrl.length > maxDataUrl) {
       // Too heavy with context — fall back to the target pages alone.
       from = start;
       dataUrl = await build(from, end);
@@ -134,7 +146,7 @@ export async function splitPdfIntoPageChunks(
     // large — 40 pages of that is tens of MB of base64 built and thrown away.
     // The caller re-renders such a document as images anyway, so stop here
     // rather than doing the other 39.
-    if (ci === 0 && dataUrl.length > MAX_CHUNK_DATA_URL) {
+    if (ci === 0 && dataUrl.length > maxDataUrl) {
       const encodedWhole = (bytes.byteLength * 4) / 3;
       if (dataUrl.length > encodedWhole * 0.5) {
         return { chunks: [], tooHeavyToSplit: true, totalPages };

@@ -1,4 +1,4 @@
-import { createServerFn } from "@tanstack/react-start";
+import { createServerFn, createServerOnlyFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { generateText, NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
@@ -837,6 +837,47 @@ export const extractQuestionsFromHtmlChunk = createServerFn({ method: "POST" })
     );
   });
 
+/**
+ * Read one PDF chunk (base64, no data-URL prefix) with the model.
+ *
+ * The prompt, the completeness self-check and the automatic re-split all live
+ * in `extractPdfChunkComplete`; this is the single door onto them, used both
+ * by the request below and by the background conversion worker, so neither
+ * carries its own copy of the instructions.
+ *
+ * Marked server-only: a plain exported function here would drag this file's
+ * server imports (the AI provider, its keys) into the client bundle, which
+ * the build refuses outright.
+ */
+export const extractQuestionsFromPdfBase64 = createServerOnlyFn(
+  async function extractFromPdf(opts: {
+    base64: string;
+    filename?: string;
+    hint?: string;
+    detectCases?: boolean;
+    contextPages?: number;
+    expected?: number;
+  }): Promise<ExtractResult> {
+    return extractPdfChunkComplete(
+      (chunkBase64, expected) => [
+        {
+          type: "text",
+          text: INSTRUCTIONS(opts.hint, opts.detectCases ?? true, true, opts.contextPages ?? 0),
+        },
+        { type: "text", text: expectedCountNote(expected) },
+        {
+          type: "file",
+          data: chunkBase64,
+          mediaType: "application/pdf",
+          filename: opts.filename ?? "chunk.pdf",
+        },
+      ],
+      opts.base64,
+      opts.expected ?? 0,
+    );
+  },
+);
+
 /** Extract questions from a single PDF chunk (already split client-side). */
 export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -860,24 +901,14 @@ export const extractQuestionsFromPdfChunk = createServerFn({ method: "POST" })
   )
   .handler(async ({ data, context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
-    const base64 = data.pdfDataUrl.replace(/^data:application\/pdf;base64,/i, "");
-    return extractPdfChunkComplete(
-      (chunkBase64, expected) => [
-        {
-          type: "text",
-          text: INSTRUCTIONS(data.hint, data.detectCases ?? true, true, data.contextPages ?? 0),
-        },
-        { type: "text", text: expectedCountNote(expected) },
-        {
-          type: "file",
-          data: chunkBase64,
-          mediaType: "application/pdf",
-          filename: data.filename ?? "chunk.pdf",
-        },
-      ],
-      base64,
-      data.expected ?? 0,
-    );
+    return extractQuestionsFromPdfBase64({
+      base64: data.pdfDataUrl.replace(/^data:application\/pdf;base64,/i, ""),
+      filename: data.filename,
+      hint: data.hint,
+      detectCases: data.detectCases,
+      contextPages: data.contextPages,
+      expected: data.expected,
+    });
   });
 
 const RotationYearSchema = z.object({
