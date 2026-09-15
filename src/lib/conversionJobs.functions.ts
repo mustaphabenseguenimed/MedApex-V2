@@ -4,7 +4,7 @@ import type { Database } from "@/integrations/supabase/types";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 import { assertAdminPermission } from "./admin-guard";
-import { splitPdfIntoPageChunks } from "./fileUtils";
+import { MAX_SERVER_CHUNK, splitPdfIntoPageChunks } from "./fileUtils";
 import { extractQuestionsFromPdfBase64, type ExtractedQ } from "./questions.functions";
 import {
   applyPage,
@@ -36,15 +36,6 @@ import {
  * next call.
  */
 const WORKER_BUDGET_MS = 240_000;
-
-/**
- * Ceiling for one page's PDF once base64-encoded.
- *
- * Nothing like the browser's 3.5 MB: this chunk goes from our server straight
- * to the model, so the only limit is what it accepts inline. Pages heavier
- * than this are reported rather than silently dropped.
- */
-const MAX_SERVER_CHUNK = 12_000_000;
 
 const BUCKET = "conversion-library";
 

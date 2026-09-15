@@ -62,6 +62,7 @@ import {
   splitPdfIntoPageChunks,
   yieldToBrowser,
   MAX_CHUNK_DATA_URL,
+  MAX_SERVER_CHUNK,
 } from "@/lib/fileUtils";
 import {
   downloadBase64,
@@ -1829,13 +1830,36 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     const file = files[0];
     setUploading(true);
     try {
+      // The worker splits the PDF a page at a time. A scan whose pages share
+      // one image pool defeats that — every single-page copy comes out nearly
+      // as large as the whole file — and the server has no canvas to fall
+      // back on, so it would give up after the upload. Find out here, where a
+      // canvas does exist, by building exactly one page copy.
+      setPhase(tr("Analyse du fichier"));
+      const probe = await splitPdfIntoPageChunks(await file.arrayBuffer(), 1, 1, {
+        maxDataUrl: MAX_SERVER_CHUNK,
+        probeOnly: true,
+      });
+      let upload: Blob = file;
+      if (probe.tooHeavyToSplit) {
+        setPhase(tr("Allègement du fichier"));
+        setProgress(null);
+        await yieldToBrowser();
+        const { lightenPdfToImages } = await import("@/lib/pdfLighten");
+        upload = await lightenPdfToImages(await file.arrayBuffer(), {
+          onProgress: (done, total) => setProgress({ done, total }),
+        });
+        setProgress(null);
+        toast.info(tr("PDF lourd — pages converties en images avant l'envoi."));
+      }
+
       setPhase(tr("Envoi du fichier"));
       // Straight to the bucket, not through a server function: the platform
       // caps a request body at a few megabytes, and this is the whole PDF.
       const path = `jobs/${crypto.randomUUID()}.pdf`;
       const { error } = await supabase.storage
         .from("conversion-library")
-        .upload(path, file, { contentType: "application/pdf" });
+        .upload(path, upload, { contentType: "application/pdf" });
       if (error) throw new Error(error.message);
       const { jobId: id } = await createJob({
         data: { storagePath: path, filename: file.name, hint: hint.trim() || undefined },
@@ -1853,6 +1877,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     } finally {
       setUploading(false);
       setPhase(null);
+      setProgress(null);
     }
   };
 

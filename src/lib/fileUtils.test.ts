@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { arrayBufferToBase64, pdfSplitWouldExceedBudget, MAX_CHUNK_DATA_URL } from "./fileUtils";
+import {
+  arrayBufferToBase64,
+  pdfSplitWouldExceedBudget,
+  splitPdfIntoPageChunks,
+  MAX_CHUNK_DATA_URL,
+  MAX_SERVER_CHUNK,
+} from "./fileUtils";
 
 describe("pdfSplitWouldExceedBudget", () => {
   // Measured, not assumed: a 36 MB scan over 40 pages averages 900 kB a page,
@@ -57,5 +63,53 @@ describe("arrayBufferToBase64", () => {
     const all = new Uint8Array(256);
     for (let i = 0; i < 256; i++) all[i] = i;
     assert.equal(arrayBufferToBase64(all), Buffer.from(all).toString("base64"));
+  });
+});
+
+describe("splitPdfIntoPageChunks probe", () => {
+  /** A small multi-page PDF, built the same way the app builds its own. */
+  const samplePdf = async (pages: number): Promise<ArrayBuffer> => {
+    const { PDFDocument } = await import("pdf-lib");
+    const doc = await PDFDocument.create();
+    for (let i = 0; i < pages; i++) doc.addPage([595, 842]);
+    const bytes = await doc.save();
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  };
+
+  // The point of the probe: the page that uploads to the background worker
+  // needs the verdict, not the chunks, and building forty page copies of a
+  // heavy scan to learn it is exactly what it is avoiding.
+  test("stops after one chunk but still reports the page count", async () => {
+    const bytes = await samplePdf(6);
+    const probe = await splitPdfIntoPageChunks(bytes, 1, 1, {
+      maxDataUrl: MAX_SERVER_CHUNK,
+      probeOnly: true,
+    });
+    assert.equal(probe.totalPages, 6);
+    assert.equal(probe.chunks.length, 1);
+    assert.equal(probe.tooHeavyToSplit, false);
+  });
+
+  test("a full split still returns every page", async () => {
+    const bytes = await samplePdf(6);
+    const split = await splitPdfIntoPageChunks(bytes, 1, 1, { maxDataUrl: MAX_SERVER_CHUNK });
+    assert.equal(split.chunks.length, 6);
+    assert.deepEqual(
+      split.chunks.map((c) => c.firstPageIndex),
+      [0, 1, 2, 3, 4, 5],
+    );
+  });
+
+  // A budget no page can meet is refused before any copy is built, so the
+  // probe answers "too heavy" without the work it exists to avoid.
+  test("an impossible budget is refused outright", async () => {
+    const bytes = await samplePdf(4);
+    const probe = await splitPdfIntoPageChunks(bytes, 1, 1, {
+      maxDataUrl: 10,
+      probeOnly: true,
+    });
+    assert.equal(probe.tooHeavyToSplit, true);
+    assert.deepEqual(probe.chunks, []);
+    assert.equal(probe.totalPages, 4);
   });
 });
