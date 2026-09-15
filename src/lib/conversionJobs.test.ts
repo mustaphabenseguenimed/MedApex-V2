@@ -11,7 +11,9 @@ import {
   pageWarnings,
   pagesToProcess,
   shouldStopForDeadline,
+  sourcePageOf,
   statusAfterPass,
+  withSourcePage,
   type JobPage,
 } from "./conversionJobs";
 
@@ -86,6 +88,60 @@ describe("flattenQuestions", () => {
   test("empty pages contribute nothing", () => {
     assert.deepEqual(flattenQuestions([]), []);
     assert.deepEqual(flattenQuestions([page(0, [])]), []);
+  });
+
+  // The whole point of the stamp: a question can be traced back to its page,
+  // so "the cases came out in the wrong order" can be read off the preview
+  // instead of guessed at.
+  test("stamps each question with the page it was read from", () => {
+    const pages = [page(0, ["a", "b"]), page(2, ["c"])];
+    assert.deepEqual(
+      flattenQuestions(pages).map((x) => [x.stem, x.source_page]),
+      [
+        ["a", 1],
+        ["b", 1],
+        ["c", 3],
+      ],
+    );
+  });
+
+  // A page retried after the ones behind it comes back last but belongs in
+  // its own place — and has to keep its own number there.
+  test("the page number follows the question when a late page is folded in", () => {
+    let pages: JobPage[] = [page(0, ["a"]), page(1, [])];
+    pages = applyPage(pages, page(2, ["c"]));
+    pages = applyPage(pages, page(1, ["b"]));
+    assert.deepEqual(
+      flattenQuestions(pages).map((x) => [x.stem, x.source_page]),
+      [
+        ["a", 1],
+        ["b", 2],
+        ["c", 3],
+      ],
+    );
+  });
+});
+
+describe("source page", () => {
+  test("reads the stamp back off a question", () => {
+    assert.equal(sourcePageOf(withSourcePage(q("a"), 7)), 7);
+  });
+
+  // Steps 2 to 4 hand around questions that were never stamped (a .docx read
+  // back, an edited list); the badge simply has nothing to show for those.
+  test("a question with no stamp has no page", () => {
+    assert.equal(sourcePageOf(q("a")), null);
+    assert.equal(sourcePageOf(null), null);
+    assert.equal(sourcePageOf(undefined), null);
+    assert.equal(sourcePageOf({ source_page: "3" }), null);
+    assert.equal(sourcePageOf({ source_page: Number.NaN }), null);
+  });
+
+  test("stamping leaves the original question untouched", () => {
+    const original = q("a");
+    const stamped = withSourcePage(original, 4);
+    assert.equal(sourcePageOf(original), null);
+    assert.equal(stamped.stem, "a");
   });
 });
 

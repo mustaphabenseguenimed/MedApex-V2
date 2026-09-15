@@ -86,7 +86,7 @@ import {
   runConversionJob,
   listConversionJobs,
 } from "@/lib/conversionJobs.functions";
-import { canCancel, isTerminal } from "@/lib/conversionJobs";
+import { canCancel, isTerminal, sourcePageOf, withSourcePage } from "@/lib/conversionJobs";
 import {
   toJsonObjects,
   caseHintsOnLead,
@@ -793,6 +793,12 @@ function QuestionsPreviewEditor({
                   {q.type.toUpperCase()}
                 </Badge>
                 <span className="text-xs text-muted-foreground">Q{i + 1}</span>
+                {/* Where this question was read from — shown only when the
+                    step carries it (step 1 does), so a question can be traced
+                    back to its page in the source PDF. */}
+                {sourcePageOf(q) !== null && (
+                  <span className="text-xs text-muted-foreground">p. {sourcePageOf(q)}</span>
+                )}
                 {corrected?.has(i) && (
                   <Badge
                     variant="outline"
@@ -1267,6 +1273,9 @@ type PdfChunkJob = {
   contextImageDataUrl?: string;
   filename: string;
   fileIndex: number;
+  /** 0-based page of the source file this chunk extracts from — carried
+   *  through to the preview so a question can be traced back to its page. */
+  pageIndex: number;
   /** Leading pages sent as context only (see splitPdfIntoPageChunks). */
   contextPages: number;
   /** Real question count for this page from the PDF text layer, 0 when the
@@ -1549,6 +1558,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
               contextImageDataUrl: contextImage,
               filename: `${file.name} (p${pageIndex + 1})`,
               fileIndex,
+              pageIndex,
               contextPages: contextImage ? 1 : 0,
               expected: expectedPerPage[pageIndex] ?? 0,
             });
@@ -1573,6 +1583,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             contextImageDataUrl: contextImage,
             filename: `${file.name} (${chunk.label})`,
             fileIndex,
+            pageIndex: chunk.firstPageIndex,
             contextPages: image ? (contextImage ? 1 : 0) : chunk.contextPages,
             expected: expectedPerPage[chunk.firstPageIndex] ?? 0,
           });
@@ -1684,7 +1695,12 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       let lastCaseStem: string | null = null;
       let lastCaseFile: number | null = null;
       const stitched: ExtractedQ[][] = prepared.map((job, i) => {
-        const questions = (results[i]?.questions ?? []).map((q) => {
+        const questions = (results[i]?.questions ?? []).map((raw) => {
+          // The page this question was read from, carried on the object: the
+          // preview shows it, and every edit path spreads the object, so it
+          // survives. The .docx and .json builders pick their fields
+          // explicitly and ignore it.
+          const q = withSourcePage(raw, job.pageIndex + 1);
           if (q.case_stem) return q;
           if (q.continues_previous_page && lastCaseFile === job.fileIndex && lastCaseStem) {
             return { ...q, case_stem: lastCaseStem };

@@ -59,9 +59,33 @@ export function applyPage(pages: JobPage[], page: JobPage): JobPage[] {
   return out.sort((a, b) => a.index - b.index);
 }
 
-/** Every question the job has read so far, in the document's own order. */
-export function flattenQuestions(pages: JobPage[]): ExtractedQ[] {
-  return [...pages].sort((a, b) => a.index - b.index).flatMap((p) => p.questions);
+/**
+ * The page a question was read from, carried on the question itself.
+ *
+ * Not part of the model's schema — nothing asks for it and nothing generated
+ * from these questions reads it: `toDocxItems` and `toJsonObjects` pick their
+ * fields explicitly. It exists so the preview can show "p. 7" next to a
+ * question, which is what makes an ordering problem visible instead of a
+ * matter of opinion.
+ */
+export type WithSourcePage<T> = T & { source_page?: number | null };
+
+export function withSourcePage<T extends object>(question: T, page: number): WithSourcePage<T> {
+  return { ...question, source_page: page };
+}
+
+/** The page number a question carries, if it has one. */
+export function sourcePageOf(question: unknown): number | null {
+  const page = (question as { source_page?: unknown } | null)?.source_page;
+  return typeof page === "number" && Number.isFinite(page) ? page : null;
+}
+
+/** Every question the job has read so far, in the document's own order, each
+ *  stamped with the page it came from. */
+export function flattenQuestions(pages: JobPage[]): WithSourcePage<ExtractedQ>[] {
+  return [...pages]
+    .sort((a, b) => a.index - b.index)
+    .flatMap((p) => p.questions.map((q) => withSourcePage(q, p.index + 1)));
 }
 
 /** The completeness notes worth showing, labelled by page. */
