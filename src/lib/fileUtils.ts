@@ -63,6 +63,17 @@ export type PdfChunk = {
 export const MAX_CHUNK_DATA_URL = 3_500_000;
 
 /**
+ * The same ceiling for a split that happens on the server.
+ *
+ * The background worker reads the PDF from storage and splits it there, so
+ * the browser→server body limit does not apply; what remains is what the
+ * model accepts inline. Shared between the worker and the page that uploads
+ * to it, so the page can tell in advance whether the worker will be able to
+ * split the file at all.
+ */
+export const MAX_SERVER_CHUNK = 12_000_000;
+
+/**
  * Split a PDF into N-page sub-PDFs (base64 data URLs) for chunked AI extraction.
  *
  * `contextPages` prepends that many preceding pages to each chunk, marked as
@@ -104,6 +115,11 @@ export async function splitPdfIntoPageChunks(
      *  only ceiling that matters is what the model accepts inline, so it
      *  passes a far larger one and never has to fall back to page images. */
     maxDataUrl?: number;
+    /** Stop after the first chunk, and report only whether the split is
+     *  viable. Building one page copy is what decides it (see the first-chunk
+     *  probe below), so a caller that just wants the answer — "will the
+     *  server manage this file?" — pays for one page instead of forty. */
+    probeOnly?: boolean;
   },
 ): Promise<PdfSplit> {
   const maxDataUrl = opts?.maxDataUrl ?? MAX_CHUNK_DATA_URL;
@@ -160,6 +176,7 @@ export async function splitPdfIntoPageChunks(
       firstPageIndex: start,
       pageCount: end - start,
     });
+    if (opts?.probeOnly) return { chunks: out, tooHeavyToSplit: false, totalPages };
     opts?.onProgress?.(ci + 1, chunkCount);
     await yieldToBrowser();
   }
