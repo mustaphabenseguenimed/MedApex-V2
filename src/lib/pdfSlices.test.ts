@@ -161,6 +161,30 @@ describe("dropSliceDuplicates", () => {
     assert.equal(out.length, 2, "an empty stem is a problem to show, not a duplicate to hide");
   });
 
+  // The paper numbers its own questions, and the overlap returns the same one
+  // once with that number and once without.
+  test("the paper's own question number does not make it a new question", () => {
+    const out = dropSliceDuplicates([
+      q("16. Résultats des examens demandés : TDM6 interrompu.", 5),
+      q("Résultats des examens demandés : TDM6 interrompu.", 5),
+    ]);
+    assert.equal(out.length, 1);
+    assert.equal(
+      out[0].stem,
+      "16. Résultats des examens demandés : TDM6 interrompu.",
+      "first kept",
+    );
+  });
+
+  test("a number that belongs to the question itself is not stripped away", () => {
+    // No separator-plus-space after it, so it reads as part of the sentence.
+    const out = dropSliceDuplicates([
+      q("20 patients ont été inclus.", 1),
+      q("patients ont été inclus.", 1),
+    ]);
+    assert.equal(out.length, 2);
+  });
+
   test("an unstamped list still dedupes within itself", () => {
     const out = dropSliceDuplicates([{ stem: "A ?" }, { stem: "A ?" }, { stem: "B ?" }]);
     assert.equal(out.length, 2);
