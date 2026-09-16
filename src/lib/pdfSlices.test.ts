@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  canEscalate,
   contentRenderScale,
+  ESCALATION_STEPS,
+  escalationStep,
   dropSliceDuplicates,
   jobsOfEmptyPages,
+  replacePageEntries,
   MAX_SLICE_ASPECT,
   TARGET_CONTENT_WIDTH,
   pageMapFromCounts,
@@ -240,5 +244,115 @@ describe("contentRenderScale", () => {
   test("a normal page still comes out as a single image", () => {
     const scale = contentRenderScale(500);
     assert.equal(sliceRanges(500 * scale, 780 * scale).length, 1);
+  });
+});
+
+describe("escalation", () => {
+  // Re-sending an image the model already read and found nothing in achieves
+  // nothing. A retry has to change the input, or it is only spending calls.
+  test("the first attempt is the ordinary render", () => {
+    assert.deepEqual(escalationStep(0), {
+      targetWidth: TARGET_CONTENT_WIDTH,
+      maxAspect: MAX_SLICE_ASPECT,
+    });
+  });
+
+  test("each step renders larger and cuts finer", () => {
+    for (let i = 1; i < ESCALATION_STEPS; i++) {
+      const prev = escalationStep(i - 1);
+      const next = escalationStep(i);
+      assert.ok(next.targetWidth > prev.targetWidth, `step ${i} is not larger`);
+      assert.ok(next.maxAspect < prev.maxAspect, `step ${i} is not cut finer`);
+    }
+  });
+
+  // The point of a finite ladder: the UI can stop offering a button that
+  // cannot help, and say the page is illegible instead.
+  test("the ladder ends, so a hopeless page is eventually called hopeless", () => {
+    assert.ok(ESCALATION_STEPS >= 2 && ESCALATION_STEPS <= 4);
+    assert.equal(canEscalate(0), true);
+    assert.equal(canEscalate(ESCALATION_STEPS - 1), false);
+    assert.equal(canEscalate(ESCALATION_STEPS), false);
+  });
+
+  test("losing count gives the hardest try, never an exception", () => {
+    assert.deepEqual(escalationStep(99), escalationStep(ESCALATION_STEPS - 1));
+    assert.deepEqual(escalationStep(-1), escalationStep(0));
+    assert.deepEqual(escalationStep(Number.NaN), escalationStep(0));
+    assert.equal(canEscalate(Number.NaN), false);
+  });
+
+  // Escalating has to actually change what the page is cut into, or the
+  // retry is the same no-op by another route.
+  test("escalating a real page yields more, larger pieces", () => {
+    const inkWidth = 100;
+    const inkHeight = 842;
+    const counts = [0, 1, 2].map((attempt) => {
+      const step = escalationStep(attempt);
+      const scale = contentRenderScale(inkWidth, step.targetWidth);
+      return sliceRanges(inkWidth * scale, inkHeight * scale, {
+        maxAspect: step.maxAspect,
+      }).length;
+    });
+    assert.ok(counts[1] > counts[0], `step 1 did not cut finer: ${counts.join(", ")}`);
+    assert.ok(counts[2] > counts[1], `step 2 did not cut finer: ${counts.join(", ")}`);
+  });
+});
+
+describe("replacePageEntries", () => {
+  const e = (fileIndex: number, pageIndex: number, tag: string) => ({ fileIndex, pageIndex, tag });
+
+  // A page re-rendered harder yields a different number of slices, so its
+  // entries cannot be overwritten one for one.
+  test("a page's slices are swapped in place, however their count changed", () => {
+    const entries = [e(0, 0, "a"), e(0, 1, "b1"), e(0, 1, "b2"), e(0, 2, "c")];
+    const out = replacePageEntries(
+      entries,
+      new Map([["0:1", [e(0, 1, "new1"), e(0, 1, "new2"), e(0, 1, "new3")]]]),
+    );
+    assert.deepEqual(
+      out.map((x) => x.tag),
+      ["a", "new1", "new2", "new3", "c"],
+      "the page keeps its place in the document",
+    );
+  });
+
+  test("fewer slices than before is just as fine", () => {
+    const entries = [e(0, 0, "a1"), e(0, 0, "a2"), e(0, 0, "a3"), e(0, 1, "b")];
+    const out = replacePageEntries(entries, new Map([["0:0", [e(0, 0, "only")]]]));
+    assert.deepEqual(
+      out.map((x) => x.tag),
+      ["only", "b"],
+    );
+  });
+
+  test("pages of another file with the same number are untouched", () => {
+    const entries = [e(0, 1, "f0"), e(1, 1, "f1")];
+    const out = replacePageEntries(entries, new Map([["1:1", [e(1, 1, "new")]]]));
+    assert.deepEqual(
+      out.map((x) => x.tag),
+      ["f0", "new"],
+    );
+  });
+
+  test("replacing several pages at once keeps them all in order", () => {
+    const entries = [e(0, 0, "a"), e(0, 1, "b"), e(0, 2, "c")];
+    const out = replacePageEntries(
+      entries,
+      new Map([
+        ["0:0", [e(0, 0, "A1"), e(0, 0, "A2")]],
+        ["0:2", [e(0, 2, "C1")]],
+      ]),
+    );
+    assert.deepEqual(
+      out.map((x) => x.tag),
+      ["A1", "A2", "b", "C1"],
+    );
+  });
+
+  test("nothing to replace leaves the list exactly as it was", () => {
+    const entries = [e(0, 0, "a"), e(0, 1, "b")];
+    assert.deepEqual(replacePageEntries(entries, new Map()), entries);
+    assert.deepEqual(replacePageEntries([], new Map([["0:0", [e(0, 0, "x")]]])), []);
   });
 });

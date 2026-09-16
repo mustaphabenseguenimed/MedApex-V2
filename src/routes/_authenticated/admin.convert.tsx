@@ -58,7 +58,13 @@ import { answerLetters, sameAnswer } from "@/lib/answerVerdicts";
 import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
 import { alignByStems, type PreparedChunk } from "@/lib/questionChunks";
 import type { PageSlice } from "@/lib/pdfText";
-import { dropSliceDuplicates, jobsOfEmptyPages } from "@/lib/pdfSlices";
+import {
+  canEscalate,
+  dropSliceDuplicates,
+  escalationStep,
+  jobsOfEmptyPages,
+  replacePageEntries,
+} from "@/lib/pdfSlices";
 import { withCleanCaseStem } from "@/lib/caseStem";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
@@ -1448,6 +1454,9 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const [pageResults, setPageResults] = useState<(PageResult | null)[] | null>(null);
   /** Indices into `prepared` whose page failed and can be retried on its own. */
   const [failedPages, setFailedPages] = useState<number[]>([]);
+  /** How many times each source page ("file:page") has been re-rendered
+   *  harder, so a retry can escalate and eventually admit defeat. */
+  const attemptsRef = useRef<Map<string, number>>(new Map());
   const confirm = useConfirm();
   const wakeLock = useScreenWakeLock();
 
@@ -1679,8 +1688,21 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
    * every page already converted. The failures come back as a list the admin
    * can retry on its own.
    */
-  const runPages = async (indices: number[], previous: (PageResult | null)[]) => {
-    if (!prepared || !indices.length) return;
+  /** Count distinct SOURCE pages behind a set of job indices — a page cut into
+   *  five slices is one page to whoever is reading the message. */
+  const countPages = (jobIndices: number[], jobs: PdfChunkJob[] | null) =>
+    new Set(jobIndices.map((i) => `${jobs?.[i]?.fileIndex}:${jobs?.[i]?.pageIndex}`)).size;
+
+  const runPages = async (
+    indices: number[],
+    previous: (PageResult | null)[],
+    // A retry may have re-rendered some pages; it hands the rebuilt list in,
+    // because React state set in the same tick is not visible here yet.
+    opts?: { isRetry?: boolean; jobs?: PdfChunkJob[] },
+  ) => {
+    const jobs = opts?.jobs ?? prepared;
+    const isRetry = opts?.isRetry ?? false;
+    if (!jobs || !indices.length) return;
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy("extract");
@@ -1694,7 +1716,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         indices.map((idx) => async () => {
           try {
             results[idx] = await withRetry(
-              () => callForJob(prepared[idx], controller.signal),
+              () => callForJob(jobs[idx], controller.signal),
               () => controller.signal.aborted,
             );
           } catch (e) {
@@ -1716,7 +1738,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       // clinical case without a word — so a source page that read nothing
       // joins the same retry card.
       const empty = jobsOfEmptyPages(
-        prepared,
+        jobs,
         results.map((r) => r?.questions?.length ?? 0),
       );
       setFailedPages([...new Set([...failed, ...empty])].sort((a, b) => a - b));
@@ -1727,7 +1749,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       // in here from the last case seen on the preceding page of the same file.
       let lastCaseStem: string | null = null;
       let lastCaseFile: number | null = null;
-      const stitched: ExtractedQ[][] = prepared.map((job, i) => {
+      const stitched: ExtractedQ[][] = jobs.map((job, i) => {
         const questions = (results[i]?.questions ?? []).map((raw) => {
           // The page this question was read from, carried on the object: the
           // preview shows it, and every edit path spreads the object, so it
@@ -1757,7 +1779,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       // from before multi-file grouping existed); separate keeps each
       // file's own questions together for its own .docx.
       const byFile = new Map<number, ExtractedQ[]>();
-      prepared.forEach((job, i) => {
+      jobs.forEach((job, i) => {
         // Step 1 carries no rotation/année: whatever the model read off the
         // page is dropped here, so nothing can be shown, edited, or written
         // into the .docx. Rotations are set in step 4.
@@ -1776,7 +1798,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       // recovers most shortfalls — this only fires for whatever's left over
       // (e.g. a genuinely illegible single page), so the admin isn't ever
       // told a file is complete when a page may still be missing questions.
-      const warnings = prepared
+      const warnings = jobs
         .map((job, i) =>
           results[i]?.warning ? { filename: job.filename, warning: results[i]!.warning! } : null,
         )
@@ -1796,8 +1818,24 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           `${warnings.length} ${tr("page(s)/lot(s) possiblement incomplet(s) — voir le détail ci-dessous.")}`,
         );
       }
+      // Report against what this run was asked to do. A retry that recovers
+      // nothing used to end on the same green "N questions extraites" as a
+      // clean run, which is how a retry could cost model calls and tell the
+      // admin nothing at all.
+      const stillEmpty = empty.filter((i) => indices.includes(i));
+      const recovered = indices.filter(
+        (i) => !empty.includes(i) && (previous[i]?.questions?.length ?? 0) === 0,
+      );
+      if (isRetry && recovered.length) {
+        toast.success(`${countPages(recovered, jobs)} ${tr("page(s) récupérée(s).")}`);
+      }
       if (failed.length) {
         toast.error(`${failed.length} ${tr("page(s) non converties — réessayez-les ci-dessous.")}`);
+      }
+      if (stillEmpty.length) {
+        toast.warning(
+          `${countPages(stillEmpty, jobs)} ${tr("page(s) lue(s) sans qu'aucune question n'en ressorte.")}`,
+        );
       }
     } catch (e: any) {
       if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
@@ -1818,16 +1856,141 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     setGroupResults({});
     setFailedPages([]);
     setPageResults(null);
+    attemptsRef.current = new Map();
     await runPages(
       prepared.map((_, i) => i),
       prepared.map(() => null),
     );
   };
 
-  /** Re-run only the pages that failed, keeping everything already converted. */
+  /**
+   * Re-run only the pages that failed, keeping everything already converted.
+   *
+   * A page that came back EMPTY is re-rendered first, larger and cut finer.
+   * Re-sending the identical image would only reproduce the same answer — the
+   * model has already read those pixels and found nothing in them — which is
+   * what made this button look like it did nothing at all. A page whose
+   * request merely ERRORED is re-sent as it was built: its image is fine, it
+   * was the connection that was not.
+   */
   const retryFailedPages = async () => {
     if (!prepared || !failedPages.length) return;
-    await runPages(failedPages, pageResults ?? prepared.map(() => null));
+    const previous = pageResults ?? prepared.map(() => null);
+    const pageKey = (j: PdfChunkJob) => `${j.fileIndex}:${j.pageIndex}`;
+
+    // Every source page behind a failed job, and whether it read nothing at
+    // all (null result = the request threw; a result with no questions = the
+    // model read the image and found none).
+    const retrying = new Map<string, { fileIndex: number; pageIndex: number; empty: boolean }>();
+    for (const i of failedPages) {
+      const job = prepared[i];
+      if (!job) continue;
+      const k = pageKey(job);
+      const empty = previous[i] !== null;
+      const seen = retrying.get(k);
+      retrying.set(k, {
+        fileIndex: job.fileIndex,
+        pageIndex: job.pageIndex,
+        // One slice erroring is enough to make the page worth re-sending as
+        // is; only a page where every slice read cleanly and found nothing
+        // needs a harder render.
+        empty: seen ? seen.empty && empty : empty,
+      });
+    }
+
+    let jobs = prepared;
+    const exhausted: string[] = [];
+    const toRender = new Map<number, number[]>();
+    for (const [k, page] of retrying) {
+      if (!page.empty) continue;
+      const attempt = (attemptsRef.current.get(k) ?? 0) + 1;
+      if (!canEscalate(attempt - 1)) {
+        exhausted.push(k);
+        continue;
+      }
+      attemptsRef.current.set(k, attempt);
+      toRender.set(page.fileIndex, [...(toRender.get(page.fileIndex) ?? []), page.pageIndex]);
+    }
+
+    if (toRender.size) {
+      setBusy("extract");
+      setPhase(tr("Nouvelle lecture des pages sans résultat"));
+      setProgress(null);
+      try {
+        const { renderPdfPageSlices } = await import("@/lib/pdfText");
+        const replacements = new Map<string, PdfChunkJob[]>();
+        for (const [fileIndex, pages] of toRender) {
+          const file = files[fileIndex];
+          if (!file) continue;
+          // All of this file's retried pages share the hardest step any of
+          // them has reached, so one pass over the file covers them.
+          const step = escalationStep(
+            Math.max(...pages.map((pg) => attemptsRef.current.get(`${fileIndex}:${pg}`) ?? 1)),
+          );
+          const slices = await renderPdfPageSlices(await file.arrayBuffer(), {
+            maxBytes: 1_200_000,
+            pages,
+            targetWidth: step.targetWidth,
+            maxAspect: step.maxAspect,
+            onProgress: (done, total) => setProgress({ done, total }),
+          });
+          for (const pageIndex of pages) {
+            const mine = slices.filter((sl) => sl.pageIndex === pageIndex && sl.dataUrl);
+            if (!mine.length) continue;
+            replacements.set(
+              `${fileIndex}:${pageIndex}`,
+              mine.map((sl, at) => ({
+                dataUrl: "",
+                imageDataUrl: sl.dataUrl,
+                contextImageDataUrl:
+                  at > 0 && mine[at - 1].dataUrl.length + sl.dataUrl.length <= MAX_CHUNK_DATA_URL
+                    ? mine[at - 1].dataUrl
+                    : undefined,
+                filename: `${file.name} (p${pageIndex + 1} ${at + 1}/${mine.length})`,
+                fileIndex,
+                pageIndex,
+                contextPages: at > 0 ? 1 : 0,
+                expected: 0,
+              })),
+            );
+          }
+        }
+        jobs = replacePageEntries(prepared, replacements);
+        setPrepared(jobs);
+      } catch (e) {
+        toast.error(friendlyError(e, tr));
+        setBusy(null);
+        setPhase(null);
+        setProgress(null);
+        return;
+      }
+    }
+
+    if (exhausted.length) {
+      toast.warning(
+        `${exhausted.length} ${tr("page(s) restent illisibles même agrandies — ré-exportez-les en meilleure qualité.")}`,
+      );
+    }
+
+    // Re-slicing changes the length of the list, so both the indices to run
+    // and the results carried over are rebuilt against the NEW list. Untouched
+    // jobs keep their object identity, which is how their old result is found.
+    const oldIndex = new Map(prepared.map((job, i) => [job, i]));
+    const padded = jobs.map((job) => {
+      const at = oldIndex.get(job);
+      return at === undefined || retrying.has(pageKey(job)) ? null : (previous[at] ?? null);
+    });
+    const runIndices = jobs
+      .map((job, i) => (retrying.has(pageKey(job)) ? i : -1))
+      .filter((i) => i >= 0);
+
+    if (!runIndices.length) {
+      setBusy(null);
+      setPhase(null);
+      setProgress(null);
+      return;
+    }
+    await runPages(runIndices, padded, { isRetry: true, jobs });
   };
 
   /** Nudge the server to work on a job; the request holds open for minutes,
