@@ -122,6 +122,41 @@ describe("flattenQuestions", () => {
   });
 });
 
+describe("flattenQuestions with a page map", () => {
+  // The background path uploads a tall page cut into slices, so the worker's
+  // "pages" are slices. The map puts the admin's own page number back.
+  test("several uploaded pages can be one page of the admin's file", () => {
+    // Their page 1 was cut in three, their page 2 went whole.
+    const pages = [page(0, ["a"]), page(1, ["b"]), page(2, ["c"]), page(3, ["d"])];
+    assert.deepEqual(
+      flattenQuestions(pages, [0, 0, 0, 1]).map((x) => [x.stem, x.source_page]),
+      [
+        ["a", 1],
+        ["b", 1],
+        ["c", 1],
+        ["d", 2],
+      ],
+    );
+  });
+
+  test("a job uploaded unchanged is unaffected", () => {
+    const pages = [page(0, ["a"]), page(1, ["b"])];
+    for (const map of [undefined, null, []]) {
+      assert.deepEqual(
+        flattenQuestions(pages, map).map((x) => x.source_page),
+        [1, 2],
+      );
+    }
+  });
+
+  test("warnings are labelled with the admin's page, not the slice", () => {
+    const pages = [page(0, ["a"]), page(1, ["b"], "2 détectée(s), 1 extraite(s)")];
+    assert.deepEqual(pageWarnings(pages, "exam.pdf", [0, 0]), [
+      { filename: "exam.pdf (p1)", warning: "2 détectée(s), 1 extraite(s)" },
+    ]);
+  });
+});
+
 describe("source page", () => {
   test("reads the stamp back off a question", () => {
     assert.equal(sourcePageOf(withSourcePage(q("a"), 7)), 7);

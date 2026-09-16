@@ -51,6 +51,7 @@ type JobRow = {
   done_pages: number;
   pages: unknown;
   failed_pages: number[];
+  page_map: number[] | null;
   error: string | null;
   lease_until: string | null;
   created_at: string;
@@ -71,6 +72,10 @@ export const createConversionJob = createServerFn({ method: "POST" })
         storagePath: z.string().min(1).max(400),
         filename: z.string().min(1).max(200),
         hint: z.string().max(5000).optional(),
+        // Set when the browser rebuilt the upload out of page slices: entry i
+        // is the 0-based page of the admin's ORIGINAL file that uploaded page
+        // i came from, so "p. 7" keeps meaning their page 7.
+        pageMap: z.array(z.number().int().min(0).max(5000)).max(20000).optional(),
       })
       .parse(input),
   )
@@ -84,6 +89,7 @@ export const createConversionJob = createServerFn({ method: "POST" })
         filename: data.filename,
         storage_path: data.storagePath,
         hint: data.hint ?? null,
+        page_map: data.pageMap ?? null,
         status: "pending",
       })
       .select("id")
@@ -119,8 +125,9 @@ export const getConversionJob = createServerFn({ method: "POST" })
       /** True when no worker holds it — the page may kick one. */
       resumable:
         leaseExpired(job.lease_until) && (job.status === "pending" || job.status === "running"),
-      questions: job.status === "done" ? flattenQuestions(pages) : ([] as ExtractedQ[]),
-      warnings: job.status === "done" ? pageWarnings(pages, job.filename) : [],
+      questions:
+        job.status === "done" ? flattenQuestions(pages, job.page_map) : ([] as ExtractedQ[]),
+      warnings: job.status === "done" ? pageWarnings(pages, job.filename, job.page_map) : [],
     };
   });
 
