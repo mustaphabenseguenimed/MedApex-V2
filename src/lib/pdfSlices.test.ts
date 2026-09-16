@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  contentRenderScale,
   dropSliceDuplicates,
   jobsOfEmptyPages,
   MAX_SLICE_ASPECT,
+  TARGET_CONTENT_WIDTH,
   pageMapFromCounts,
   sliceCount,
   sliceRanges,
@@ -188,5 +190,55 @@ describe("jobsOfEmptyPages", () => {
 
   test("nothing to check is nothing to report", () => {
     assert.deepEqual(jobsOfEmptyPages([], []), []);
+  });
+});
+
+describe("contentRenderScale", () => {
+  // The measurement this constant comes from: in the Sarcoïdose PDF every
+  // page rendered at 23% of its screenshot's native width or better came back
+  // correct, and every page at 16-20% came back invented or empty.
+  test("a capture squeezed into a narrow column is scaled up hard", () => {
+    // Page 8: a 1260px screenshot drawn 100pt wide on an A4 sheet.
+    assert.equal(contentRenderScale(100), 13);
+    // Page 2 and 6 were the other two that failed.
+    assert.ok(contentRenderScale(109.5) > 11);
+  });
+
+  test("a normal full-width page lands near the scale used all along", () => {
+    const scale = contentRenderScale(500);
+    assert.ok(scale > 2 && scale < 3, `expected ~2.6, got ${scale}`);
+  });
+
+  test("content already wider than the target is never shrunk", () => {
+    assert.equal(contentRenderScale(TARGET_CONTENT_WIDTH * 2), 1);
+    assert.equal(contentRenderScale(TARGET_CONTENT_WIDTH), 1);
+  });
+
+  test("a page holding almost nothing is not blown up without limit", () => {
+    assert.equal(contentRenderScale(1), 16);
+    assert.equal(contentRenderScale(0.001), 16);
+  });
+
+  test("an unusable measurement falls back to the old fixed scale", () => {
+    assert.equal(contentRenderScale(0), 2);
+    assert.equal(contentRenderScale(-5), 2);
+    assert.equal(contentRenderScale(Number.NaN), 2);
+  });
+
+  // The two work together: scale first, then cut what is now very tall.
+  test("scaling then slicing turns a narrow strip into readable pieces", () => {
+    const inkWidth = 100;
+    const inkHeight = 842;
+    const scale = contentRenderScale(inkWidth);
+    const ranges = sliceRanges(inkWidth * scale, inkHeight * scale);
+    assert.ok(ranges.length >= 5, `expected several slices, got ${ranges.length}`);
+    for (const r of ranges) {
+      assert.ok(r.height <= inkWidth * scale * MAX_SLICE_ASPECT + 1);
+    }
+  });
+
+  test("a normal page still comes out as a single image", () => {
+    const scale = contentRenderScale(500);
+    assert.equal(sliceRanges(500 * scale, 780 * scale).length, 1);
   });
 });
