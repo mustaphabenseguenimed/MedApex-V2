@@ -283,6 +283,9 @@ export async function renderPdfPageSlices(
     maxAspect?: number;
     /** Width, in pixels, the page's content should reach. */
     targetWidth?: number;
+    /** Only these pages (0-based). Omitted means every page. Used to re-render
+     *  one page that came back empty, harder, without redoing the file. */
+    pages?: number[];
     onProgress?: (done: number, total: number) => void;
   },
 ): Promise<PageSlice[]> {
@@ -291,7 +294,11 @@ export async function renderPdfPageSlices(
   const maxBytes = opts?.maxBytes ?? 1_500_000;
   const out: PageSlice[] = [];
 
+  const wanted = opts?.pages ? new Set(opts.pages) : null;
+  const total = wanted ? wanted.size : doc.numPages;
+  let done = 0;
   for (let i = 1; i <= doc.numPages; i++) {
+    if (wanted && !wanted.has(i - 1)) continue;
     const page = await doc.getPage(i);
     // Scale from the CONTENT, not the paper. A page that carries its capture
     // in a 100 pt strip on an A4 sheet renders, at any fixed scale, as text a
@@ -330,7 +337,7 @@ export async function renderPdfPageSlices(
       // tab is unresponsive for the whole document.
       await yieldToBrowser();
     }
-    opts?.onProgress?.(i, doc.numPages);
+    opts?.onProgress?.(++done, total);
   }
 
   try {

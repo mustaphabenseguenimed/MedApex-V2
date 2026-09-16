@@ -189,3 +189,64 @@ export function dropSliceDuplicates<
     return true;
   });
 }
+
+/**
+ * How hard to try on a page that came back with nothing.
+ *
+ * Re-sending the same image is pointless — the model already read it and found
+ * nothing — so a retry renders the page again, larger and cut finer. The steps
+ * are deliberately few: past a point the page is genuinely illegible and the
+ * honest answer is to say so rather than keep spending model calls.
+ *
+ * Attempt 0 is the ordinary setting, so a page that merely lost its request to
+ * the network is re-sent exactly as it was built.
+ */
+const ESCALATION: { targetWidth: number; maxAspect: number }[] = [
+  { targetWidth: TARGET_CONTENT_WIDTH, maxAspect: MAX_SLICE_ASPECT },
+  { targetWidth: Math.round(TARGET_CONTENT_WIDTH * 1.5), maxAspect: 1.2 },
+  { targetWidth: TARGET_CONTENT_WIDTH * 2, maxAspect: 1.0 },
+];
+
+/** Number of attempts available, the first being the ordinary render. */
+export const ESCALATION_STEPS = ESCALATION.length;
+
+/** Settings for the nth attempt at a page. Clamped, so a caller that loses
+ *  count gets the hardest try rather than an exception. */
+export function escalationStep(attempt: number): { targetWidth: number; maxAspect: number } {
+  const i = Number.isFinite(attempt) ? Math.max(0, Math.floor(attempt)) : 0;
+  return ESCALATION[Math.min(i, ESCALATION.length - 1)];
+}
+
+/** Is there a harder setting left to try on this page? */
+export function canEscalate(attempt: number): boolean {
+  return Number.isFinite(attempt) && attempt < ESCALATION.length - 1;
+}
+
+/**
+ * Swap the entries of certain source pages for new ones, keeping order.
+ *
+ * A page re-rendered harder produces a different number of slices, so its
+ * entries cannot simply be overwritten in place. The replacements land where
+ * the page's first old entry was, and the page's other old entries drop out —
+ * which keeps the document reading in page order however the cuts changed.
+ */
+export function replacePageEntries<T extends { fileIndex: number; pageIndex: number }>(
+  entries: T[],
+  replacements: Map<string, T[]>,
+): T[] {
+  const key = (e: { fileIndex: number; pageIndex: number }) => `${e.fileIndex}:${e.pageIndex}`;
+  const used = new Set<string>();
+  const out: T[] = [];
+  for (const entry of entries) {
+    const k = key(entry);
+    const replacement = replacements.get(k);
+    if (!replacement) {
+      out.push(entry);
+      continue;
+    }
+    if (used.has(k)) continue;
+    used.add(k);
+    out.push(...replacement);
+  }
+  return out;
+}
