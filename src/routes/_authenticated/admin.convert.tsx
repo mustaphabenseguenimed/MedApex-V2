@@ -65,7 +65,7 @@ import {
   jobsOfEmptyPages,
   replacePageEntries,
 } from "@/lib/pdfSlices";
-import { withCleanCaseStem } from "@/lib/caseStem";
+import { resolvePageCases, withCleanCaseStem } from "@/lib/caseStem";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
   readAsDataUrl,
@@ -1789,7 +1789,16 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       // Slices overlap on purpose, so a question sitting on a cut comes back
       // from both pieces. Deduped per file, keeping the first copy, so the
       // question stays where the document puts it.
-      for (const [idx, qs] of byFile) byFile.set(idx, dropSliceDuplicates(qs));
+      //
+      // And a slice that starts mid-page reports whatever tops it as the
+      // case's énoncé — a Commentaire paragraph, a numbered continuation, a
+      // sentence cut in half — which used to split one clinical case across
+      // several. resolvePageCases gives each page's questions the vignette
+      // that page actually has, and merges a vignette the overlap showed
+      // twice.
+      for (const [idx, qs] of byFile) {
+        byFile.set(idx, dropSliceDuplicates(resolvePageCases(qs)));
+      }
       const all: ExtractedQ[] = [...byFile.entries()]
         .sort((a, b) => a[0] - b[0])
         .flatMap(([, qs]) => qs);

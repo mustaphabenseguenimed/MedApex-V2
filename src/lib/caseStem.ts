@@ -75,3 +75,81 @@ export function withCleanCaseStem<T extends { case_stem?: string | null }>(quest
   const stem = stripCaseLabel(question.case_stem);
   return stem === question.case_stem ? question : { ...question, case_stem: stem };
 }
+
+/**
+ * Does this read like a patient vignette, or like a piece of something else?
+ *
+ * A page is now sent to the model in slices, so a request can begin halfway
+ * down it — and whatever tops that slice gets reported as the case's shared
+ * énoncé. On one real file that produced 34 "clinical cases" where the paper
+ * had 19: a "Commentaire" paragraph, a numbered continuation ("12. Les
+ * résultats des examens demandés…"), a sentence cut mid-flow ("une cyanose des
+ * extrémités. La radiographie…").
+ *
+ * What every real vignette in that file does, and no fragment does, is open by
+ * introducing a person and give their age. That is the test: a subject word
+ * at the very start, an age soon after. Deliberately strict — mistaking a
+ * vignette for a fragment merely leaves a case alone, while the reverse founds
+ * a case on a stray paragraph.
+ */
+const VIGNETTE_OPENING =
+  /^\s*(?:Un|Une|Le|La|L'|M\.|Mme|Mr|Monsieur|Madame|Homme|Femme|Patient|Patiente|Malade|Enfant|Jeune|Adolescent|Adolescente|Nourrisson|Nouveau-né)\b[\s\S]{0,140}?\d+\s*ans?\b/i;
+
+export function looksLikeVignette(stem: string | null | undefined): boolean {
+  const text = textOf(stem ?? "");
+  return text.length > 0 && VIGNETTE_OPENING.test(text);
+}
+
+/** Normalized head of a vignette, for deciding whether two are the same one. */
+function vignetteHead(stem: string): string {
+  return textOf(stem)
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .toLowerCase()
+    .slice(0, 120);
+}
+
+/**
+ * Give every question of a source page the case énoncé that page actually has.
+ *
+ * Two rules, both confined to a single page so nothing can leak between them:
+ *
+ * - a `case_stem` that is not a vignette is replaced by the nearest real one
+ *   already seen on that page, or dropped when the page has none — a stray
+ *   paragraph should never found a clinical case;
+ * - two vignettes on one page that are the same vignette re-typed (the
+ *   overlap between slices shows it twice) collapse to the first, while two
+ *   genuinely different patients on one page stay two cases.
+ */
+export function resolvePageCases<
+  T extends { case_stem?: string | null; source_page?: number | null },
+>(questions: T[]): T[] {
+  /** Per page: the vignettes seen so far, first one first. */
+  const seen = new Map<number | string, { head: string; stem: string }[]>();
+  return questions.map((q) => {
+    const page = q.source_page ?? "?";
+    const known = seen.get(page) ?? [];
+    if (!seen.has(page)) seen.set(page, known);
+    const stem = q.case_stem;
+    if (!stem || !textOf(stem)) return q;
+
+    if (looksLikeVignette(stem)) {
+      const head = vignetteHead(stem);
+      // The same vignette read twice off overlapping slices: one of them is
+      // often a little shorter or re-typed, so compare heads and prefixes
+      // rather than demanding an exact match.
+      const same = known.find(
+        (k) => k.head === head || k.head.startsWith(head) || head.startsWith(k.head),
+      );
+      if (!same) {
+        known.push({ head, stem });
+        return q;
+      }
+      return same.stem === stem ? q : { ...q, case_stem: same.stem };
+    }
+
+    // A fragment: it belongs to this page's case, or to no case at all.
+    const inherited = known.length ? known[known.length - 1].stem : null;
+    return { ...q, case_stem: inherited };
+  });
+}

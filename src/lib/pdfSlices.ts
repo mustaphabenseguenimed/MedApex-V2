@@ -175,6 +175,10 @@ export function dropSliceDuplicates<
     s
       .replace(/<[^>]+>/g, " ")
       .replace(/&nbsp;/g, " ")
+      // The paper's own question number. The overlap hands the same question
+      // back once with it ("16. Résultats des examens…") and once without,
+      // which is enough to make two identical questions look different.
+      .replace(/^\s*\d{1,3}\s*[.)\-:]\s+/, "")
       .replace(/[^\p{L}\p{N}]+/gu, " ")
       .trim()
       .toLowerCase();
