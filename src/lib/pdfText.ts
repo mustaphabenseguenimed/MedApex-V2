@@ -8,7 +8,7 @@
  */
 
 import { yieldToBrowser } from "./fileUtils";
-import { sliceRanges } from "./pdfSlices";
+import { contentRenderScale, sliceRanges } from "./pdfSlices";
 
 export type PdfTextResult = {
   /** Extracted text, page by page (empty string for scanned pages). */
@@ -81,23 +81,85 @@ export async function extractPdfText(file: File | ArrayBuffer): Promise<PdfTextR
 async function renderPageToCanvas(
   page: any,
   scale: number,
-  maxHeight?: number,
-  top = 0,
+  crop?: { left?: number; top?: number; width?: number; height?: number },
 ): Promise<HTMLCanvasElement> {
   const viewport = page.getViewport({ scale });
+  const left = Math.max(0, Math.floor(crop?.left ?? 0));
+  const top = Math.max(0, Math.floor(crop?.top ?? 0));
   const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.min(Math.ceil(viewport.height) - top, maxHeight ?? Infinity);
+  canvas.width = Math.min(Math.ceil(viewport.width) - left, crop?.width ?? Infinity);
+  canvas.height = Math.min(Math.ceil(viewport.height) - top, crop?.height ?? Infinity);
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas non supporté par ce navigateur");
   // JPEG has no alpha: paint white first or transparent areas come out black.
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // Shift the page up so the slice's own band lands in the canvas; anything
-  // outside it is clipped by the canvas bounds rather than drawn.
-  if (top) ctx.translate(0, -top);
+  // Shift the page so the wanted window lands in the canvas; everything
+  // outside it is clipped by the canvas bounds rather than drawn. This is what
+  // lets a slice be rasterised at a high scale without ever allocating a
+  // bitmap of the whole page at that scale.
+  if (left || top) ctx.translate(-left, -top);
   await page.render({ canvasContext: ctx, viewport }).promise;
   return canvas;
+}
+
+/**
+ * The rectangle of a page that actually carries ink, in page units.
+ *
+ * A screenshot export can place its capture as a narrow column on an A4 page —
+ * the Sarcoïdose PDF draws a 1260 px wide screenshot into a strip 100 pt wide
+ * with white margins either side. Rendering such a page at a fixed scale hands
+ * the model text at a sixth of its original width, which it cannot read and
+ * fills in by guessing. Finding the ink first means the render scale can be
+ * chosen from the content rather than from the paper it was dropped onto.
+ *
+ * Probed cheaply at low resolution; a page that reads as blank (or that cannot
+ * be probed at all) reports its full box, so the caller simply behaves as
+ * before.
+ */
+async function inkBounds(
+  page: Parameters<typeof renderPageToCanvas>[0],
+): Promise<{ left: number; top: number; width: number; height: number }> {
+  const full = page.getViewport({ scale: 1 });
+  const whole = { left: 0, top: 0, width: full.width, height: full.height };
+  try {
+    const probe = 1.5;
+    const canvas = await renderPageToCanvas(page, probe);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return whole;
+    const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        // Anything clearly off-white counts as content. Generous, because
+        // cutting off a grey heading costs more than a few extra pixels.
+        if (data[i] > 245 && data[i + 1] > 245 && data[i + 2] > 245) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < 0) return whole;
+    // A small margin so nothing sits flush against the edge.
+    const pad = 4 * probe;
+    const left = Math.max(0, minX - pad) / probe;
+    const top = Math.max(0, minY - pad) / probe;
+    return {
+      left,
+      top,
+      width: Math.min(full.width, (maxX + pad) / probe) - left,
+      height: Math.min(full.height, (maxY + pad) / probe) - top,
+    };
+  } catch {
+    // getImageData can throw on a tainted or oversized canvas; the full page
+    // is always a safe answer.
+    return whole;
+  }
 }
 
 /**
@@ -183,7 +245,7 @@ export async function renderPdfPageTopImages(
     // encoding is far cheaper and the payload much smaller, at a quality
     // where header text is still crisp.
     const cropHeight = Math.max(1, Math.round(page.getViewport({ scale }).height * cropTop));
-    const canvas = await renderPageToCanvas(page, scale, cropHeight);
+    const canvas = await renderPageToCanvas(page, scale, { height: cropHeight });
     images.push(canvas.toDataURL("image/jpeg", 0.9));
   }
 
@@ -217,37 +279,48 @@ export type PageSlice = {
 export async function renderPdfPageSlices(
   bytes: ArrayBuffer,
   opts?: {
-    scale?: number;
     maxBytes?: number;
     maxAspect?: number;
+    /** Width, in pixels, the page's content should reach. */
+    targetWidth?: number;
     onProgress?: (done: number, total: number) => void;
   },
 ): Promise<PageSlice[]> {
   const pdfjs = await getPdfjs();
   const doc = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
-  const baseScale = opts?.scale ?? 2;
   const maxBytes = opts?.maxBytes ?? 1_500_000;
   const out: PageSlice[] = [];
 
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
-    // Measure at scale 1 so the cuts are expressed in page units: the ladder
-    // below may render a slice smaller, but every slice of a page has to be
-    // cut in the same places whatever scale it ends up rendered at.
-    const base = page.getViewport({ scale: 1 });
-    const ranges = sliceRanges(base.width, base.height, { maxAspect: opts?.maxAspect });
+    // Scale from the CONTENT, not the paper. A page that carries its capture
+    // in a 100 pt strip on an A4 sheet renders, at any fixed scale, as text a
+    // sixth of its original width — unreadable, and the model invents rather
+    // than reports. Cropping to the ink and scaling that to a legible width
+    // is what makes the rest of this worth doing.
+    const ink = await inkBounds(page);
+    // The probe rasterises and reads back a whole page; give the tab a turn
+    // before starting on the slices.
+    await yieldToBrowser();
+    const scale = contentRenderScale(ink.width, opts?.targetWidth);
+    // Now cut the (often very tall) content, in rendered pixels.
+    const ranges = sliceRanges(ink.width * scale, ink.height * scale, {
+      maxAspect: opts?.maxAspect,
+    });
 
     for (let s = 0; s < ranges.length; s++) {
       const range = ranges[s];
       let dataUrl = "";
-      outer: for (const scale of [baseScale, baseScale * 0.75, baseScale * 0.5]) {
-        const canvas = await renderPageToCanvas(
-          page,
-          scale,
-          Math.ceil(range.height * scale),
-          Math.floor(range.top * scale),
-        );
-        for (const quality of [0.85, 0.7, 0.55]) {
+      // Quality first, then scale: shrinking is what costs legibility, and
+      // legibility is the whole point here.
+      outer: for (const factor of [1, 0.85, 0.7]) {
+        const canvas = await renderPageToCanvas(page, scale * factor, {
+          left: Math.floor(ink.left * scale * factor),
+          top: Math.floor((ink.top * scale + range.top) * factor),
+          width: Math.ceil(ink.width * scale * factor),
+          height: Math.ceil(range.height * factor),
+        });
+        for (const quality of [0.9, 0.8, 0.65]) {
           dataUrl = canvas.toDataURL("image/jpeg", quality);
           if (dataUrl.length <= maxBytes) break outer;
         }

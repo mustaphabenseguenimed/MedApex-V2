@@ -60,6 +60,7 @@ import { alignByStems, type PreparedChunk } from "@/lib/questionChunks";
 import type { PageSlice } from "@/lib/pdfText";
 import { dropSliceDuplicates, jobsOfEmptyPages } from "@/lib/pdfSlices";
 import { withCleanCaseStem } from "@/lib/caseStem";
+import { useConfirm } from "@/hooks/use-confirm";
 import {
   readAsDataUrl,
   splitPdfIntoPageChunks,
@@ -1447,6 +1448,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const [pageResults, setPageResults] = useState<(PageResult | null)[] | null>(null);
   /** Indices into `prepared` whose page failed and can be retried on its own. */
   const [failedPages, setFailedPages] = useState<number[]>([]);
+  const confirm = useConfirm();
   const wakeLock = useScreenWakeLock();
 
   // ---- background conversion ------------------------------------------------
@@ -1979,6 +1981,18 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
 
   const generate = async () => {
     if (!extracted || !extracted.length) return;
+    // Never let an incomplete read leave as a finished document. This file
+    // shipped a .docx missing a whole clinical case and its five questions,
+    // and nothing between the warning card and the download said so.
+    if (
+      failedPages.length > 0 &&
+      !(await confirm(
+        `${failedPages.length} ${tr("page(s) n'ont rien donné. Le fichier Word sera incomplet. Générer quand même ?")}`,
+        { variant: "destructive" },
+      ))
+    ) {
+      return;
+    }
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy("generate");

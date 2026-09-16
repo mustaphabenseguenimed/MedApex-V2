@@ -21,6 +21,37 @@
  */
 export const MAX_SLICE_ASPECT = 1.6;
 
+/**
+ * Width, in pixels, a page's content should reach before it is read.
+ *
+ * Measured against this very document: every page rendered at 23% of its
+ * screenshot's native width or better came back correct, and every page below
+ * that — 16 to 20% — came back with invented ages and professions, or empty.
+ * 1300 px puts a 1260 px wide phone capture slightly above native, with room
+ * for the model's own downscale.
+ */
+export const TARGET_CONTENT_WIDTH = 1300;
+
+/** Never scale past this, however small the content: a page holding one word
+ *  should not be rendered as a wall. */
+const MAX_RENDER_SCALE = 16;
+
+/**
+ * How much to scale a page so its content is worth reading.
+ *
+ * `inkWidth` is the width of the page's content in page units. A full-width
+ * A4 text page lands near the scale 2 this code has always used; a capture
+ * dropped into a narrow column gets the much larger scale it needs.
+ */
+export function contentRenderScale(
+  inkWidth: number,
+  target = TARGET_CONTENT_WIDTH,
+  max = MAX_RENDER_SCALE,
+): number {
+  if (!Number.isFinite(inkWidth) || inkWidth <= 0) return 2;
+  return Math.min(max, Math.max(1, target / inkWidth));
+}
+
 /** Slices overlap, so a question cut by a boundary is whole in one of them. */
 const OVERLAP_RATIO = 0.08;
 const MIN_OVERLAP = 120;
