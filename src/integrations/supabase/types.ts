@@ -150,6 +150,7 @@ export type Database = {
           hint: string | null;
           id: string;
           lease_until: string | null;
+          page_map: number[] | null;
           pages: Json;
           status: string;
           storage_path: string;
@@ -166,6 +167,7 @@ export type Database = {
           hint?: string | null;
           id?: string;
           lease_until?: string | null;
+          page_map?: number[] | null;
           pages?: Json;
           status?: string;
           storage_path: string;
@@ -182,6 +184,7 @@ export type Database = {
           hint?: string | null;
           id?: string;
           lease_until?: string | null;
+          page_map?: number[] | null;
           pages?: Json;
           status?: string;
           storage_path?: string;

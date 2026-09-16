@@ -57,6 +57,9 @@ import {
 import { answerLetters, sameAnswer } from "@/lib/answerVerdicts";
 import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
 import { alignByStems, type PreparedChunk } from "@/lib/questionChunks";
+import type { PageSlice } from "@/lib/pdfText";
+import { dropSliceDuplicates, jobsOfEmptyPages } from "@/lib/pdfSlices";
+import { withCleanCaseStem } from "@/lib/caseStem";
 import {
   readAsDataUrl,
   splitPdfIntoPageChunks,
@@ -1529,63 +1532,82 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         // instead, which bounds the payload no matter how large the source is.
         const oversized =
           split.tooHeavyToSplit || chunks.some((c) => c.dataUrl.length > MAX_CHUNK_DATA_URL);
-        let rendered: string[] = [];
+        // Slices, not whole pages. A screenshot export puts a whole clinical
+        // case on one page — 1260 px wide, up to 11 000 tall — and the model
+        // scales any image so its longest edge fits ~1568 px, which turns such
+        // a page into an unreadable strip. It then guesses: wrong ages,
+        // invented professions, a vignette welded to the previous page's, and
+        // pages that come back empty. Cutting the page into near-square pieces
+        // keeps the text at nearly its original width. A page already in shape
+        // yields a single slice covering it, so ordinary PDFs are untouched.
+        let rendered: PageSlice[] = [];
         if (oversized) {
           setPhase(`${tr("Conversion des pages en images")}${label}`);
           setProgress(null);
           await yieldToBrowser();
-          const { renderPdfPages } = await import("@/lib/pdfText");
-          rendered = await renderPdfPages(await file.arrayBuffer(), {
+          const { renderPdfPageSlices } = await import("@/lib/pdfText");
+          rendered = await renderPdfPageSlices(await file.arrayBuffer(), {
             maxBytes: 1_200_000,
             onProgress: (done, total) => setProgress({ done, total }),
           });
         }
+        // Position of each slice in the whole document, so the piece before it
+        // can be used as context even across a page boundary.
+        const sliceAt = new Map(rendered.map((slice, i) => [slice, i]));
+        /** Label a slice by its source page, naming the piece only when the
+         *  page was actually cut — so a warning says "p8 2/5", not "p8 1/1". */
+        const sliceLabel = (slice: PageSlice) =>
+          slice.sliceCount > 1
+            ? `p${slice.pageIndex + 1} ${slice.sliceIndex + 1}/${slice.sliceCount}`
+            : `p${slice.pageIndex + 1}`;
+        /** The piece before this one, as context: the previous slice of the
+         *  same page, or the last slice of the page before. */
+        const previousSlice = (at: number) => (at > 0 ? rendered[at - 1]?.dataUrl : undefined);
+        const pushSlice = (slice: PageSlice, at: number) => {
+          if (!slice.dataUrl) return;
+          const previous = previousSlice(at);
+          const contextImage =
+            previous && slice.dataUrl.length + previous.length <= MAX_CHUNK_DATA_URL
+              ? previous
+              : undefined;
+          chunkJobs.push({
+            dataUrl: "",
+            imageDataUrl: slice.dataUrl,
+            contextImageDataUrl: contextImage,
+            filename: `${file.name} (${sliceLabel(slice)})`,
+            fileIndex,
+            // The SOURCE page, not the slice: "p. 7" in the preview has to
+            // keep meaning page 7 of the admin's own file.
+            pageIndex: slice.pageIndex,
+            contextPages: contextImage ? 1 : 0,
+            // The text-layer count is per page and cannot be divided between
+            // slices — and a sliced page is a scan, where it is 0 anyway.
+            expected: slice.sliceCount > 1 ? 0 : (expectedPerPage[slice.pageIndex] ?? 0),
+          });
+        };
 
         // Nothing to split from (the pages are too heavy to send as PDF at
-        // all), so every page goes as a rendered image, with the previous one
-        // carried as context when the pair still fits.
+        // all), so every page goes as rendered slices.
         if (split.tooHeavyToSplit) {
-          for (let pageIndex = 0; pageIndex < rendered.length; pageIndex++) {
-            const image = rendered[pageIndex];
-            if (!image) continue;
-            const previous = pageIndex > 0 ? rendered[pageIndex - 1] : undefined;
-            const contextImage =
-              previous && image.length + previous.length <= MAX_CHUNK_DATA_URL
-                ? previous
-                : undefined;
-            chunkJobs.push({
-              dataUrl: "",
-              imageDataUrl: image,
-              contextImageDataUrl: contextImage,
-              filename: `${file.name} (p${pageIndex + 1})`,
-              fileIndex,
-              pageIndex,
-              contextPages: contextImage ? 1 : 0,
-              expected: expectedPerPage[pageIndex] ?? 0,
-            });
-          }
+          rendered.forEach((slice, at) => pushSlice(slice, at));
           continue;
         }
 
         for (const chunk of chunks) {
           const tooBig = chunk.dataUrl.length > MAX_CHUNK_DATA_URL;
-          const image = tooBig ? rendered[chunk.firstPageIndex] : undefined;
-          let contextImage: string | undefined;
-          if (image && chunk.contextPages > 0) {
-            const previous = rendered[chunk.firstPageIndex - 1];
-            // Only carry the context image when the pair still fits the budget.
-            if (previous && image.length + previous.length <= MAX_CHUNK_DATA_URL) {
-              contextImage = previous;
+          if (tooBig) {
+            for (const slice of rendered) {
+              if (slice.pageIndex === chunk.firstPageIndex)
+                pushSlice(slice, sliceAt.get(slice) ?? 0);
             }
+            continue;
           }
           chunkJobs.push({
-            dataUrl: image ? "" : chunk.dataUrl,
-            imageDataUrl: image,
-            contextImageDataUrl: contextImage,
+            dataUrl: chunk.dataUrl,
             filename: `${file.name} (${chunk.label})`,
             fileIndex,
             pageIndex: chunk.firstPageIndex,
-            contextPages: image ? (contextImage ? 1 : 0) : chunk.contextPages,
+            contextPages: chunk.contextPages,
             expected: expectedPerPage[chunk.firstPageIndex] ?? 0,
           });
         }
@@ -1687,7 +1709,15 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       );
       if (controller.signal.aborted) return;
       setPageResults(results);
-      setFailedPages(failed.sort((a, b) => a - b));
+      // A request that errored is reported already; a request that SUCCEEDS
+      // and returns nothing was not. That is how this file lost a whole
+      // clinical case without a word — so a source page that read nothing
+      // joins the same retry card.
+      const empty = jobsOfEmptyPages(
+        prepared,
+        results.map((r) => r?.questions?.length ?? 0),
+      );
+      setFailedPages([...new Set([...failed, ...empty])].sort((a, b) => a - b));
 
       // Carry a clinical-case vignette across a page break. The model is given
       // the previous page as context and asked to recopy the vignette itself,
@@ -1701,7 +1731,11 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           // preview shows it, and every edit path spreads the object, so it
           // survives. The .docx and .json builders pick their fields
           // explicitly and ignore it.
-          const q = withSourcePage(raw, job.pageIndex + 1);
+          // A vignette copied verbatim off the page keeps the source paper's
+          // own heading ("Cas clinique N°12 :", "CC7 :"). The app renumbers
+          // its cases from 1, so that number contradicts everything
+          // downstream and is pure noise in the énoncé.
+          const q = withCleanCaseStem(withSourcePage(raw, job.pageIndex + 1));
           if (q.case_stem) return q;
           if (q.continues_previous_page && lastCaseFile === job.fileIndex && lastCaseStem) {
             return { ...q, case_stem: lastCaseStem };
@@ -1728,6 +1762,10 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         const clean = withoutRotationHints(stitched[i]);
         byFile.set(job.fileIndex, [...(byFile.get(job.fileIndex) ?? []), ...clean]);
       });
+      // Slices overlap on purpose, so a question sitting on a cut comes back
+      // from both pieces. Deduped per file, keeping the first copy, so the
+      // question stays where the document puts it.
+      for (const [idx, qs] of byFile) byFile.set(idx, dropSliceDuplicates(qs));
       const all: ExtractedQ[] = [...byFile.entries()]
         .sort((a, b) => a[0] - b[0])
         .flatMap(([, qs]) => qs);
@@ -1841,16 +1879,21 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         probeOnly: true,
       });
       let upload: Blob = file;
+      // Which page of the ORIGINAL file each uploaded page came from, when the
+      // upload was rebuilt out of slices. Null when the file went as-is.
+      let pageMap: number[] | undefined;
       if (probe.tooHeavyToSplit) {
         setPhase(tr("Allègement du fichier"));
         setProgress(null);
         await yieldToBrowser();
-        const { lightenPdfToImages } = await import("@/lib/pdfLighten");
-        upload = await lightenPdfToImages(await file.arrayBuffer(), {
+        const { lightenPdfToSlices } = await import("@/lib/pdfLighten");
+        const lightened = await lightenPdfToSlices(await file.arrayBuffer(), {
           onProgress: (done, total) => setProgress({ done, total }),
         });
+        upload = lightened.blob;
+        pageMap = lightened.pageMap;
         setProgress(null);
-        toast.info(tr("PDF lourd — pages converties en images avant l'envoi."));
+        toast.info(tr("PDF lourd — pages découpées en images avant l'envoi."));
       }
 
       setPhase(tr("Envoi du fichier"));
@@ -1862,7 +1905,12 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         .upload(path, upload, { contentType: "application/pdf" });
       if (error) throw new Error(error.message);
       const { jobId: id } = await createJob({
-        data: { storagePath: path, filename: file.name, hint: hint.trim() || undefined },
+        data: {
+          storagePath: path,
+          filename: file.name,
+          hint: hint.trim() || undefined,
+          pageMap,
+        },
       });
       setJobId(id);
       setJob(null);
@@ -1893,7 +1941,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         if (stopped) return;
         setJob(snapshot);
         if (snapshot.status === "done") {
-          setExtracted(withoutRotationHints(snapshot.questions));
+          setExtracted(withoutRotationHints(snapshot.questions).map(withCleanCaseStem));
           setFileGroups(null);
           setChunkWarnings(snapshot.warnings);
           toast.success(
@@ -2160,7 +2208,9 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
             <span className="flex-1">
               {failedPages.length}{" "}
-              {tr("page(s) n'ont pas pu être converties (connexion). Les autres sont conservées.")}
+              {tr(
+                "page(s) sans résultat : non converties, ou lues sans qu'aucune question n'en ressorte. Les autres sont conservées.",
+              )}
             </span>
             <Button size="sm" variant="outline" onClick={retryFailedPages}>
               <RefreshCw className="mr-1.5 h-4 w-4" />

@@ -10,6 +10,7 @@
  */
 
 import type { ExtractedQ } from "./questions.functions";
+import { dropSliceDuplicates, sourcePageFromMap } from "./pdfSlices";
 
 /** One page of the source PDF, once the model has read it. */
 export type JobPage = {
@@ -80,23 +81,39 @@ export function sourcePageOf(question: unknown): number | null {
   return typeof page === "number" && Number.isFinite(page) ? page : null;
 }
 
-/** Every question the job has read so far, in the document's own order, each
- *  stamped with the page it came from. */
-export function flattenQuestions(pages: JobPage[]): WithSourcePage<ExtractedQ>[] {
-  return [...pages]
+/**
+ * Every question the job has read so far, in the document's own order, each
+ * stamped with the page it came from.
+ *
+ * `pageMap` translates a page of the UPLOADED file back to a page of the
+ * admin's original, for a job whose upload was rebuilt out of slices — five
+ * uploaded pages can be one page of theirs, and "p. 7" has to keep meaning
+ * their page 7. Without a map a page is its own page.
+ */
+export function flattenQuestions(
+  pages: JobPage[],
+  pageMap?: number[] | null,
+): WithSourcePage<ExtractedQ>[] {
+  const all = [...pages]
     .sort((a, b) => a.index - b.index)
-    .flatMap((p) => p.questions.map((q) => withSourcePage(q, p.index + 1)));
+    .flatMap((p) => p.questions.map((q) => withSourcePage(q, sourcePageFromMap(pageMap, p.index))));
+  // A sliced upload overlaps its pieces, so a question on a cut is read twice.
+  return dropSliceDuplicates(all);
 }
 
-/** The completeness notes worth showing, labelled by page. */
+/** The completeness notes worth showing, labelled by the admin's own page. */
 export function pageWarnings(
   pages: JobPage[],
   filename: string,
+  pageMap?: number[] | null,
 ): { filename: string; warning: string }[] {
   return [...pages]
     .sort((a, b) => a.index - b.index)
     .filter((p) => !!p.warning)
-    .map((p) => ({ filename: `${filename} (p${p.index + 1})`, warning: p.warning! }));
+    .map((p) => ({
+      filename: `${filename} (p${sourcePageFromMap(pageMap, p.index)})`,
+      warning: p.warning!,
+    }));
 }
 
 /** Is this job free to be picked up — never claimed, or claimed by a worker

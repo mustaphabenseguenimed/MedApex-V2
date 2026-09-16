@@ -8,6 +8,7 @@
  */
 
 import { yieldToBrowser } from "./fileUtils";
+import { sliceRanges } from "./pdfSlices";
 
 export type PdfTextResult = {
   /** Extracted text, page by page (empty string for scanned pages). */
@@ -74,21 +75,27 @@ export async function extractPdfText(file: File | ArrayBuffer): Promise<PdfTextR
  *
  *  `maxHeight` caps the canvas height, so a caller that only wants the top of
  *  the page neither allocates a full-page bitmap nor pays to rasterise the
- *  part it is about to throw away — the canvas clips it instead. */
+ *  part it is about to throw away — the canvas clips it instead. `top` slides
+ *  that window down the page, which is how one slice is rasterised without
+ *  ever holding a bitmap of the whole page. */
 async function renderPageToCanvas(
   page: any,
   scale: number,
   maxHeight?: number,
+  top = 0,
 ): Promise<HTMLCanvasElement> {
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
   canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.min(Math.ceil(viewport.height), maxHeight ?? Infinity);
+  canvas.height = Math.min(Math.ceil(viewport.height) - top, maxHeight ?? Infinity);
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas non supporté par ce navigateur");
   // JPEG has no alpha: paint white first or transparent areas come out black.
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Shift the page up so the slice's own band lands in the canvas; anything
+  // outside it is clipped by the canvas bounds rather than drawn.
+  if (top) ctx.translate(0, -top);
   await page.render({ canvasContext: ctx, viewport }).promise;
   return canvas;
 }
@@ -186,4 +193,77 @@ export async function renderPdfPageTopImages(
     /* ignore */
   }
   return images;
+}
+
+/** One rendered slice of a page. */
+export type PageSlice = {
+  /** 0-based page of the source PDF this slice was cut from. */
+  pageIndex: number;
+  /** Position of this slice among its page's slices, 0-based. */
+  sliceIndex: number;
+  /** How many slices that page produced. */
+  sliceCount: number;
+  dataUrl: string;
+};
+
+/**
+ * Render every page as one or more JPEG slices, each shaped so the text
+ * survives the model's own downscale.
+ *
+ * Same size ladder as `renderPdfPages`, applied per slice. A page already
+ * within the aspect budget yields exactly one slice covering it, so an
+ * ordinary document produces exactly what it did before.
+ */
+export async function renderPdfPageSlices(
+  bytes: ArrayBuffer,
+  opts?: {
+    scale?: number;
+    maxBytes?: number;
+    maxAspect?: number;
+    onProgress?: (done: number, total: number) => void;
+  },
+): Promise<PageSlice[]> {
+  const pdfjs = await getPdfjs();
+  const doc = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
+  const baseScale = opts?.scale ?? 2;
+  const maxBytes = opts?.maxBytes ?? 1_500_000;
+  const out: PageSlice[] = [];
+
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    // Measure at scale 1 so the cuts are expressed in page units: the ladder
+    // below may render a slice smaller, but every slice of a page has to be
+    // cut in the same places whatever scale it ends up rendered at.
+    const base = page.getViewport({ scale: 1 });
+    const ranges = sliceRanges(base.width, base.height, { maxAspect: opts?.maxAspect });
+
+    for (let s = 0; s < ranges.length; s++) {
+      const range = ranges[s];
+      let dataUrl = "";
+      outer: for (const scale of [baseScale, baseScale * 0.75, baseScale * 0.5]) {
+        const canvas = await renderPageToCanvas(
+          page,
+          scale,
+          Math.ceil(range.height * scale),
+          Math.floor(range.top * scale),
+        );
+        for (const quality of [0.85, 0.7, 0.55]) {
+          dataUrl = canvas.toDataURL("image/jpeg", quality);
+          if (dataUrl.length <= maxBytes) break outer;
+        }
+      }
+      out.push({ pageIndex: i - 1, sliceIndex: s, sliceCount: ranges.length, dataUrl });
+      // Rendering and JPEG-encoding is solid main-thread CPU; without this the
+      // tab is unresponsive for the whole document.
+      await yieldToBrowser();
+    }
+    opts?.onProgress?.(i, doc.numPages);
+  }
+
+  try {
+    await doc.destroy();
+  } catch {
+    /* ignore */
+  }
+  return out;
 }
