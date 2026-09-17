@@ -135,9 +135,42 @@ describe("dropSliceDuplicates", () => {
     );
   });
 
-  test("the same wording on two different pages is two real questions", () => {
+  test("the same wording on two distant pages is two real questions", () => {
     const out = dropSliceDuplicates([q("Quel diagnostic ?", 3), q("Quel diagnostic ?", 7)]);
+    assert.equal(out.length, 2, "a revision paper may ask the same thing twice");
+  });
+
+  // Each slice carries the one before it as context. The model is told to read
+  // only the second image and sometimes reads both — so when the context is
+  // the last slice of the PREVIOUS page, the question comes back stamped with
+  // the new page. Eleven of the twelve duplicates in the real run were this.
+  test("a question the context image returned again on the next page is one", () => {
+    const out = dropSliceDuplicates([
+      q("Interprétez la gazométrie ?", 8),
+      q("Interprétez la gazométrie ?", 9),
+    ]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].source_page, 8, "the first copy, so it stays where the document puts it");
+  });
+
+  test("but it never reaches two pages away", () => {
+    const out = dropSliceDuplicates([q("Quel diagnostic ?", 3), q("Quel diagnostic ?", 5)]);
     assert.equal(out.length, 2);
+  });
+
+  // Three copies in a row (overlap plus context) still leave one, and a
+  // genuine repeat further on is still kept.
+  test("a run of copies collapses to one without swallowing a distant repeat", () => {
+    const out = dropSliceDuplicates([
+      q("Votre conduite ?", 4),
+      q("Votre conduite ?", 4),
+      q("Votre conduite ?", 5),
+      q("Votre conduite ?", 12),
+    ]);
+    assert.deepEqual(
+      out.map((x) => x.source_page),
+      [4, 12],
+    );
   });
 
   test("the same stem with different options is not a duplicate", () => {

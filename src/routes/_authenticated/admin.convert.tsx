@@ -105,6 +105,7 @@ import {
   caseKey,
   stripHtml,
   splitRotationYear,
+  withoutQuestionNumber,
 } from "@/lib/questionsJson";
 import { ConversionLibrary, SaveToLibraryButton } from "@/components/ConversionLibrary";
 
@@ -1759,7 +1760,13 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           // own heading ("Cas clinique N°12 :", "CC7 :"). The app renumbers
           // its cases from 1, so that number contradicts everything
           // downstream and is pure noise in the énoncé.
-          const q = withCleanCaseStem(withSourcePage(raw, job.pageIndex + 1));
+          // The paper numbers its own questions, and at this render
+          // resolution the model can read those numbers and copies them
+          // ("41. Quel diagnostic…"). The app numbers its own, so they are
+          // noise everywhere downstream.
+          const q = withoutQuestionNumber(
+            withCleanCaseStem(withSourcePage(raw, job.pageIndex + 1)),
+          );
           if (q.case_stem) return q;
           if (q.continues_previous_page && lastCaseFile === job.fileIndex && lastCaseStem) {
             return { ...q, case_stem: lastCaseStem };
