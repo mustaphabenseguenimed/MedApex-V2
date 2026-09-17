@@ -100,14 +100,45 @@ export function looksLikeVignette(stem: string | null | undefined): boolean {
   return text.length > 0 && VIGNETTE_OPENING.test(text);
 }
 
-/** Normalized head of a vignette, for deciding whether two are the same one. */
-function vignetteHead(stem: string): string {
+/** The words of a vignette, normalized, for comparing two of them. */
+function vignetteWords(stem: string): string[] {
   return textOf(stem)
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
     .toLowerCase()
-    .slice(0, 120);
+    .split(" ")
+    .filter(Boolean);
 }
+
+/**
+ * How alike two vignettes are, from 0 to 1.
+ *
+ * The model recopies a case's énoncé for every slice it appears in, and does
+ * not recopy it identically: one real run produced "Homme de 63 ans, retraité,
+ * ancien fonctionnaire administratif…" and "Homme de 63 ans, retiré, ancien
+ * fonctionnaire administratif…" — one word apart, and enough to split the case
+ * in two when the comparison was a prefix match.
+ *
+ * Dice over word pairs, which is cheap and reads the whole text rather than a
+ * prefix. Measured over that run's 26 vignettes: two readings of one case
+ * score 0.977 to 1.000, while two different patients never exceed 0.576. The
+ * threshold below sits in that gap with room on both sides.
+ */
+export function vignetteSimilarity(a: string, b: string): number {
+  const pairs = (words: string[]) =>
+    new Set(words.slice(0, -1).map((w, i) => `${w} ${words[i + 1]}`));
+  const A = pairs(vignetteWords(a));
+  const B = pairs(vignetteWords(b));
+  // A one-word vignette has no pairs to compare, and guessing from a single
+  // word would merge cases that merely open the same way.
+  if (!A.size || !B.size) return 0;
+  let shared = 0;
+  for (const p of A) if (B.has(p)) shared++;
+  return (2 * shared) / (A.size + B.size);
+}
+
+/** Above this, two vignettes are two readings of one case. */
+export const SAME_CASE_SIMILARITY = 0.8;
 
 /**
  * Give every question of a source page the case énoncé that page actually has.
@@ -124,32 +155,35 @@ function vignetteHead(stem: string): string {
 export function resolvePageCases<
   T extends { case_stem?: string | null; source_page?: number | null },
 >(questions: T[]): T[] {
-  /** Per page: the vignettes seen so far, first one first. */
-  const seen = new Map<number | string, { head: string; stem: string }[]>();
+  /** Every vignette seen so far, with the page it was read on. */
+  const seen: { stem: string; page: number }[] = [];
+  /** One page away, no further: the slice overlap and the context image both
+   *  reach exactly one page, which is the same tolerance dropSliceDuplicates
+   *  uses on questions for the same reason. */
+  const near = (a: number, b: number) => Math.abs(a - b) <= 1;
   return questions.map((q) => {
-    const page = q.source_page ?? "?";
-    const known = seen.get(page) ?? [];
-    if (!seen.has(page)) seen.set(page, known);
+    const page = typeof q.source_page === "number" ? q.source_page : 0;
     const stem = q.case_stem;
     if (!stem || !textOf(stem)) return q;
 
     if (looksLikeVignette(stem)) {
-      const head = vignetteHead(stem);
-      // The same vignette read twice off overlapping slices: one of them is
-      // often a little shorter or re-typed, so compare heads and prefixes
-      // rather than demanding an exact match.
-      const same = known.find(
-        (k) => k.head === head || k.head.startsWith(head) || head.startsWith(k.head),
+      // Two readings of one case: alike enough, and read close enough
+      // together. The first reading stays canonical, so the case keeps the
+      // wording it was first given and its place in the document.
+      const same = seen.find(
+        (k) => near(k.page, page) && vignetteSimilarity(k.stem, stem) >= SAME_CASE_SIMILARITY,
       );
       if (!same) {
-        known.push({ head, stem });
+        seen.push({ stem, page });
         return q;
       }
       return same.stem === stem ? q : { ...q, case_stem: same.stem };
     }
 
-    // A fragment: it belongs to this page's case, or to no case at all.
-    const inherited = known.length ? known[known.length - 1].stem : null;
-    return { ...q, case_stem: inherited };
+    // A fragment belongs to the case it was cut out of: the last vignette on
+    // its own page, or — when its page has none, because the case started on
+    // the page before — that one. Failing both, to no case at all.
+    const owner = [...seen].reverse().find((k) => near(k.page, page));
+    return { ...q, case_stem: owner?.stem ?? null };
   });
 }

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { looksLikeVignette, resolvePageCases, stripCaseLabel, withCleanCaseStem } from "./caseStem";
+import {
+  looksLikeVignette,
+  resolvePageCases,
+  SAME_CASE_SIMILARITY,
+  stripCaseLabel,
+  vignetteSimilarity,
+  withCleanCaseStem,
+} from "./caseStem";
 
 describe("stripCaseLabel", () => {
   // Every shape below was read off the Sarcoïdose PDF's own vignettes.
@@ -169,8 +176,13 @@ describe("resolvePageCases", () => {
     source_page,
     case_stem,
   });
-  const VIGNETTE_A = "Homme de 63 ans, retraité, ancien fonctionnaire administratif.";
-  const VIGNETTE_B = "Femme de 42 ans, technicienne de santé, sans antécédents.";
+  const VIGNETTE_A =
+    "Homme de 63 ans, retraité, ancien fonctionnaire administratif, ex-fumeur à 30 PA, admis pour aggravation d'une dyspnée chronique évoluant depuis 6 mois.";
+  /** The same case as the model recopied it for the next slice: one word. */
+  const RETYPED_A =
+    "Homme de 63 ans, retiré, ancien fonctionnaire administratif, ex-fumeur à 30 PA, admis pour aggravation d'une dyspnée chronique évoluant depuis 6 mois.";
+  const VIGNETTE_B =
+    "Femme de 42 ans, technicienne de santé, sans antécédents pathologiques, consulte pour une toux sèche évoluant depuis un mois.";
   const FRAGMENT = "12. Les résultats des examens demandés: FNS : GB 9000/mm³.";
 
   // The failure this exists for: a slice starting mid-page reports whatever
@@ -184,9 +196,10 @@ describe("resolvePageCases", () => {
     );
   });
 
-  test("it never reaches across pages for one", () => {
-    const out = resolvePageCases([q(1, VIGNETTE_A, "a"), q(2, FRAGMENT, "b")]);
-    assert.equal(out[1].case_stem, null, "page 2 has no vignette, so its fragment founds nothing");
+  test("it only looks backwards, never at a case that starts later", () => {
+    const out = resolvePageCases([q(1, FRAGMENT, "a"), q(1, VIGNETTE_A, "b")]);
+    assert.equal(out[0].case_stem, null, "nothing had been seen yet when the fragment arrived");
+    assert.equal(out[1].case_stem, VIGNETTE_A);
   });
 
   test("a page whose only stem is a fragment leaves its questions standalone", () => {
@@ -200,12 +213,42 @@ describe("resolvePageCases", () => {
   // Page 8's vignette was visible in two overlapping slices and became two
   // "Cas clinique n°N" blocks holding halves of one case.
   test("one vignette read twice off overlapping slices collapses to one", () => {
-    const shorter = VIGNETTE_A.slice(0, 40);
-    const out = resolvePageCases([q(1, VIGNETTE_A, "a"), q(1, shorter, "b")]);
+    const out = resolvePageCases([q(1, VIGNETTE_A, "a"), q(1, RETYPED_A, "b")]);
+    assert.deepEqual(
+      out.map((x) => x.case_stem),
+      [VIGNETTE_A, VIGNETTE_A],
+      "the first reading stays canonical",
+    );
+  });
+
+  // The context image shows the previous page's vignette again, and the copy
+  // comes back stamped with the new page.
+  test("the same vignette one page away is still the same case", () => {
+    const out = resolvePageCases([q(1, VIGNETTE_A, "a"), q(2, VIGNETTE_A, "b")]);
     assert.deepEqual(
       out.map((x) => x.case_stem),
       [VIGNETTE_A, VIGNETTE_A],
     );
+  });
+
+  // Beyond one page it is a real second case, not an echo of the first: the
+  // overlap and the context image cannot reach that far.
+  test("but a re-typed vignette two pages away stays its own case", () => {
+    const out = resolvePageCases([q(1, VIGNETTE_A, "a"), q(3, RETYPED_A, "b")]);
+    assert.deepEqual(
+      out.map((x) => x.case_stem),
+      [VIGNETTE_A, RETYPED_A],
+    );
+  });
+
+  test("a fragment on a page with no vignette takes the previous page's", () => {
+    const out = resolvePageCases([q(1, VIGNETTE_A, "a"), q(2, FRAGMENT, "b")]);
+    assert.equal(out[1].case_stem, VIGNETTE_A, "the case continued across the page break");
+  });
+
+  test("but never from two pages back", () => {
+    const out = resolvePageCases([q(1, VIGNETTE_A, "a"), q(4, FRAGMENT, "b")]);
+    assert.equal(out[1].case_stem, null);
   });
 
   test("two different patients on one page stay two cases", () => {
@@ -232,5 +275,48 @@ describe("resolvePageCases", () => {
 
   test("an empty list is an empty list", () => {
     assert.deepEqual(resolvePageCases([]), []);
+  });
+});
+
+describe("vignetteSimilarity", () => {
+  // The real pair that split case 1 in two: one word apart.
+  const A =
+    "Homme de 63 ans, retraité, ancien fonctionnaire administratif, ex-fumeur à 30 PA, admis pour aggravation d'une dyspnée chronique évoluant depuis 6 mois.";
+  const RETYPED =
+    "Homme de 63 ans, retiré, ancien fonctionnaire administratif, ex-fumeur à 30 PA, admis pour aggravation d'une dyspnée chronique évoluant depuis 6 mois.";
+  // Two different cases from the same paper, both opening almost identically.
+  const OTHER_48 =
+    "Une femme de 48 ans, veuve, femme au foyer, aux antécédents de sarcoïdose stade 2 diagnostiquée il y a 5 ans, consulte pour aggravation de sa dyspnée.";
+  const ALSO_48 =
+    "Une femme de 48 ans, originaire et demeurant à Alger, mariée et mère de 03 enfants, sans antécédents médicaux, consulte pour toux sèche depuis 02 mois.";
+
+  test("one re-typed word still reads as the same case", () => {
+    assert.ok(
+      vignetteSimilarity(A, RETYPED) >= SAME_CASE_SIMILARITY,
+      `scored ${vignetteSimilarity(A, RETYPED)}`,
+    );
+  });
+
+  test("identical text scores 1", () => {
+    assert.equal(vignetteSimilarity(A, A), 1);
+  });
+
+  // The measurement that fixes the threshold: across the real run, two
+  // different patients never exceeded 0.576 while two readings of one case
+  // never fell below 0.977.
+  test("two different patients stay well below the threshold", () => {
+    const score = vignetteSimilarity(OTHER_48, ALSO_48);
+    assert.ok(score < SAME_CASE_SIMILARITY, `scored ${score}`);
+    assert.ok(score < 0.7, "and with room to spare");
+  });
+
+  test("nothing to compare never counts as a match", () => {
+    assert.equal(vignetteSimilarity("", A), 0);
+    assert.equal(vignetteSimilarity("Homme", A), 0, "one word has no pair to compare");
+    assert.equal(vignetteSimilarity("", ""), 0);
+  });
+
+  test("markup and punctuation do not change the reading", () => {
+    assert.equal(vignetteSimilarity(`<p>${A}</p>`, A), 1);
   });
 });
