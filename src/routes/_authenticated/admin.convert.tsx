@@ -3559,7 +3559,12 @@ function Step2Panel({
             <ChunkWarnings warnings={chunkWarnings} />
             <AnswerFixes fixes={answerFixes} onReview={separate ? undefined : reviewFlagged} />
             <AnswerDoubts doubts={answerDoubts} onReview={separate ? undefined : reviewFlagged} />
-            <div className="flex flex-wrap items-center gap-2">
+            {/* Follows the scroll: this list runs to a hundred questions, and
+                both actions used to be a long scroll away from wherever the
+                admin happened to be reading. The negative margin lets the
+                backdrop span the card's padding instead of leaving the list
+                showing through it. */}
+            <div className="sticky top-0 z-10 -mx-6 flex flex-wrap items-center gap-2 border-b bg-background/95 px-6 py-2 backdrop-blur">
               <Button
                 variant="outline"
                 onClick={explain}
@@ -3663,28 +3668,6 @@ function Step2Panel({
                   onlyIndices={reviewOnly ? flaggedSet : undefined}
                   proposals={proposals}
                 />
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={explain}
-                    disabled={busy !== null || !extracted?.length}
-                  >
-                    {busy === "explain" ? (
-                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                    ) : (
-                      <FileDown className="mr-1.5 h-4 w-4" />
-                    )}
-                    {tr("Générer les explications (IA)")}
-                  </Button>
-                  <Button onClick={generate} disabled={busy !== null || !extracted?.length}>
-                    {busy === "generate" ? (
-                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                    ) : (
-                      <FileDown className="mr-1.5 h-4 w-4" />
-                    )}
-                    {tr("Générer le fichier Word")}
-                  </Button>
-                </div>
               </>
             )}
           </div>
