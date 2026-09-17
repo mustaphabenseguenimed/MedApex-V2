@@ -303,6 +303,26 @@ function collectChunkWarnings(
   );
 }
 
+/**
+ * A row of actions that follows the scroll.
+ *
+ * A step's question list runs to a hundred entries, so a button sitting above
+ * it is a long scroll away from wherever the admin is actually reading — which
+ * is why every step used to render its generate button twice, above the list
+ * and again below it. One row that stays put beats two that do not.
+ *
+ * The negative margin lets the backdrop span the card's padding instead of
+ * leaving the list showing through it. Nothing on this page is fixed above the
+ * card, so `top-0` needs no offset.
+ */
+function StickyActions({ children }: { children: ReactNode }) {
+  return (
+    <div className="sticky top-0 z-10 -mx-6 flex flex-wrap items-center gap-2 border-b bg-background/95 px-6 py-2 backdrop-blur">
+      {children}
+    </div>
+  );
+}
+
 /** Amber panel listing chunks the server reported as possibly incomplete.
  *  The server already re-splits and retries a short chunk; this is what's
  *  left over after that, so it always needs a human look. */
@@ -2443,28 +2463,22 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
               />
             ) : (
               <>
-                <Button onClick={generate} disabled={busy !== null || !extracted.length}>
-                  {busy === "generate" ? (
-                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                  ) : (
-                    <FileDown className="mr-1.5 h-4 w-4" />
-                  )}
-                  {tr("Générer le fichier .docx")}
-                </Button>
+                <StickyActions>
+                  <Button onClick={generate} disabled={busy !== null || !extracted.length}>
+                    {busy === "generate" ? (
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileDown className="mr-1.5 h-4 w-4" />
+                    )}
+                    {tr("Générer le fichier .docx")}
+                  </Button>
+                </StickyActions>
                 <QuestionsPreviewEditor
                   items={extracted}
                   onChange={setExtracted}
                   showExplanation={false}
                   hideRotation
                 />
-                <Button onClick={generate} disabled={busy !== null || !extracted.length}>
-                  {busy === "generate" ? (
-                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                  ) : (
-                    <FileDown className="mr-1.5 h-4 w-4" />
-                  )}
-                  {tr("Générer le fichier .docx")}
-                </Button>
               </>
             )}
           </div>
@@ -3559,12 +3573,7 @@ function Step2Panel({
             <ChunkWarnings warnings={chunkWarnings} />
             <AnswerFixes fixes={answerFixes} onReview={separate ? undefined : reviewFlagged} />
             <AnswerDoubts doubts={answerDoubts} onReview={separate ? undefined : reviewFlagged} />
-            {/* Follows the scroll: this list runs to a hundred questions, and
-                both actions used to be a long scroll away from wherever the
-                admin happened to be reading. The negative margin lets the
-                backdrop span the card's padding instead of leaving the list
-                showing through it. */}
-            <div className="sticky top-0 z-10 -mx-6 flex flex-wrap items-center gap-2 border-b bg-background/95 px-6 py-2 backdrop-blur">
+            <StickyActions>
               <Button
                 variant="outline"
                 onClick={explain}
@@ -3592,7 +3601,7 @@ function Step2Panel({
                   {tr("Générer le fichier Word")}
                 </Button>
               )}
-            </div>
+            </StickyActions>
             {separate && fileGroups ? (
               <SeparateResultsList
                 groups={fileGroups}
@@ -4037,19 +4046,17 @@ function Step3Panel({
               />
             ) : (
               <>
-                <Button onClick={generate} disabled={!extracted?.length}>
-                  <FileDown className="mr-1.5 h-4 w-4" />
-                  {tr("Générer le fichier .json")}
-                </Button>
+                <StickyActions>
+                  <Button onClick={generate} disabled={!extracted?.length}>
+                    <FileDown className="mr-1.5 h-4 w-4" />
+                    {tr("Générer le fichier .json")}
+                  </Button>
+                </StickyActions>
                 <QuestionsPreviewEditor
                   items={extracted ?? []}
                   onChange={setExtracted}
                   showExplanation
                 />
-                <Button onClick={generate} disabled={!extracted?.length}>
-                  <FileDown className="mr-1.5 h-4 w-4" />
-                  {tr("Générer le fichier .json")}
-                </Button>
               </>
             )}
           </div>
