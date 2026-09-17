@@ -174,3 +174,36 @@ export function toJsonObjects(qs: ExtractedQ[]): unknown[] {
   }
   return out;
 }
+
+/**
+ * Drop the source paper's own numbering from the front of a stem.
+ *
+ * At the render resolution step 1 now uses, those numbers are legible and the
+ * model copies them verbatim: "41. Quel diagnostic est le plus probable ?",
+ * "15. Ce tableau radio-clinique…". They belong to the paper, not to the
+ * question, and the app numbers its own — so in the database they are noise
+ * that also breaks any matching against the same question read elsewhere.
+ *
+ * The separator is required, exactly as `QUESTION_PREFIX_BARE` requires it in
+ * questionsFallback.ts: a stem legitimately opening "20 patients ont été
+ * inclus…" must keep its 20.
+ */
+const LEADING_QUESTION_NUMBER = /^(\s*(?:<[^>]+>\s*)*)(?:[Nn]\s*°|#)?\s*\d{1,3}\s*[.)\-–:]\s+/;
+
+export function stripQuestionNumber(stem: string): string;
+export function stripQuestionNumber(stem: null | undefined): null;
+export function stripQuestionNumber(stem: string | null | undefined): string | null;
+export function stripQuestionNumber(stem: string | null | undefined): string | null {
+  if (stem == null) return null;
+  // Keep any markup that opened the stem; only the text after it is numbered.
+  const out = stem.replace(LEADING_QUESTION_NUMBER, "$1");
+  // A stem that was nothing but its number is kept: an empty one is worse.
+  return stripHtml(out) ? out : stem;
+}
+
+/** The same, applied to a question's stem in place. */
+export function withoutQuestionNumber<T extends { stem?: string | null }>(question: T): T {
+  if (!question.stem) return question;
+  const stem = stripQuestionNumber(question.stem);
+  return stem === question.stem ? question : { ...question, stem };
+}

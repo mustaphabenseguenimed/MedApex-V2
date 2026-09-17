@@ -157,12 +157,19 @@ export function jobsOfEmptyPages(
 }
 
 /**
- * Drop a question the overlap between two slices handed in twice.
+ * Drop a question that came back twice from neighbouring reads.
  *
- * Slices overlap on purpose, so a question sitting on a cut is whole in both
- * pieces — and both extractions return it. Only within one source page: two
- * pages of a revision paper can legitimately ask the same thing, and merging
- * those would lose a real question.
+ * Two mechanisms produce the same question twice. Slices overlap on purpose,
+ * so a question sitting on a cut is whole in both pieces. And each slice is
+ * sent with the one before it as context: the model is told to read only the
+ * second image, but it sometimes extracts from the context too — and when that
+ * context is the last slice of the PREVIOUS page, the copy comes back stamped
+ * with the new page.
+ *
+ * So the comparison spans a page boundary, but only one: a revision paper can
+ * legitimately ask the same question on page 3 and again on page 14, and
+ * merging those would lose a real question. Neither mechanism can reach
+ * further than one page.
  *
  * Order is preserved and the FIRST copy is the one kept, so a question stays
  * where the document puts it.
@@ -170,7 +177,8 @@ export function jobsOfEmptyPages(
 export function dropSliceDuplicates<
   T extends { stem?: string | null; choices?: string[] | null; source_page?: number | null },
 >(questions: T[]): T[] {
-  const seen = new Set<string>();
+  /** Pages on which each distinct question has already been kept. */
+  const seen = new Map<string, number[]>();
   const norm = (s: string) =>
     s
       .replace(/<[^>]+>/g, " ")
@@ -187,9 +195,17 @@ export function dropSliceDuplicates<
     // Nothing to compare on: never drop it. A blank stem is a problem to
     // show the admin, not a duplicate to hide.
     if (!stem) return true;
-    const key = [q.source_page ?? "?", stem, (q.choices ?? []).map(norm).join("|")].join("\u0000");
-    if (seen.has(key)) return false;
-    seen.add(key);
+    const key = [stem, (q.choices ?? []).map(norm).join("|")].join("\u0000");
+    // An unstamped question still dedupes against other unstamped ones: page 0
+    // for all of them puts every copy within reach of every other.
+    const page = typeof q.source_page === "number" ? q.source_page : 0;
+    const kept = seen.get(key);
+    if (!kept) {
+      seen.set(key, [page]);
+      return true;
+    }
+    if (kept.some((p) => Math.abs(p - page) <= 1)) return false;
+    kept.push(page);
     return true;
   });
 }

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { ExtractedQ } from "./questions.functions";
-import { caseHintsOnLead, toJsonObjects, withoutRotationHints } from "./questionsJson";
+import {
+  caseHintsOnLead,
+  stripQuestionNumber,
+  toJsonObjects,
+  withoutQuestionNumber,
+  withoutRotationHints,
+} from "./questionsJson";
 import { parseQuestionsJson } from "./structuredImport";
 
 const q = (over: Partial<ExtractedQ> = {}): ExtractedQ => ({
@@ -226,5 +232,67 @@ describe("withoutRotationHints", () => {
     const [node] = exported(withoutRotationHints([q({ rotation_hint: "P3", year_hint: "2024" })]));
     assert.equal(node.Rotation, "");
     assert.equal(node.Year, "");
+  });
+});
+
+describe("stripQuestionNumber", () => {
+  // Real stems from a step 1 run, where the render resolution made the paper's
+  // own numbering legible and the model copied it.
+  test("removes the paper's own numbering", () => {
+    assert.equal(
+      stripQuestionNumber("41. Quel diagnostic est le plus probable devant ce tableau ?"),
+      "Quel diagnostic est le plus probable devant ce tableau ?",
+    );
+    assert.equal(
+      stripQuestionNumber("15. Ce tableau radio-clinique vous fait suspecter :"),
+      "Ce tableau radio-clinique vous fait suspecter :",
+    );
+    assert.equal(
+      stripQuestionNumber("N°7 - Vous complétez le bilan par :"),
+      "Vous complétez le bilan par :",
+    );
+    assert.equal(stripQuestionNumber("6) Quel est le stade ?"), "Quel est le stade ?");
+  });
+
+  // The guard the local parser already applies: without a separator, a number
+  // at the front belongs to the sentence.
+  test("a number that belongs to the question is kept", () => {
+    const stem = "20 patients ont été inclus dans cette étude.";
+    assert.equal(stripQuestionNumber(stem), stem);
+    assert.equal(
+      stripQuestionNumber("1000 UI de vitamine D par jour ?"),
+      "1000 UI de vitamine D par jour ?",
+    );
+  });
+
+  test("a stem with no number is untouched", () => {
+    const stem = "Quels examens complémentaires demandez-vous ?";
+    assert.equal(stripQuestionNumber(stem), stem);
+  });
+
+  test("markup that opened the stem survives", () => {
+    assert.equal(stripQuestionNumber("<p>41. Quel diagnostic ?</p>"), "<p>Quel diagnostic ?</p>");
+  });
+
+  test("a stem that is only its number is kept rather than emptied", () => {
+    assert.equal(stripQuestionNumber("41. "), "41. ");
+  });
+
+  test("nothing in, nothing out", () => {
+    assert.equal(stripQuestionNumber(null), null);
+    assert.equal(stripQuestionNumber(undefined), null);
+  });
+});
+
+describe("withoutQuestionNumber", () => {
+  test("cleans the stem and leaves the rest alone", () => {
+    const out = withoutQuestionNumber({ stem: "41. Quel diagnostic ?", choices: ["a", "b"] });
+    assert.equal(out.stem, "Quel diagnostic ?");
+    assert.deepEqual(out.choices, ["a", "b"]);
+  });
+
+  test("a question with nothing to clean keeps its identity", () => {
+    const q = { stem: "Quel diagnostic ?" };
+    assert.equal(withoutQuestionNumber(q), q, "same object: no needless re-render");
   });
 });
