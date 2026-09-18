@@ -1299,9 +1299,12 @@ function ConvertTabs() {
 type PdfChunkJob = {
   /** PDF bytes for this chunk, or "" when the chunk is sent as an image. */
   dataUrl: string;
-  /** Set when the chunk goes as a rendered page image instead of PDF bytes. */
-  imageDataUrl?: string;
-  /** Previous page, rendered, sent as context only alongside `imageDataUrl`. */
+  /** Set when the chunk goes as rendered images instead of PDF bytes: the
+   *  page's vertical strips, top to bottom. One job is one PAGE — the strips
+   *  travel together in a single request, so the page stays one request and
+   *  therefore one clinical case. */
+  imageDataUrls?: string[];
+  /** Last strip of the previous page, sent as context only. */
   contextImageDataUrl?: string;
   filename: string;
   fileIndex: number;
@@ -1579,59 +1582,52 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           await yieldToBrowser();
           const { renderPdfPageSlices } = await import("@/lib/pdfText");
           rendered = await renderPdfPageSlices(await file.arrayBuffer(), {
-            maxBytes: 1_200_000,
+            maxPageBytes: Math.round(MAX_CHUNK_DATA_URL * 0.75),
             onProgress: (done, total) => setProgress({ done, total }),
           });
         }
-        // Position of each slice in the whole document, so the piece before it
-        // can be used as context even across a page boundary.
-        const sliceAt = new Map(rendered.map((slice, i) => [slice, i]));
-        /** Label a slice by its source page, naming the piece only when the
-         *  page was actually cut — so a warning says "p8 2/5", not "p8 1/1". */
-        const sliceLabel = (slice: PageSlice) =>
-          slice.sliceCount > 1
-            ? `p${slice.pageIndex + 1} ${slice.sliceIndex + 1}/${slice.sliceCount}`
-            : `p${slice.pageIndex + 1}`;
-        /** The piece before this one, as context: the previous slice of the
-         *  same page, or the last slice of the page before. */
-        const previousSlice = (at: number) => (at > 0 ? rendered[at - 1]?.dataUrl : undefined);
-        const pushSlice = (slice: PageSlice, at: number) => {
-          if (!slice.dataUrl) return;
-          const previous = previousSlice(at);
+        /** A page's strips, in reading order. */
+        const stripsOf = (pageIndex: number) =>
+          rendered.filter((s) => s.pageIndex === pageIndex && s.dataUrl).map((s) => s.dataUrl);
+        /** One job per PAGE. Cutting a page into several requests is what made
+         *  each request invent or re-type the case's vignette, splitting one
+         *  case across several; sending the strips together keeps the page
+         *  whole while keeping the resolution that cutting bought. */
+        const pushPage = (pageIndex: number) => {
+          const strips = stripsOf(pageIndex);
+          if (!strips.length) return;
+          // Context is the previous page's LAST strip: enough for a vignette
+          // that continues here, without carrying a whole page.
+          const before = stripsOf(pageIndex - 1);
+          const previous = before[before.length - 1];
+          const total = strips.reduce((n, s) => n + s.length, 0);
           const contextImage =
-            previous && slice.dataUrl.length + previous.length <= MAX_CHUNK_DATA_URL
-              ? previous
-              : undefined;
+            previous && total + previous.length <= MAX_CHUNK_DATA_URL ? previous : undefined;
           chunkJobs.push({
             dataUrl: "",
-            imageDataUrl: slice.dataUrl,
+            imageDataUrls: strips,
             contextImageDataUrl: contextImage,
-            filename: `${file.name} (${sliceLabel(slice)})`,
+            filename: `${file.name} (p${pageIndex + 1})`,
             fileIndex,
-            // The SOURCE page, not the slice: "p. 7" in the preview has to
-            // keep meaning page 7 of the admin's own file.
-            pageIndex: slice.pageIndex,
+            pageIndex,
             contextPages: contextImage ? 1 : 0,
-            // The text-layer count is per page and cannot be divided between
-            // slices — and a sliced page is a scan, where it is 0 anyway.
-            expected: slice.sliceCount > 1 ? 0 : (expectedPerPage[slice.pageIndex] ?? 0),
+            // A job is a page again, so the text-layer count applies to it.
+            expected: expectedPerPage[pageIndex] ?? 0,
           });
         };
 
         // Nothing to split from (the pages are too heavy to send as PDF at
-        // all), so every page goes as rendered slices.
+        // all), so every page goes as its rendered strips.
         if (split.tooHeavyToSplit) {
-          rendered.forEach((slice, at) => pushSlice(slice, at));
+          const pages = [...new Set(rendered.map((s) => s.pageIndex))].sort((a, b) => a - b);
+          for (const pageIndex of pages) pushPage(pageIndex);
           continue;
         }
 
         for (const chunk of chunks) {
           const tooBig = chunk.dataUrl.length > MAX_CHUNK_DATA_URL;
           if (tooBig) {
-            for (const slice of rendered) {
-              if (slice.pageIndex === chunk.firstPageIndex)
-                pushSlice(slice, sliceAt.get(slice) ?? 0);
-            }
+            pushPage(chunk.firstPageIndex);
             continue;
           }
           chunkJobs.push({
@@ -1651,9 +1647,11 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       );
       // Anything still over budget after re-rendering can't be sent at all —
       // say so now rather than after a long wait on a request that will fail.
-      const tooLarge = chunkJobs.filter(
-        (j) => (j.imageDataUrl ?? j.dataUrl).length > MAX_CHUNK_DATA_URL,
-      );
+      const jobBytes = (j: PdfChunkJob) =>
+        j.imageDataUrls
+          ? j.imageDataUrls.reduce((n, s) => n + s.length, 0) + (j.contextImageDataUrl?.length ?? 0)
+          : j.dataUrl.length;
+      const tooLarge = chunkJobs.filter((j) => jobBytes(j) > MAX_CHUNK_DATA_URL);
       if (tooLarge.length) {
         setChunkWarnings(
           tooLarge.map((j) => ({
@@ -1678,10 +1676,10 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   const callForJob = (job: PdfChunkJob, signal: AbortSignal) =>
     // Pages whose sub-PDF was too large to send were re-rendered at upload
     // time and go through the image path instead.
-    job.imageDataUrl
+    job.imageDataUrls?.length
       ? extractImage({
           data: {
-            imageDataUrl: job.imageDataUrl,
+            pageImageDataUrls: job.imageDataUrls,
             contextImageDataUrl: job.contextImageDataUrl,
             detectCases: true,
             hint: hint.trim() || undefined,
@@ -1964,31 +1962,30 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             Math.max(...pages.map((pg) => attemptsRef.current.get(`${fileIndex}:${pg}`) ?? 1)),
           );
           const slices = await renderPdfPageSlices(await file.arrayBuffer(), {
-            maxBytes: 1_200_000,
+            maxPageBytes: Math.round(MAX_CHUNK_DATA_URL * 0.75),
             pages,
             targetWidth: step.targetWidth,
             maxAspect: step.maxAspect,
             onProgress: (done, total) => setProgress({ done, total }),
           });
           for (const pageIndex of pages) {
-            const mine = slices.filter((sl) => sl.pageIndex === pageIndex && sl.dataUrl);
-            if (!mine.length) continue;
-            replacements.set(
-              `${fileIndex}:${pageIndex}`,
-              mine.map((sl, at) => ({
+            const strips = slices
+              .filter((sl) => sl.pageIndex === pageIndex && sl.dataUrl)
+              .map((sl) => sl.dataUrl);
+            if (!strips.length) continue;
+            // One job per page here too: a re-render must not turn a page back
+            // into several requests, which is the shape this all came from.
+            replacements.set(`${fileIndex}:${pageIndex}`, [
+              {
                 dataUrl: "",
-                imageDataUrl: sl.dataUrl,
-                contextImageDataUrl:
-                  at > 0 && mine[at - 1].dataUrl.length + sl.dataUrl.length <= MAX_CHUNK_DATA_URL
-                    ? mine[at - 1].dataUrl
-                    : undefined,
-                filename: `${file.name} (p${pageIndex + 1} ${at + 1}/${mine.length})`,
+                imageDataUrls: strips,
+                filename: `${file.name} (p${pageIndex + 1})`,
                 fileIndex,
                 pageIndex,
-                contextPages: at > 0 ? 1 : 0,
+                contextPages: 0,
                 expected: 0,
-              })),
-            );
+              },
+            ]);
           }
         }
         jobs = replacePageEntries(prepared, replacements);

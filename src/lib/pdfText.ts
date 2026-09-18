@@ -8,7 +8,7 @@
  */
 
 import { yieldToBrowser } from "./fileUtils";
-import { contentRenderScale, sliceRanges } from "./pdfSlices";
+import { contentRenderScale, PAGE_QUALITY_LADDER, sliceRanges, stripsFitBudget } from "./pdfSlices";
 
 export type PdfTextResult = {
   /** Extracted text, page by page (empty string for scanned pages). */
@@ -279,7 +279,9 @@ export type PageSlice = {
 export async function renderPdfPageSlices(
   bytes: ArrayBuffer,
   opts?: {
-    maxBytes?: number;
+    /** Ceiling for ALL of one page's strips together. A page now travels as a
+     *  single request, so what has to fit is the page, not the strip. */
+    maxPageBytes?: number;
     maxAspect?: number;
     /** Width, in pixels, the page's content should reach. */
     targetWidth?: number;
@@ -291,7 +293,7 @@ export async function renderPdfPageSlices(
 ): Promise<PageSlice[]> {
   const pdfjs = await getPdfjs();
   const doc = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
-  const maxBytes = opts?.maxBytes ?? 1_500_000;
+  const maxPageBytes = opts?.maxPageBytes ?? 3_000_000;
   const out: PageSlice[] = [];
 
   const wanted = opts?.pages ? new Set(opts.pages) : null;
@@ -315,28 +317,31 @@ export async function renderPdfPageSlices(
       maxAspect: opts?.maxAspect,
     });
 
-    for (let s = 0; s < ranges.length; s++) {
-      const range = ranges[s];
-      let dataUrl = "";
-      // Quality first, then scale: shrinking is what costs legibility, and
-      // legibility is the whole point here.
-      outer: for (const factor of [1, 0.85, 0.7]) {
+    // Render the page's strips at one setting, and step that setting down
+    // until the WHOLE page fits its budget. Quality first, then scale:
+    // shrinking is what costs legibility, and legibility is the point. The
+    // cuts never move — those are geometry; only the quality gives way — so
+    // a page always comes back with the same number of strips.
+    let strips: string[] = [];
+    for (const { factor, quality } of PAGE_QUALITY_LADDER) {
+      strips = [];
+      for (const range of ranges) {
         const canvas = await renderPageToCanvas(page, scale * factor, {
           left: Math.floor(ink.left * scale * factor),
           top: Math.floor((ink.top * scale + range.top) * factor),
           width: Math.ceil(ink.width * scale * factor),
           height: Math.ceil(range.height * factor),
         });
-        for (const quality of [0.9, 0.8, 0.65]) {
-          dataUrl = canvas.toDataURL("image/jpeg", quality);
-          if (dataUrl.length <= maxBytes) break outer;
-        }
+        strips.push(canvas.toDataURL("image/jpeg", quality));
+        // Rendering and JPEG-encoding is solid main-thread CPU; without this
+        // the tab is unresponsive for the whole document.
+        await yieldToBrowser();
       }
-      out.push({ pageIndex: i - 1, sliceIndex: s, sliceCount: ranges.length, dataUrl });
-      // Rendering and JPEG-encoding is solid main-thread CPU; without this the
-      // tab is unresponsive for the whole document.
-      await yieldToBrowser();
+      if (stripsFitBudget(strips, maxPageBytes)) break;
     }
+    strips.forEach((dataUrl, s) =>
+      out.push({ pageIndex: i - 1, sliceIndex: s, sliceCount: ranges.length, dataUrl }),
+    );
     opts?.onProgress?.(++done, total);
   }
 

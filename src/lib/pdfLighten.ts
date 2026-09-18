@@ -54,7 +54,9 @@ export async function lightenPdfToSlices(
 ): Promise<LightenedPdf> {
   const { renderPdfPageSlices } = await import("./pdfText");
   const slices = await renderPdfPageSlices(bytes, {
-    maxBytes: PAGE_MAX_BYTES,
+    // The worker sends each of these as its own PDF page, so the ceiling here
+    // is per page of the rebuilt file, not per request.
+    maxPageBytes: PAGE_MAX_BYTES,
     onProgress: opts?.onProgress,
   });
   if (!slices.length) throw new Error("Fichier vide ou illisible");
