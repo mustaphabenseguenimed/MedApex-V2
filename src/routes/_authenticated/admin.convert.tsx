@@ -65,7 +65,7 @@ import {
   jobsOfEmptyPages,
   replacePageEntries,
 } from "@/lib/pdfSlices";
-import { resolvePageCases, withCleanCaseStem } from "@/lib/caseStem";
+import { fillCaseGaps, resolvePageCases, withCleanCaseStem } from "@/lib/caseStem";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
   readAsDataUrl,
@@ -1822,7 +1822,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       // that page actually has, and merges a vignette the overlap showed
       // twice.
       for (const [idx, qs] of byFile) {
-        byFile.set(idx, dropSliceDuplicates(resolvePageCases(qs)));
+        byFile.set(idx, fillCaseGaps(dropSliceDuplicates(resolvePageCases(qs))));
       }
       const all: ExtractedQ[] = [...byFile.entries()]
         .sort((a, b) => a[0] - b[0])
@@ -2959,7 +2959,7 @@ function Step2Panel({
           for (let k = 0; k < p.questions.length; k++) units.push(ci);
           return p.questions;
         });
-        return resolvePageCases(items, (_q, i) => units[i] ?? 0);
+        return fillCaseGaps(resolvePageCases(items, (_q, i) => units[i] ?? 0));
       });
       const qs: ExtractedQ[] = fileItems.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
@@ -3843,7 +3843,7 @@ function Step3Panel({
           for (let k = 0; k < p.questions.length; k++) units.push(ci);
           return p.questions;
         });
-        return resolvePageCases(items, (_q, i) => units[i] ?? 0);
+        return fillCaseGaps(resolvePageCases(items, (_q, i) => units[i] ?? 0));
       });
       const qs: ExtractedQ[] = fileItems.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
