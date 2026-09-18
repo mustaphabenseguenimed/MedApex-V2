@@ -15,11 +15,14 @@
 /**
  * Tallest a slice may be, as a multiple of the page's width.
  *
- * At 1.6 a 1260-wide page slices at ~2000 px, so after the model's longest-edge
- * cap the delivered width is still ~1000 px — the size at which this PDF was
- * legible when read by hand. Higher loses text; lower multiplies the requests.
+ * Chosen so a band's LONGEST edge stays under the ~1568 px the model scales
+ * images down to: at 1.2, a 1300 px wide band is at most 1560 px tall and
+ * arrives at its native size. At the 1.6 this used to be, the same band was
+ * 2080 px tall and lost a sixth of its resolution before it was even read —
+ * the exact loss the slicing exists to avoid. Lower would only multiply the
+ * bands without buying anything.
  */
-export const MAX_SLICE_ASPECT = 1.6;
+export const MAX_SLICE_ASPECT = 1.2;
 
 /**
  * Width, in pixels, a page's content should reach before it is read.
@@ -214,17 +217,24 @@ export function dropSliceDuplicates<
  * How hard to try on a page that came back with nothing.
  *
  * Re-sending the same image is pointless — the model already read it and found
- * nothing — so a retry renders the page again, larger and cut finer. The steps
- * are deliberately few: past a point the page is genuinely illegible and the
- * honest answer is to say so rather than keep spending model calls.
+ * nothing — so a retry renders the page again, cut finer.
+ *
+ * Finer at the SAME width, never wider. A page now travels as one request, so
+ * its bands share one budget: asking for wider bands only spends that budget
+ * on more pixels and the quality collapses to fit, which made a retry deliver
+ * a blurrier page than the first attempt. Shorter bands at the same width keep
+ * the pixel count steady and stay further inside the model's own size cap.
+ *
+ * The steps are deliberately few: past a point the page is genuinely illegible
+ * and the honest answer is to say so rather than keep spending model calls.
  *
  * Attempt 0 is the ordinary setting, so a page that merely lost its request to
  * the network is re-sent exactly as it was built.
  */
 const ESCALATION: { targetWidth: number; maxAspect: number }[] = [
   { targetWidth: TARGET_CONTENT_WIDTH, maxAspect: MAX_SLICE_ASPECT },
-  { targetWidth: Math.round(TARGET_CONTENT_WIDTH * 1.5), maxAspect: 1.2 },
-  { targetWidth: TARGET_CONTENT_WIDTH * 2, maxAspect: 1.0 },
+  { targetWidth: TARGET_CONTENT_WIDTH, maxAspect: 1.0 },
+  { targetWidth: TARGET_CONTENT_WIDTH, maxAspect: 0.85 },
 ];
 
 /** Number of attempts available, the first being the ordinary render. */

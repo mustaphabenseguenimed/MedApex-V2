@@ -1582,7 +1582,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
           await yieldToBrowser();
           const { renderPdfPageSlices } = await import("@/lib/pdfText");
           rendered = await renderPdfPageSlices(await file.arrayBuffer(), {
-            maxPageBytes: Math.round(MAX_CHUNK_DATA_URL * 0.75),
+            maxPageBytes: Math.round(MAX_CHUNK_DATA_URL * 0.9),
             onProgress: (done, total) => setProgress({ done, total }),
           });
         }
@@ -1962,7 +1962,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
             Math.max(...pages.map((pg) => attemptsRef.current.get(`${fileIndex}:${pg}`) ?? 1)),
           );
           const slices = await renderPdfPageSlices(await file.arrayBuffer(), {
-            maxPageBytes: Math.round(MAX_CHUNK_DATA_URL * 0.75),
+            maxPageBytes: Math.round(MAX_CHUNK_DATA_URL * 0.9),
             pages,
             targetWidth: step.targetWidth,
             maxAspect: step.maxAspect,
@@ -2416,11 +2416,23 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         )}
         {failedPages.length > 0 && busy === null && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+            {/* Say WHICH of the two it was: a request that errored and one
+                that succeeded and returned nothing need different answers,
+                and "sans résultat" covering both left the admin guessing. */}
             <span className="flex-1">
-              {failedPages.length}{" "}
-              {tr(
-                "page(s) sans résultat : non converties, ou lues sans qu'aucune question n'en ressorte. Les autres sont conservées.",
-              )}
+              {(() => {
+                const errored = failedPages.filter((i) => (pageResults?.[i] ?? null) === null);
+                const empty = failedPages.length - errored.length;
+                const parts = [
+                  errored.length
+                    ? `${errored.length} ${tr("page(s) non converties (erreur ou connexion)")}`
+                    : "",
+                  empty
+                    ? `${empty} ${tr("page(s) lues sans qu'aucune question n'en ressorte")}`
+                    : "",
+                ].filter(Boolean);
+                return `${parts.join(" · ")}. ${tr("Les autres sont conservées.")}`;
+              })()}
             </span>
             <Button size="sm" variant="outline" onClick={retryFailedPages}>
               <RefreshCw className="mr-1.5 h-4 w-4" />

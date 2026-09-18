@@ -30,10 +30,19 @@ function covers(ranges: { top: number; height: number }[], height: number): bool
 }
 
 describe("sliceRanges", () => {
-  test("an ordinary page is not cut at all", () => {
-    // A4 at 150dpi: well inside the ratio, so rendering is unchanged.
-    assert.deepEqual(sliceRanges(1240, 1754), [{ top: 0, height: 1754 }]);
-    assert.equal(sliceCount(1240, 1754), 1);
+  test("a page already within the ratio is not cut at all", () => {
+    assert.deepEqual(sliceRanges(1240, 1400), [{ top: 0, height: 1400 }]);
+    assert.equal(sliceCount(1240, 1400), 1);
+  });
+
+  // An ordinary A4 page is slightly taller than the ratio, so it comes back
+  // as two bands rather than one over-tall image the model would shrink.
+  // Costs nothing: a page is one request whatever it is cut into.
+  test("an ordinary page is cut just enough to stay readable", () => {
+    const ranges = sliceRanges(1240, 1754);
+    assert.equal(ranges.length, 2);
+    assert.ok(covers(ranges, 1754));
+    for (const r of ranges) assert.ok(r.height <= 1240 * MAX_SLICE_ASPECT + 1);
   });
 
   test("a page exactly at the limit is still one slice", () => {
@@ -256,6 +265,38 @@ describe("jobsOfEmptyPages", () => {
   });
 });
 
+describe("band size against the model's cap", () => {
+  /** The longest edge an image keeps before the model scales it down. */
+  const MODEL_IMAGE_CAP = 1568;
+
+  // A band taller than this is shrunk before it is even read, which is the
+  // loss the slicing exists to avoid.
+  test("a band of a normal page arrives at its native size", () => {
+    const ranges = sliceRanges(TARGET_CONTENT_WIDTH, TARGET_CONTENT_WIDTH * 8);
+    for (const r of ranges) {
+      assert.ok(
+        Math.max(TARGET_CONTENT_WIDTH, r.height) <= MODEL_IMAGE_CAP,
+        `a ${TARGET_CONTENT_WIDTH}x${r.height} band would be scaled down`,
+      );
+    }
+  });
+
+  test("and still does after escalating", () => {
+    for (let i = 0; i < ESCALATION_STEPS; i++) {
+      const step = escalationStep(i);
+      const ranges = sliceRanges(step.targetWidth, step.targetWidth * 8, {
+        maxAspect: step.maxAspect,
+      });
+      for (const r of ranges) {
+        assert.ok(
+          Math.max(step.targetWidth, r.height) <= MODEL_IMAGE_CAP,
+          `step ${i}: a ${step.targetWidth}x${r.height} band would be scaled down`,
+        );
+      }
+    }
+  });
+});
+
 describe("contentRenderScale", () => {
   // The measurement this constant comes from: in the Sarcoïdose PDF every
   // page rendered at 23% of its screenshot's native width or better came back
@@ -300,9 +341,14 @@ describe("contentRenderScale", () => {
     }
   });
 
-  test("a normal page still comes out as a single image", () => {
+  // Not one image any more, but a handful — and the point is that none of them
+  // is big enough for the model to shrink.
+  test("a normal page comes out as a couple of full-size bands", () => {
     const scale = contentRenderScale(500);
-    assert.equal(sliceRanges(500 * scale, 780 * scale).length, 1);
+    const w = 500 * scale;
+    const ranges = sliceRanges(w, 780 * scale);
+    assert.ok(ranges.length <= 3, `a normal page should not shatter: ${ranges.length} bands`);
+    for (const r of ranges) assert.ok(Math.max(w, r.height) <= 1568);
   });
 });
 
@@ -316,12 +362,38 @@ describe("escalation", () => {
     });
   });
 
-  test("each step renders larger and cuts finer", () => {
+  // Finer at the SAME width, never wider. A page's bands share one request
+  // budget, so wider bands only spend it on more pixels and the quality
+  // collapses to fit — which made a retry deliver a blurrier page than the
+  // first attempt.
+  test("each step cuts finer without asking for a wider page", () => {
     for (let i = 1; i < ESCALATION_STEPS; i++) {
       const prev = escalationStep(i - 1);
       const next = escalationStep(i);
-      assert.ok(next.targetWidth > prev.targetWidth, `step ${i} is not larger`);
+      assert.equal(next.targetWidth, prev.targetWidth, `step ${i} changed the width`);
       assert.ok(next.maxAspect < prev.maxAspect, `step ${i} is not cut finer`);
+    }
+  });
+
+  // The property that makes escalating safe: the page keeps roughly the same
+  // number of pixels, so each band keeps roughly the same share of the budget.
+  test("escalating does not inflate the page's pixel count", () => {
+    const inkWidth = 161.9;
+    const inkHeight = 842;
+    const pixels = [0, 1, 2].map((attempt) => {
+      const step = escalationStep(attempt);
+      const scale = contentRenderScale(inkWidth, step.targetWidth);
+      const w = inkWidth * scale;
+      return sliceRanges(w, inkHeight * scale, { maxAspect: step.maxAspect }).reduce(
+        (n, r) => n + w * r.height,
+        0,
+      );
+    });
+    for (let i = 1; i < pixels.length; i++) {
+      assert.ok(
+        pixels[i] < pixels[0] * 1.25,
+        `step ${i} asks for ${(pixels[i] / pixels[0]).toFixed(1)}x the pixels`,
+      );
     }
   });
 
@@ -343,7 +415,7 @@ describe("escalation", () => {
 
   // Escalating has to actually change what the page is cut into, or the
   // retry is the same no-op by another route.
-  test("escalating a real page yields more, larger pieces", () => {
+  test("escalating a real page yields more pieces", () => {
     const inkWidth = 100;
     const inkHeight = 842;
     const counts = [0, 1, 2].map((attempt) => {
