@@ -2949,7 +2949,17 @@ function Step2Panel({
       const fileItems = prepared.map((f) => {
         const slice = parts.slice(cursor, cursor + f.chunks.length);
         cursor += f.chunks.length;
-        return slice.flatMap((p) => p.questions);
+        // Which chunk each question came out of. A clinical case that spans
+        // two chunks is read twice, and the model does not recopy its énoncé
+        // identically — which split one case into several. Same rule as step
+        // 1 uses across pages: alike enough and read next to each other is
+        // one case.
+        const units: number[] = [];
+        const items = slice.flatMap((p, ci) => {
+          for (let k = 0; k < p.questions.length; k++) units.push(ci);
+          return p.questions;
+        });
+        return resolvePageCases(items, (_q, i) => units[i] ?? 0);
       });
       const qs: ExtractedQ[] = fileItems.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));
@@ -3823,7 +3833,17 @@ function Step3Panel({
       const fileItems = prepared.map((f) => {
         const slice = parts.slice(cursor, cursor + f.chunks.length);
         cursor += f.chunks.length;
-        return slice.flatMap((p) => p.questions);
+        // Which chunk each question came out of. A clinical case that spans
+        // two chunks is read twice, and the model does not recopy its énoncé
+        // identically — which split one case into several. Same rule as step
+        // 1 uses across pages: alike enough and read next to each other is
+        // one case.
+        const units: number[] = [];
+        const items = slice.flatMap((p, ci) => {
+          for (let k = 0; k < p.questions.length; k++) units.push(ci);
+          return p.questions;
+        });
+        return resolvePageCases(items, (_q, i) => units[i] ?? 0);
       });
       const qs: ExtractedQ[] = fileItems.flat();
       if (!qs.length) throw new Error(tr("Aucune question détectée"));

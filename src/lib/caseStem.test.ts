@@ -276,6 +276,35 @@ describe("resolvePageCases", () => {
   test("an empty list is an empty list", () => {
     assert.deepEqual(resolvePageCases([]), []);
   });
+
+  // Steps 2 and 3 read a .docx in chunks rather than pages, so they pass the
+  // chunk a question came out of instead of a page number. Same rule: a case
+  // split across two chunks is one case.
+  test("the read a question came from can be given rather than stamped", () => {
+    const items = [{ case_stem: VIGNETTE_A }, { case_stem: RETYPED_A }, { case_stem: VIGNETTE_B }];
+    const chunk = [0, 1, 1];
+    const out = resolvePageCases(items, (_q, i) => chunk[i]);
+    assert.deepEqual(
+      out.map((x) => x.case_stem),
+      [VIGNETTE_A, VIGNETTE_A, VIGNETTE_B],
+      "the re-typed copy joins the case; a different patient stays its own",
+    );
+  });
+
+  test("chunks far apart are still different cases", () => {
+    const items = [{ case_stem: VIGNETTE_A }, { case_stem: RETYPED_A }];
+    const chunk = [0, 5];
+    const out = resolvePageCases(items, (_q, i) => chunk[i]);
+    assert.deepEqual(
+      out.map((x) => x.case_stem),
+      [VIGNETTE_A, RETYPED_A],
+    );
+  });
+
+  test("with no accessor it still reads the stamp", () => {
+    const out = resolvePageCases([q(1, VIGNETTE_A, "a"), q(1, RETYPED_A, "b")]);
+    assert.equal(out[1].case_stem, VIGNETTE_A);
+  });
 });
 
 describe("vignetteSimilarity", () => {
