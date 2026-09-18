@@ -195,3 +195,40 @@ export function resolvePageCases<
     return { ...q, case_stem: owner?.stem ?? null };
   });
 }
+
+/**
+ * Close a gap that splits one clinical case in two.
+ *
+ * Both the preview and the .docx group *consecutive* questions sharing a case,
+ * so a single question that lost its énoncé between two questions of the same
+ * case cuts that case into two blocks — with the same number on both, since
+ * they key on the same text. Step 2 reads a .docx in chunks and matches the
+ * model's questions back to the document's own; a question that fails to match
+ * keeps no case at all, and lands in the middle of the one it belongs to.
+ *
+ * Only a question with NO case is absorbed, and only when the questions on
+ * both sides belong to the same one. A question that carries a different
+ * vignette is left exactly where it is: that is a disagreement to show the
+ * admin, not a gap to paper over.
+ */
+export function fillCaseGaps<T extends { case_stem?: string | null }>(questions: T[]): T[] {
+  const caseOf = (q: T | undefined) => {
+    const stem = q?.case_stem;
+    return stem && textOf(stem) ? textOf(stem) : null;
+  };
+  const out = [...questions];
+  for (let i = 0; i < out.length; i++) {
+    if (caseOf(out[i])) continue;
+    // How far the run of case-less questions goes.
+    let end = i;
+    while (end + 1 < out.length && !caseOf(out[end + 1])) end++;
+    const before = out[i - 1];
+    const after = out[end + 1];
+    const left = caseOf(before);
+    if (left && left === caseOf(after)) {
+      for (let k = i; k <= end; k++) out[k] = { ...out[k], case_stem: before!.case_stem };
+    }
+    i = end;
+  }
+  return out;
+}

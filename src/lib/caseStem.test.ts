@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  fillCaseGaps,
   looksLikeVignette,
   resolvePageCases,
   SAME_CASE_SIMILARITY,
@@ -347,5 +348,67 @@ describe("vignetteSimilarity", () => {
 
   test("markup and punctuation do not change the reading", () => {
     assert.equal(vignetteSimilarity(`<p>${A}</p>`, A), 1);
+  });
+});
+
+describe("fillCaseGaps", () => {
+  const A = "Homme de 63 ans, retraité, ancien fonctionnaire administratif.";
+  const B = "Femme de 42 ans, technicienne de santé, sans antécédents.";
+  const q = (case_stem: string | null, id: string) => ({ id, case_stem });
+
+  // The split the admin saw: one case rendered as two blocks carrying the
+  // SAME number, because a question in the middle had lost its énoncé and
+  // both the preview and the .docx group consecutive questions only.
+  test("a question that lost its case, mid-case, rejoins it", () => {
+    const out = fillCaseGaps([q(A, "1"), q(A, "2"), q(null, "3"), q(A, "4")]);
+    assert.deepEqual(
+      out.map((x) => x.case_stem),
+      [A, A, A, A],
+    );
+  });
+
+  test("a run of them rejoins together", () => {
+    const out = fillCaseGaps([q(A, "1"), q(null, "2"), q(null, "3"), q(A, "4")]);
+    assert.deepEqual(
+      out.map((x) => x.case_stem),
+      [A, A, A, A],
+    );
+  });
+
+  // Standalone questions genuinely between two cases must stay standalone.
+  test("a gap between two DIFFERENT cases is left alone", () => {
+    const out = fillCaseGaps([q(A, "1"), q(null, "2"), q(B, "3")]);
+    assert.deepEqual(
+      out.map((x) => x.case_stem),
+      [A, null, B],
+    );
+  });
+
+  test("a question carrying a different vignette is never absorbed", () => {
+    const out = fillCaseGaps([q(A, "1"), q(B, "2"), q(A, "3")]);
+    assert.deepEqual(
+      out.map((x) => x.case_stem),
+      [A, B, A],
+      "a disagreement to show the admin, not a gap to close",
+    );
+  });
+
+  test("standalone questions at either end stay standalone", () => {
+    const out = fillCaseGaps([q(null, "1"), q(A, "2"), q(null, "3")]);
+    assert.deepEqual(
+      out.map((x) => x.case_stem),
+      [null, A, null],
+    );
+  });
+
+  test("a list with no cases at all is untouched", () => {
+    const items = [q(null, "1"), q(null, "2")];
+    assert.deepEqual(fillCaseGaps(items), items);
+    assert.deepEqual(fillCaseGaps([]), []);
+  });
+
+  test("an empty énoncé counts as no case, not as one", () => {
+    const out = fillCaseGaps([q(A, "1"), q("<p></p>", "2"), q(A, "3")]);
+    assert.equal(out[1].case_stem, A);
   });
 });
