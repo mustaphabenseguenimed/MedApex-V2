@@ -9,6 +9,8 @@ import {
   jobsOfEmptyPages,
   replacePageEntries,
   MAX_SLICE_ASPECT,
+  PAGE_QUALITY_LADDER,
+  stripsFitBudget,
   TARGET_CONTENT_WIDTH,
   pageMapFromCounts,
   sliceCount,
@@ -411,5 +413,53 @@ describe("replacePageEntries", () => {
     const entries = [e(0, 0, "a"), e(0, 1, "b")];
     assert.deepEqual(replacePageEntries(entries, new Map()), entries);
     assert.deepEqual(replacePageEntries([], new Map([["0:0", [e(0, 0, "x")]]])), []);
+  });
+});
+
+describe("page budget", () => {
+  const strip = (bytes: number) => "x".repeat(bytes);
+
+  test("a page is measured whole, not strip by strip", () => {
+    // Six strips that each fit comfortably but together do not.
+    const page = Array.from({ length: 6 }, () => strip(600_000));
+    assert.equal(stripsFitBudget(page, 3_000_000), false);
+    assert.equal(stripsFitBudget(page, 4_000_000), true);
+  });
+
+  test("a page already inside the budget is left alone", () => {
+    assert.equal(stripsFitBudget([strip(100)], 3_000_000), true);
+    assert.equal(stripsFitBudget([], 3_000_000), true, "nothing always fits");
+  });
+
+  test("exactly at the budget still fits", () => {
+    assert.equal(stripsFitBudget([strip(1000), strip(1000)], 2000), true);
+    assert.equal(stripsFitBudget([strip(1000), strip(1001)], 2000), false);
+  });
+});
+
+describe("PAGE_QUALITY_LADDER", () => {
+  test("starts at full scale and the best quality", () => {
+    assert.deepEqual(PAGE_QUALITY_LADDER[0], { factor: 1, quality: 0.9 });
+  });
+
+  // Shrinking is what costs legibility, so every quality step at a given scale
+  // must be spent before the scale is reduced.
+  test("gives up quality before it gives up scale", () => {
+    for (let i = 1; i < PAGE_QUALITY_LADDER.length; i++) {
+      const prev = PAGE_QUALITY_LADDER[i - 1];
+      const next = PAGE_QUALITY_LADDER[i];
+      assert.ok(next.factor <= prev.factor, `step ${i} scaled back up`);
+      if (next.factor === prev.factor) {
+        assert.ok(next.quality < prev.quality, `step ${i} at the same scale did not step down`);
+      }
+    }
+  });
+
+  test("every setting is usable", () => {
+    for (const { factor, quality } of PAGE_QUALITY_LADDER) {
+      assert.ok(factor > 0 && factor <= 1, `bad factor ${factor}`);
+      assert.ok(quality > 0 && quality <= 1, `bad quality ${quality}`);
+    }
+    assert.ok(PAGE_QUALITY_LADDER.length >= 3, "too few steps to recover a heavy page");
   });
 });

@@ -374,15 +374,21 @@ const INSTRUCTIONS = (
   detectCases = true,
   askTotalVisible = false,
   contextPages = 0,
+  /** How many images the TARGET page was cut into. Above 1 they are vertical
+   *  strips of one page and must be read as one continuous page. */
+  targetStrips = 1,
 ) =>
   [
     "Tu extrais des questions de QCM médicales à partir d'un document (capture d'écran, PDF, ou texte extrait d'un fichier Word), en français ou en arabe.",
     "Le fragment fourni contient un ou plusieurs QCM. N'en oublie aucun, ne fusionne pas deux questions, et ne réinvente rien.",
+    targetStrips > 1
+      ? `ATTENTION — PAGE DÉCOUPÉE EN BANDES: les ${targetStrips} dernières images sont des bandes VERTICALES CONSÉCUTIVES d'UNE SEULE ET MÊME page, de haut en bas. Lis-les comme une seule page continue. Les bandes se CHEVAUCHENT légèrement: une question ou une vignette visible en bas d'une bande et en haut de la suivante est LA MÊME, ne la compte ni ne la renvoie deux fois. Une question coupée entre deux bandes doit être reconstituée entière. Cette page contient AU PLUS UN cas clinique: si une vignette apparaît sur plusieurs bandes, c'est la même vignette — recopie-la à l'identique dans le case_stem de toutes les questions de la page.`
+      : "",
     contextPages > 0
-      ? `ATTENTION — PAGES DE CONTEXTE: ce document contient ${contextPages + 1} page(s)/image(s), mais tu ne dois extraire QUE les questions de la DERNIÈRE. ${contextPages === 1 ? "La page précédente est" : "Les pages précédentes sont"} fournie(s) UNIQUEMENT comme contexte: n'en extrais AUCUNE question, même complète. Ce contexte sert à une seule chose: si la dernière page commence par des questions qui poursuivent un cas clinique (vignette/observation) commencé sur la page précédente, tu dois recopier cette vignette À L'IDENTIQUE dans leur champ case_stem, et mettre continues_previous_page à true pour ces questions-là.`
+      ? `ATTENTION — PAGES DE CONTEXTE: ${contextPages === 1 ? "la PREMIÈRE image est" : `les ${contextPages} PREMIÈRES images sont`} fournie(s) UNIQUEMENT comme contexte: n'en extrais AUCUNE question, même complète. Tu ne dois extraire que les questions de ${targetStrips > 1 ? `la page cible (les ${targetStrips} images suivantes)` : "la DERNIÈRE image"}. Ce contexte sert à une seule chose: si la page cible commence par des questions qui poursuivent un cas clinique (vignette/observation) commencé sur la page précédente, tu dois recopier cette vignette À L'IDENTIQUE dans leur champ case_stem, et mettre continues_previous_page à true pour ces questions-là.`
       : "",
     askTotalVisible
-      ? `Avant de répondre, compte silencieusement le nombre total de questions DISTINCTES visibles ${contextPages > 0 ? "SUR LA DERNIÈRE PAGE UNIQUEMENT (ignore complètement les questions des pages de contexte dans ce comptage)" : "dans ce document/extrait"} (chaque QCM/QCS/QROC numéroté ou clairement séparé compte pour une). Renvoie ce total dans le champ total_visible, et assure-toi ensuite que la longueur du tableau questions est EXACTEMENT égale à total_visible : n'en omets, ne fusionne, ni ne dédouble aucune.`
+      ? `Avant de répondre, compte silencieusement le nombre total de questions DISTINCTES visibles ${contextPages > 0 ? "SUR LA PAGE CIBLE UNIQUEMENT (ignore complètement les questions des images de contexte dans ce comptage)" : targetStrips > 1 ? "sur l'ensemble de la page (toutes bandes confondues, sans compter deux fois ce que le chevauchement montre deux fois)" : "dans ce document/extrait"} (chaque QCM/QCS/QROC numéroté ou clairement séparé compte pour une). Renvoie ce total dans le champ total_visible, et assure-toi ensuite que la longueur du tableau questions est EXACTEMENT égale à total_visible : n'en omets, ne fusionne, ni ne dédouble aucune.`
       : "",
     "Pour chaque question visible, retourne:",
     "- type: 'qcs' si une seule bonne réponse, 'qcm' si plusieurs, 'qroc' si question ouverte sans choix.",
@@ -479,10 +485,27 @@ export const extractQuestionsFromImage = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) =>
     z
       .object({
+        /** A whole page as one image. Kept for the callers that have one —
+         *  the program importer sends a single capture. */
         imageDataUrl: z
           .string()
           .max(15_000_000)
-          .regex(/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i, "Image invalide"),
+          .regex(/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i, "Image invalide")
+          .optional(),
+        /** One page, cut into consecutive vertical strips, top to bottom.
+         *  A page too tall to read as a single image goes this way: the model
+         *  is told they are one continuous page, so the page stays ONE request
+         *  and therefore one clinical case. */
+        pageImageDataUrls: z
+          .array(
+            z
+              .string()
+              .max(15_000_000)
+              .regex(/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i, "Image invalide"),
+          )
+          .min(1)
+          .max(12)
+          .optional(),
         /** The previous page, for context only — never extracted from. Lets a
          *  clinical-case vignette that started there still be visible here. */
         contextImageDataUrl: z
@@ -494,22 +517,30 @@ export const extractQuestionsFromImage = createServerFn({ method: "POST" })
         detectCases: z.boolean().optional(),
         expected: z.number().int().min(0).max(200).optional(),
       })
+      .refine((d) => !!d.imageDataUrl || !!d.pageImageDataUrls?.length, "Aucune image fournie")
       .parse(input),
   )
   .handler(async ({ data, context }) => {
     await assertAdminPermission(context.supabase, context.userId, "manage_quiz");
     const contextPages = data.contextImageDataUrl ? 1 : 0;
     const expected = data.expected ?? 0;
+    // The target page, in reading order: its strips, or the single image.
+    const strips = data.pageImageDataUrls?.length
+      ? data.pageImageDataUrls
+      : [data.imageDataUrl as string];
 
     const content = (note: string): AiContent => [
-      { type: "text", text: INSTRUCTIONS(data.hint, data.detectCases ?? true, true, contextPages) },
+      {
+        type: "text",
+        text: INSTRUCTIONS(data.hint, data.detectCases ?? true, true, contextPages, strips.length),
+      },
       { type: "text", text: note },
-      // Context first, target last: INSTRUCTIONS tells the model to extract
-      // only from the LAST image when context pages are present.
+      // Context first, target last: INSTRUCTIONS tells the model which of the
+      // trailing images make up the page it must extract from.
       ...(data.contextImageDataUrl
         ? [{ type: "image" as const, image: data.contextImageDataUrl }]
         : []),
-      { type: "image" as const, image: data.imageDataUrl },
+      ...strips.map((image) => ({ type: "image" as const, image })),
     ];
 
     const result = await runExtract(content(expectedCountNote(expected)));
@@ -521,7 +552,7 @@ export const extractQuestionsFromImage = createServerFn({ method: "POST" })
     // one recovery available is asking again, more firmly, for what's missing.
     const retry = await runExtract(
       content(
-        `${expectedCountNote(target)} Ta réponse précédente n'en contenait que ${got} : relis l'image entièrement, y compris le haut et le bas, et n'en oublie aucune.`,
+        `${expectedCountNote(target)} Ta réponse précédente n'en contenait que ${got} : relis ${strips.length > 1 ? "toutes les bandes de la page" : "l'image"} entièrement, y compris le haut et le bas, et n'en oublie aucune.`,
       ),
     );
     const best = retry.questions.length > got ? retry : result;

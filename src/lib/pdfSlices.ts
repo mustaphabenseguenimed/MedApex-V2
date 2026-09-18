@@ -270,3 +270,27 @@ export function replacePageEntries<T extends { fileIndex: number; pageIndex: num
   }
   return out;
 }
+
+/**
+ * Settings to try, in order, until a whole page's strips fit their budget.
+ *
+ * A page travels as one request now, so what has to fit is the page rather
+ * than the strip. Quality gives way before scale, because shrinking is what
+ * costs legibility and legibility is the point of rendering this way at all.
+ * The cuts never move — those are geometry — so stepping down this ladder
+ * never changes how many strips a page has.
+ */
+export const PAGE_QUALITY_LADDER: readonly { factor: number; quality: number }[] = [
+  { factor: 1, quality: 0.9 },
+  { factor: 1, quality: 0.8 },
+  { factor: 1, quality: 0.65 },
+  { factor: 0.85, quality: 0.75 },
+  { factor: 0.85, quality: 0.6 },
+  { factor: 0.7, quality: 0.7 },
+  { factor: 0.7, quality: 0.55 },
+];
+
+/** Do these strips, together, fit what one request may carry? */
+export function stripsFitBudget(strips: string[], maxPageBytes: number): boolean {
+  return strips.reduce((n, s) => n + s.length, 0) <= maxPageBytes;
+}
