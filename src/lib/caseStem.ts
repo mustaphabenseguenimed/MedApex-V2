@@ -154,15 +154,23 @@ export const SAME_CASE_SIMILARITY = 0.8;
  */
 export function resolvePageCases<
   T extends { case_stem?: string | null; source_page?: number | null },
->(questions: T[]): T[] {
-  /** Every vignette seen so far, with the page it was read on. */
+>(
+  questions: T[],
+  /** Which read a question came out of. Defaults to the page it was stamped
+   *  with in step 1; steps 2 and 3 read a .docx in chunks rather than pages,
+   *  and pass the chunk instead — the rules are the same either way, because
+   *  what they are really about is "was this read next to that one". */
+  unitOf: (question: T, index: number) => number = (q) =>
+    typeof q.source_page === "number" ? q.source_page : 0,
+): T[] {
+  /** Every vignette seen so far, with the read it came out of. */
   const seen: { stem: string; page: number }[] = [];
   /** One page away, no further: the slice overlap and the context image both
    *  reach exactly one page, which is the same tolerance dropSliceDuplicates
    *  uses on questions for the same reason. */
   const near = (a: number, b: number) => Math.abs(a - b) <= 1;
-  return questions.map((q) => {
-    const page = typeof q.source_page === "number" ? q.source_page : 0;
+  return questions.map((q, index) => {
+    const page = unitOf(q, index);
     const stem = q.case_stem;
     if (!stem || !textOf(stem)) return q;
 
