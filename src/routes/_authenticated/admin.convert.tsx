@@ -1228,7 +1228,13 @@ function ConvertAdmin() {
               {tr("Admin")}
             </Link>
           </Button>
-          <h1 className="text-lg font-semibold">{tr("Conversion de questions")}</h1>
+          <div className="text-center">
+            <h1 className="text-lg font-semibold">{tr("Conversion de questions")}</h1>
+            {/* Which build this page is: a screenshot of a run can then be
+                matched against the deployment that produced it, instead of a
+                result being attributed to a fix that was not live yet. */}
+            <p className="text-[10px] font-mono text-muted-foreground/70">{__BUILD_SHA__}</p>
+          </div>
           <div />
         </div>
       </header>

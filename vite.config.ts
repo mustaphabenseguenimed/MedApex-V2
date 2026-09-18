@@ -5,7 +5,20 @@ import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import { nitro } from "nitro/vite";
 
+/**
+ * The commit this bundle was built from, shown in the conversion page's
+ * header. Three test runs were spent measuring a build that predated the fix
+ * being tested, because nothing on screen said which build it was — a
+ * screenshot can now be matched against `git log` at a glance.
+ *
+ * Vercel sets VERCEL_GIT_COMMIT_SHA at build time; a local build says "dev".
+ */
+const BUILD_SHA = (process.env.VERCEL_GIT_COMMIT_SHA ?? "dev").slice(0, 7);
+
 export default defineConfig({
+  define: {
+    __BUILD_SHA__: JSON.stringify(BUILD_SHA),
+  },
   plugins: [
     tsconfigPaths(),
     tailwindcss(),
