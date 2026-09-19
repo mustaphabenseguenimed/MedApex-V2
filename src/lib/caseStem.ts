@@ -141,10 +141,30 @@ export function vignetteSimilarity(a: string, b: string): number {
 export const SAME_CASE_SIMILARITY = 0.8;
 
 /**
+ * A case énoncé the source document asserted itself, rather than one the model
+ * reported.
+ *
+ * Steps 2 and 3 read a generated .docx, whose "Cas clinique n°N :" markers say
+ * outright which questions share an énoncé; `buildQuestionUnits` reads those
+ * markers and `applyChunkContexts` puts the result on the question. That is
+ * not a guess to be second-guessed, so `resolvePageCases` leaves it alone.
+ * Step 1 reads images and has no such structure — there the model's own
+ * reading is all there is, and every rule below still applies to it.
+ */
+export type WithCaseSource<T> = T & { case_from_source?: boolean };
+
+export function withCaseFromSource<T extends object>(question: T): WithCaseSource<T> {
+  return { ...question, case_from_source: true };
+}
+
+/**
  * Give every question of a source page the case énoncé that page actually has.
  *
- * Two rules, both confined to a single page so nothing can leak between them:
+ * Three rules. The first outranks the others; the rest are confined to a
+ * single page so nothing can leak between them:
  *
+ * - a `case_stem` the document itself asserted is kept exactly as it is, and
+ *   is available for the questions after it to attach to;
  * - a `case_stem` that is not a vignette is replaced by the nearest real one
  *   already seen on that page, or dropped when the page has none — a stray
  *   paragraph should never found a clinical case;
@@ -153,7 +173,11 @@ export const SAME_CASE_SIMILARITY = 0.8;
  *   genuinely different patients on one page stay two cases.
  */
 export function resolvePageCases<
-  T extends { case_stem?: string | null; source_page?: number | null },
+  T extends {
+    case_stem?: string | null;
+    source_page?: number | null;
+    case_from_source?: boolean;
+  },
 >(
   questions: T[],
   /** Which read a question came out of. Defaults to the page it was stamped
@@ -173,6 +197,15 @@ export function resolvePageCases<
     const page = unitOf(q, index);
     const stem = q.case_stem;
     if (!stem || !textOf(stem)) return q;
+
+    // The document said so. `looksLikeVignette` is deliberately strict — a
+    // subject word at the very start and an age soon after — and a real
+    // énoncé that opens another way ("Vous recevez aux urgences…") would
+    // otherwise be handed to the previous case or dropped altogether.
+    if (q.case_from_source) {
+      if (!seen.some((k) => k.page === page && k.stem === stem)) seen.push({ stem, page });
+      return q;
+    }
 
     if (looksLikeVignette(stem)) {
       // Two readings of one case: alike enough, and read close enough
