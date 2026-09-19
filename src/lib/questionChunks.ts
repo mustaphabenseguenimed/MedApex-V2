@@ -535,17 +535,42 @@ function alignTokens(text: string): string[] {
     .filter((w) => w.length >= 3);
 }
 
-/** Overlap of two token lists, 0..1 (counting duplicates once). */
+/**
+ * A stem with fewer words than this cannot carry the comparison on its own:
+ * "Quel est le mécanisme en cause :" is four words long and every one of them
+ * turns up in half the questions of a pneumology paper.
+ */
+const MIN_ALIGN_TOKENS = 6;
+
+/**
+ * How much of the shorter token list the other one contains, 0..1 (counting
+ * duplicates once).
+ *
+ * Containment, not overlap over the larger set: the two sides are never the
+ * same length by construction. `PreparedChunk.stems` is the first 140
+ * characters of a unit — its "Question 7" heading, its stem, and usually the
+ * start of its options — while the AI returns the stem alone, in full. One
+ * real paper's "Résultats des examens : TDM thoracique : multiples
+ * adénopathies hilaires…" came back as 95 tokens against a 15-token source
+ * prefix, so dividing by the larger set capped the score at 0.158 and no
+ * threshold could ever be cleared. 22 of that file's 92 questions matched
+ * nothing and lost the case the document had put them in; six of them, whose
+ * case the AI had not named either, came out of step 3 as standalone
+ * questions in the middle of a clinical case.
+ */
 function tokenSimilarity(a: string[], b: string[]): number {
   if (!a.length || !b.length) return 0;
+  const setA = new Set(a);
   const setB = new Set(b);
   let hits = 0;
-  for (const w of new Set(a)) if (setB.has(w)) hits++;
-  return hits / Math.max(new Set(a).size, setB.size);
+  for (const w of setA) if (setB.has(w)) hits++;
+  return hits / Math.max(Math.min(setA.size, setB.size), MIN_ALIGN_TOKENS);
 }
 
-/** Below this, two stems are not considered the same question. */
-const ALIGN_MIN_SIMILARITY = 0.35;
+/** Below this, two stems are not considered the same question. Higher than
+ *  the 0.35 that went with dividing by the larger set: containment is a much
+ *  easier score to earn, so the bar has to rise with it. */
+const ALIGN_MIN_SIMILARITY = 0.5;
 
 /**
  * Match each AI-returned question back to the source question it came from.
