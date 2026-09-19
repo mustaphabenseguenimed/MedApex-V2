@@ -65,7 +65,13 @@ import {
   jobsOfEmptyPages,
   replacePageEntries,
 } from "@/lib/pdfSlices";
-import { fillCaseGaps, resolvePageCases, withCleanCaseStem } from "@/lib/caseStem";
+import {
+  fillCaseGaps,
+  resolvePageCases,
+  withCaseFromSource,
+  withCleanCaseStem,
+  type WithCaseSource,
+} from "@/lib/caseStem";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
   readAsDataUrl,
@@ -196,8 +202,15 @@ function firstVisiblePerCase(
  * after the divergence onto the wrong question, silently. `alignByStems` matches
  * on the question text instead (order-preserving), and a question that matches
  * nothing keeps the AI's own hints rather than inheriting someone else's.
+ *
+ * A case that comes from the chunk is marked as the document's own, so
+ * `resolvePageCases` does not weigh it against its idea of what a vignette
+ * reads like: the "Cas clinique n°N :" marker it was read from settles that.
  */
-function applyChunkContexts(questions: ExtractedQ[], chunk: PreparedChunk): ExtractedQ[] {
+function applyChunkContexts(
+  questions: ExtractedQ[],
+  chunk: PreparedChunk,
+): WithCaseSource<ExtractedQ>[] {
   const matches = alignByStems(
     questions.map((q) => q.stem ?? ""),
     chunk.stems ?? [],
@@ -205,13 +218,14 @@ function applyChunkContexts(questions: ExtractedQ[], chunk: PreparedChunk): Extr
   return questions.map((q, i) => {
     const ctx = chunk.contexts[matches[i] ?? -1];
     if (!ctx) return q;
-    return {
+    const applied = {
       ...q,
       year_hint: ctx.year_hint ?? q.year_hint,
       rotation_hint: ctx.rotation_hint ?? q.rotation_hint,
       course_hint: ctx.course_hint ?? q.course_hint,
       case_stem: ctx.case_stem ?? q.case_stem,
     };
+    return ctx.case_stem ? withCaseFromSource(applied) : applied;
   });
 }
 

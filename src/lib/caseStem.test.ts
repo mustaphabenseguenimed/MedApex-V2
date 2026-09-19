@@ -7,6 +7,7 @@ import {
   SAME_CASE_SIMILARITY,
   stripCaseLabel,
   vignetteSimilarity,
+  withCaseFromSource,
   withCleanCaseStem,
 } from "./caseStem";
 
@@ -276,6 +277,64 @@ describe("resolvePageCases", () => {
 
   test("an empty list is an empty list", () => {
     assert.deepEqual(resolvePageCases([]), []);
+  });
+
+  /**
+   * Steps 2 and 3 read a generated .docx, whose "Cas clinique n°N :" markers
+   * say outright which questions share an énoncé. `looksLikeVignette` is
+   * deliberately strict, so an énoncé written any other way used to be handed
+   * to the previous case or dropped — against the document's own word.
+   */
+  describe("a case the document itself asserted", () => {
+    /** A real énoncé that opens with neither a subject word nor an age. */
+    const UNUSUAL =
+      "Vous recevez aux urgences en pleine garde un malade adressé par son médecin traitant pour une dyspnée d'aggravation progressive, fébrile depuis 48 heures.";
+
+    test("is kept although it does not read like a vignette", () => {
+      assert.equal(looksLikeVignette(UNUSUAL), false, "the strict test would reject it");
+      const out = resolvePageCases([withCaseFromSource(q(1, UNUSUAL, "a"))]);
+      assert.equal(out[0].case_stem, UNUSUAL);
+    });
+
+    test("is not swallowed by the case before it", () => {
+      const out = resolvePageCases([
+        withCaseFromSource(q(1, VIGNETTE_A, "a")),
+        withCaseFromSource(q(1, UNUSUAL, "b")),
+      ]);
+      assert.deepEqual(
+        out.map((x) => x.case_stem),
+        [VIGNETTE_A, UNUSUAL],
+        "two cases the document marked are two cases",
+      );
+    });
+
+    test("its questions can still be attached to by a fragment after it", () => {
+      const out = resolvePageCases([withCaseFromSource(q(1, UNUSUAL, "a")), q(1, FRAGMENT, "b")]);
+      assert.equal(out[1].case_stem, UNUSUAL, "the fragment joins the case it was cut out of");
+    });
+
+    test("two readings of it are left exactly as the document had them", () => {
+      const out = resolvePageCases([
+        withCaseFromSource(q(1, VIGNETTE_A, "a")),
+        withCaseFromSource(q(1, RETYPED_A, "b")),
+      ]);
+      assert.deepEqual(
+        out.map((x) => x.case_stem),
+        [VIGNETTE_A, RETYPED_A],
+        "the document wrote each one; nothing here is the model re-typing",
+      );
+    });
+
+    // Step 1 reads images, so there is no document to assert anything and the
+    // model's own reading is all there is. Every rule still applies to it.
+    test("an unmarked stem is judged exactly as before", () => {
+      const out = resolvePageCases([q(1, VIGNETTE_A, "a"), q(1, UNUSUAL, "b")]);
+      assert.deepEqual(
+        out.map((x) => x.case_stem),
+        [VIGNETTE_A, VIGNETTE_A],
+        "with nothing asserting it, an odd stem is still a fragment of the case above",
+      );
+    });
   });
 
   // Steps 2 and 3 read a .docx in chunks rather than pages, so they pass the
