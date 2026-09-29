@@ -59,6 +59,7 @@ import type { DocxQuestionItem } from "@/lib/questionsDocxBuilder";
 import { alignByStems, type PreparedChunk } from "@/lib/questionChunks";
 import type { PageSlice } from "@/lib/pdfText";
 import {
+  canAutoRetry,
   canEscalate,
   dropSliceDuplicates,
   escalationStep,
@@ -1501,6 +1502,9 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
   /** How many times each source page ("file:page") has been re-rendered
    *  harder, so a retry can escalate and eventually admit defeat. */
   const attemptsRef = useRef<Map<string, number>>(new Map());
+  /** Rounds this run has already re-read its own failures for. Bounded, so a
+   *  page that never reads ends up on the card instead of looping. */
+  const autoRoundsRef = useRef(0);
   const confirm = useConfirm();
   const wakeLock = useScreenWakeLock();
 
@@ -1780,7 +1784,17 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
         jobs,
         results.map((r) => r?.questions?.length ?? 0),
       );
-      setFailedPages([...new Set([...failed, ...empty])].sort((a, b) => a - b));
+      const outstanding = [...new Set([...failed, ...empty])].sort((a, b) => a - b);
+      // Take the next round ourselves rather than ending the run to ask for
+      // it. On a real file one click of "Réessayer ces pages" recovered all
+      // four pages that had come back with nothing — a click the run could
+      // have made itself, and which nobody makes if they do not notice the
+      // card. `canAutoRetry` is what stops this going round for ever.
+      const autoRetry =
+        outstanding.length > 0 && !controller.signal.aborted && canAutoRetry(autoRoundsRef.current);
+      // The card is for what is left once we have stopped trying, not for what
+      // we are about to try again.
+      setFailedPages(autoRetry ? [] : outstanding);
 
       // Carry a clinical-case vignette across a page break. The model is given
       // the previous page as context and asked to recopy the vignette itself,
@@ -1880,16 +1894,23 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       const recovered = indices.filter(
         (i) => !empty.includes(i) && (previous[i]?.questions?.length ?? 0) === 0,
       );
-      if (isRetry && recovered.length) {
+      // Nothing is reported while another round is about to run: being told
+      // four pages failed and then, seconds later, that four were recovered is
+      // worse than being told nothing at all.
+      if (isRetry && recovered.length && !autoRetry) {
         toast.success(`${countPages(recovered, jobs)} ${tr("page(s) récupérée(s).")}`);
       }
-      if (failed.length) {
+      if (failed.length && !autoRetry) {
         toast.error(`${failed.length} ${tr("page(s) non converties — réessayez-les ci-dessous.")}`);
       }
-      if (stillEmpty.length) {
+      if (stillEmpty.length && !autoRetry) {
         toast.warning(
           `${countPages(stillEmpty, jobs)} ${tr("page(s) lue(s) sans qu'aucune question n'en ressorte.")}`,
         );
+      }
+      if (autoRetry) {
+        autoRoundsRef.current += 1;
+        await retryPages(outstanding, jobs, results);
       }
     } catch (e: any) {
       if (e?.name !== "AbortError") toast.error(friendlyError(e, tr));
@@ -1911,6 +1932,7 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
     setFailedPages([]);
     setPageResults(null);
     attemptsRef.current = new Map();
+    autoRoundsRef.current = 0;
     await runPages(
       prepared.map((_, i) => i),
       prepared.map(() => null),
@@ -1927,16 +1949,19 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
    * request merely ERRORED is re-sent as it was built: its image is fine, it
    * was the connection that was not.
    */
-  const retryFailedPages = async () => {
-    if (!prepared || !failedPages.length) return;
-    const previous = pageResults ?? prepared.map(() => null);
+  const retryPages = async (
+    failedIndices: number[],
+    prepared: PdfChunkJob[],
+    previous: (PageResult | null)[],
+  ) => {
+    if (!failedIndices.length) return;
     const pageKey = (j: PdfChunkJob) => `${j.fileIndex}:${j.pageIndex}`;
 
     // Every source page behind a failed job, and whether it read nothing at
     // all (null result = the request threw; a result with no questions = the
     // model read the image and found none).
     const retrying = new Map<string, { fileIndex: number; pageIndex: number; empty: boolean }>();
-    for (const i of failedPages) {
+    for (const i of failedIndices) {
       const job = prepared[i];
       if (!job) continue;
       const k = pageKey(job);
@@ -2044,6 +2069,13 @@ function Step1Panel({ onContinue }: { onContinue: (file: File) => void }) {
       return;
     }
     await runPages(runIndices, padded, { isRetry: true, jobs });
+  };
+
+  /** The "Réessayer ces pages" button: the same round the run now takes on its
+   *  own, for whatever is left once it has stopped taking them. */
+  const retryFailedPages = async () => {
+    if (!prepared || !failedPages.length) return;
+    await retryPages(failedPages, prepared, pageResults ?? prepared.map(() => null));
   };
 
   /** Nudge the server to work on a job; the request holds open for minutes,

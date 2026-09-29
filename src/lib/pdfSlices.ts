@@ -253,6 +253,28 @@ export function canEscalate(attempt: number): boolean {
 }
 
 /**
+ * How many rounds step 1 re-reads its own empty pages before giving up and
+ * handing them to the admin.
+ *
+ * One round is what a click on "Réessayer ces pages" does, and on a real run
+ * one click recovered all four pages that had come back with nothing — so the
+ * page was never illegible, the first call simply returned nothing. Three
+ * passes in all, which is as far as `ESCALATION` has settings for.
+ */
+export const MAX_AUTO_RETRY_ROUNDS = ESCALATION_STEPS - 1;
+
+/**
+ * Should the run re-read its failures itself, rather than stopping to ask?
+ *
+ * Separate from `canEscalate`, which bounds a PAGE by how hard it has already
+ * been rendered: a page whose request merely errored never escalates and so
+ * has no such bound, and would be re-sent for ever without this one.
+ */
+export function canAutoRetry(round: number, max = MAX_AUTO_RETRY_ROUNDS): boolean {
+  return Number.isFinite(round) && round >= 0 && round < max;
+}
+
+/**
  * Swap the entries of certain source pages for new ones, keeping order.
  *
  * A page re-rendered harder produces a different number of slices, so its
