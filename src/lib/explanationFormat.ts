@@ -121,3 +121,88 @@ export function splitPerOptionExplanation(html: string): string {
   if (items.length < 2) return html;
   return itemsHtml(items);
 }
+
+/**
+ * How a question's propositions are labelled where the reader sees them.
+ *
+ * Two shapes, and the explanation has to match whichever one the reader is
+ * looking at:
+ *
+ * - an ordinary question justifies its OPTIONS, which the paper letters
+ *   A to E;
+ * - an association question justifies the numbered items its énoncé carries
+ *   ("Quels examens ? 1. FNS 2. CRP…"), whose options are combinations of
+ *   those numbers ("1+2", "2+3") and so explain nothing on their own.
+ *
+ * Step 2 used to number every explanation 1, 2, 3 — the instruction was
+ * written for association questions and then applied to all of them, so an
+ * A-to-E question came back with its five justifications numbered.
+ */
+export type PropositionStyle = { kind: "letters" | "numbers"; count: number };
+
+/** A numbered run inside a stem: "1." … "2." … contiguous from 1, at least
+ *  two of them. Same rule as `isOrderedRun` uses on an explanation, and for
+ *  the same reason — a lone "2." is far more likely to be prose. */
+function numberedItemsInStem(stem: string): number {
+  const text = (stem ?? "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " ");
+  const seen: number[] = [];
+  const re = /(?:^|[\n\s ])([1-9])\s*[.)\-:]\s+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) seen.push(Number(m[1]));
+  let n = 0;
+  for (const value of seen) if (value === n + 1) n++;
+  return n >= 2 ? n : 0;
+}
+
+export function propositionStyle(question: {
+  stem?: string | null;
+  choices?: string[] | null;
+}): PropositionStyle {
+  const numbered = numberedItemsInStem(question.stem ?? "");
+  if (numbered) return { kind: "numbers", count: numbered };
+  return { kind: "letters", count: question.choices?.length ?? 0 };
+}
+
+/** The label the nth proposition carries, in this style. */
+function labelAt(style: PropositionStyle, index: number): string {
+  return style.kind === "numbers" ? String(index + 1) : String.fromCharCode(65 + index);
+}
+
+/** A leading "A." / "<strong>1.</strong>" on one item, with whatever tags and
+ *  whitespace open it. */
+const LEADING_LABEL = /^((?:\s|<[^>]*>)*)([A-Ha-h]|[1-9])(\s*[.)\-:])/;
+
+/**
+ * Relabel an explanation's per-proposition items to the scheme the question
+ * actually uses, keeping everything else — the markup, the wording, the order.
+ *
+ * Positional, because that is the only mapping that is sound: the model writes
+ * its justifications in the order of the propositions, so the nth is about the
+ * nth whatever it called it. Nothing is touched unless every item carries a
+ * label and there are exactly as many as the question has propositions —
+ * relabelling a list that does not line up would move a justification onto the
+ * wrong option, which is worse than leaving it numbered.
+ */
+export function relabelPropositions(html: string, style: PropositionStyle): string {
+  if (!html || style.count < 2) return html;
+  for (const itemRe of [/<li\b[^>]*>[\s\S]*?<\/li>/gi, /<p\b[^>]*>[\s\S]*?<\/p>/gi]) {
+    const items = html.match(itemRe);
+    if (!items || items.length !== style.count) continue;
+    if (!items.every((item) => LEADING_LABEL.test(item.replace(/^<(li|p)\b[^>]*>/i, "")))) continue;
+    let i = 0;
+    return html.replace(itemRe, (item) => {
+      const open = item.match(/^<(?:li|p)\b[^>]*>/i)?.[0] ?? "";
+      const label = labelAt(style, i++);
+      return (
+        open +
+        item
+          .slice(open.length)
+          .replace(
+            LEADING_LABEL,
+            (_m, before: string, _old: string, sep: string) => `${before}${label}${sep}`,
+          )
+      );
+    });
+  }
+  return html;
+}
