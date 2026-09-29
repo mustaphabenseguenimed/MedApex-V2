@@ -172,6 +172,48 @@ describe("looksLikeVignette", () => {
   });
 });
 
+/**
+ * Labels as real papers actually write them. A label that survives is not a
+ * cosmetic problem: the énoncé then opens on "Cas…" rather than on its
+ * patient, `looksLikeVignette` rejects it, and `resolvePageCases` folds the
+ * whole case into the one before it. One pneumoconiosis paper lost two of its
+ * seventeen cases exactly that way — both were welded onto case 8, which came
+ * out of step 1 carrying fifteen questions where every other case had five.
+ */
+describe("a label the paper spelled its own way", () => {
+  const P9 =
+    'Cas clinque 7 : "Patient âgé de 55 ans, fumeur 5 cigarettes / jour depuis 30 ans, sableur de profession."';
+  const P10 =
+    "CAS CLINIQUE N 07 : Patient âgé de 55 ans, prothésiste de profession depuis 15 ans, tabagique.";
+
+  test("a misspelt keyword is still a label", () => {
+    assert.equal(stripCaseLabel(P9).startsWith('"Patient âgé de 55 ans'), true);
+  });
+
+  test("an N with no degree sign is still a number", () => {
+    assert.equal(stripCaseLabel(P10).startsWith("Patient âgé de 55 ans"), true);
+  });
+
+  test("and the énoncé underneath founds its own case again", () => {
+    assert.equal(looksLikeVignette(stripCaseLabel(P9)), true, "even behind an opening quote");
+    assert.equal(looksLikeVignette(stripCaseLabel(P10)), true);
+  });
+
+  // The keyword alone still proves nothing: what makes it a label is the
+  // number or the separator after it.
+  test("a vignette that merely opens with the words keeps them", () => {
+    const stem = "Cas clinique du patient de 55 ans adressé par son médecin.";
+    assert.equal(stripCaseLabel(stem), stem);
+    const note = "Cas clinique note 3 ans plus tard.";
+    assert.equal(stripCaseLabel(note), note);
+  });
+
+  test("the spellings that already worked still do", () => {
+    assert.equal(stripCaseLabel("Cas clinique n°12 : Homme de 63 ans."), "Homme de 63 ans.");
+    assert.equal(stripCaseLabel("CC7 : Une patiente de 32 ans."), "Une patiente de 32 ans.");
+  });
+});
+
 describe("resolvePageCases", () => {
   const q = (source_page: number, case_stem: string | null, id: string) => ({
     id,
