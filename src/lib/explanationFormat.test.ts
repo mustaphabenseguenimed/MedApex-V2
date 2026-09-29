@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { explanationLines, splitPerOptionExplanation } from "./explanationFormat";
+import {
+  explanationLines,
+  propositionStyle,
+  relabelPropositions,
+  splitPerOptionExplanation,
+} from "./explanationFormat";
 
 const items = (html: string) => html.split("<hr />");
 const plain = (html: string) =>
@@ -104,5 +109,99 @@ describe("splitPerOptionExplanation", () => {
   test("leaves content already split across paragraphs untouched", () => {
     const two = "<p>1. Vrai.</p><p>2. Faux.</p>";
     assert.equal(splitPerOptionExplanation(two), two);
+  });
+});
+
+describe("propositionStyle", () => {
+  test("an ordinary question is lettered, one label per option", () => {
+    assert.deepEqual(
+      propositionStyle({
+        stem: "Ce tableau radio-clinique vous évoque en premier lieu le diagnostic de :",
+        choices: ["Pneumopathie interstitielle commune", "Asbestose", "Silicose"],
+      }),
+      { kind: "letters", count: 3 },
+    );
+  });
+
+  // An association question's options are combinations ("1+2", "2+3") and
+  // explain nothing on their own; what gets justified is the énoncé's list.
+  test("a numbered list in the énoncé makes it numbered", () => {
+    assert.deepEqual(
+      propositionStyle({
+        stem: "Quels sont les examens à demander en priorité ?<br>1. Gazométrie artérielle<br>2. ECG<br>3. Bilan rénal<br>4. FNS<br>5. D-Dimères",
+        choices: ["1+2", "2+3", "4+5", "2+4", "1+4"],
+      }),
+      { kind: "numbers", count: 5 },
+    );
+  });
+
+  test("a figure in the prose is not a list", () => {
+    const stem =
+      "Gazométrie artérielle : pH : 7,24, PaO2 : 67 mmHg, PaCO2 : 75 mmHg. Quel est le diagnostic ?";
+    assert.equal(propositionStyle({ stem, choices: ["a", "b"] }).kind, "letters");
+  });
+
+  test("a run that does not start at 1 is not a list either", () => {
+    const stem = "Commentaire. 3. Une remarque. 7. Une autre.";
+    assert.equal(propositionStyle({ stem, choices: ["a", "b"] }).kind, "letters");
+  });
+});
+
+describe("relabelPropositions", () => {
+  const LIST =
+    "<ul><li><strong>1.</strong> Faux. Les lésions prédominent aux bases.</li>" +
+    "<li><strong>2.</strong> Vrai. L'association est caractéristique.</li>" +
+    "<li><strong>3.</strong> Faux. Le contexte évoque l'amiante.</li></ul>";
+
+  // The reported bug: an A-to-E question came back with its justifications
+  // numbered, because step 2 asked for numbers whatever the question was.
+  test("numbers become the letters the reader is looking at", () => {
+    const out = relabelPropositions(LIST, { kind: "letters", count: 3 });
+    assert.match(out, /<strong>A\.<\/strong> Faux\./);
+    assert.match(out, /<strong>B\.<\/strong> Vrai\./);
+    assert.match(out, /<strong>C\.<\/strong> Faux\./);
+    assert.ok(!/<strong>1\./.test(out), "no number survives");
+  });
+
+  test("an association question keeps its numbers", () => {
+    assert.equal(relabelPropositions(LIST, { kind: "numbers", count: 3 }), LIST);
+  });
+
+  test("the wording and the markup are untouched", () => {
+    const out = relabelPropositions(LIST, { kind: "letters", count: 3 });
+    assert.ok(out.includes("Les lésions prédominent aux bases."));
+    assert.equal((out.match(/<li>/g) ?? []).length, 3);
+  });
+
+  test("the paragraph-and-rule shape is relabelled too", () => {
+    const html = "<p><strong>1.</strong> Faux.</p><hr /><p><strong>2.</strong> Vrai.</p>";
+    const out = relabelPropositions(html, { kind: "letters", count: 2 });
+    assert.match(out, /<strong>A\.<\/strong> Faux\./);
+    assert.match(out, /<strong>B\.<\/strong> Vrai\./);
+    assert.ok(out.includes("<hr />"), "the separator survives");
+  });
+
+  /**
+   * Positional is the only sound mapping, so it must not be applied to a list
+   * that does not line up: moving a justification onto the wrong option is
+   * worse than leaving it numbered.
+   */
+  test("a list that does not match the question is left alone", () => {
+    assert.equal(relabelPropositions(LIST, { kind: "letters", count: 5 }), LIST);
+  });
+
+  test("a single global explanation is left alone", () => {
+    const prose = "<p>L'asbestose est évoquée par les plaques pleurales.</p>";
+    assert.equal(relabelPropositions(prose, { kind: "letters", count: 5 }), prose);
+  });
+
+  test("an item with no label at all is left alone", () => {
+    const html = "<ul><li>Faux.</li><li>Vrai.</li></ul>";
+    assert.equal(relabelPropositions(html, { kind: "letters", count: 2 }), html);
+  });
+
+  test("nothing to relabel is nothing done", () => {
+    assert.equal(relabelPropositions("", { kind: "letters", count: 5 }), "");
+    assert.equal(relabelPropositions(LIST, { kind: "letters", count: 1 }), LIST);
   });
 });

@@ -43,10 +43,13 @@ function stripStyle(style: string): string {
 /** Cleanup `mso-*` noise only — preserves author colors and highlights. */
 export function stripImportedColors(html: string): string {
   if (!html) return html;
-  const out = html.replace(/\sstyle\s*=\s*(["'])([\s\S]*?)\1/gi, (_full, quote: string, style: string) => {
-    const next = stripStyle(style);
-    return next ? ` style=${quote}${next}${quote}` : "";
-  });
+  const out = html.replace(
+    /\sstyle\s*=\s*(["'])([\s\S]*?)\1/gi,
+    (_full, quote: string, style: string) => {
+      const next = stripStyle(style);
+      return next ? ` style=${quote}${next}${quote}` : "";
+    },
+  );
   return out;
 }
 
@@ -74,6 +77,11 @@ const VRAI = /(^|[\s\p{P}>])(vrai|vraie|vrais|vraies)($|[\s\p{P}<])/giu;
 const FAUX = /(^|[\s\p{P}>])(faux|fausse|fausses)($|[\s\p{P}<])/giu;
 // Option letters: "A)", "b.", "C -", "(D)" … only A–E, followed by a separator.
 const LETTER = /(^|[\s(>])([A-Ea-e])(\s*[).:\-–—])/gu;
+// The same thing for an association question, whose propositions the énoncé
+// numbers rather than letters. Anchored to the very start of the line — after
+// whatever tags open it, so "<strong>1.</strong>" counts — because a digit is
+// ordinary inside prose and only the label is worth colouring.
+const LEADING_NUMBER = /^((?:\s|<[^>]*>)*)([1-9])(\s*[).:\-–—])/;
 
 /** Block-level tags that delimit one per-option explanation line. */
 const BLOCK_TAG =
@@ -98,27 +106,44 @@ function verdictColor(chunk: string): string | null {
 
 /**
  * Colorize one block-level chunk: "vrai" green, "faux" red, and the option
- * letter (a/b/c/d/e) in the same color as that line's verdict.
+ * letter (a/b/c/d/e) — or, on an association question, the proposition number
+ * — in the same color as that line's verdict.
  */
 function colorizeChunk(chunk: string): string {
   const letterColor = verdictColor(chunk);
   // Lines whose option letter was already colored at import time (JSON) keep it.
   const hasPreColoredLetter = /data-vf=["']letter["']/.test(chunk);
-  return transformTextSegments(chunk, (text) => {
+  const colored = transformTextSegments(chunk, (text) => {
     let out = text
-      .replace(VRAI, (_m, p1: string, w: string, p3: string) =>
-        `${p1}<span style="color:${VRAI_COLOR};font-weight:600">${w}</span>${p3}`,
+      .replace(
+        VRAI,
+        (_m, p1: string, w: string, p3: string) =>
+          `${p1}<span style="color:${VRAI_COLOR};font-weight:600">${w}</span>${p3}`,
       )
-      .replace(FAUX, (_m, p1: string, w: string, p3: string) =>
-        `${p1}<span style="color:${FAUX_COLOR};font-weight:600">${w}</span>${p3}`,
+      .replace(
+        FAUX,
+        (_m, p1: string, w: string, p3: string) =>
+          `${p1}<span style="color:${FAUX_COLOR};font-weight:600">${w}</span>${p3}`,
       );
     if (letterColor && !hasPreColoredLetter) {
-      out = out.replace(LETTER, (_m, p1: string, l: string, p3: string) =>
-        `${p1}<span style="color:${letterColor};font-weight:700">${l}${p3}</span>`,
+      out = out.replace(
+        LETTER,
+        (_m, p1: string, l: string, p3: string) =>
+          `${p1}<span style="color:${letterColor};font-weight:700">${l}${p3}</span>`,
       );
     }
     return out;
   });
+  // An association question numbers its propositions rather than lettering
+  // them, so LETTER never sees the label. Matched against the whole chunk,
+  // after whatever tags open it, so only the line's own label is colored and
+  // never a figure inside the justification.
+  if (!letterColor || hasPreColoredLetter) return colored;
+  return colored.replace(
+    LEADING_NUMBER,
+    (_m, before: string, n: string, sep: string) =>
+      `${before}<span style="color:${letterColor};font-weight:700">${n}${sep}</span>`,
+  );
 }
 
 /**

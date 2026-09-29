@@ -11,6 +11,7 @@ import {
 } from "./aiGenerate.server";
 import { answerLetters, parseAnswerVerdicts } from "./answerVerdicts";
 import { buildReferenceBlock } from "./referenceDocs";
+import { propositionStyle, relabelPropositions } from "./explanationFormat";
 
 /** Reference sources for one Step 2 run: course chapters as PDF or Word,
  *  plus any pasted notes, each labelled so the model can tell them apart.
@@ -137,7 +138,10 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
           choices.length
             ? "Options:\n" +
               choices
-                .map((c, k) => `${k}. ${c}${correct.includes(k) ? " (correcte)" : ""}`)
+                .map(
+                  (c, k) =>
+                    `${String.fromCharCode(65 + k)}. ${c}${correct.includes(k) ? " (correcte)" : ""}`,
+                )
                 .join("\n")
             : `Réponse attendue: ${q.model_answer ?? ""}`,
         ];
@@ -148,14 +152,20 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
     const prompt = [
       "Tu es un enseignant de médecine. On te donne une liste de questions de QCM/QROC avec leur bonne réponse déjà connue, et éventuellement un ou plusieurs documents de référence (chacun introduit par une ligne « === nom du fichier === »).",
       "Pour CHAQUE question, rédige une explication claire et concise justifiant la réponse correcte : base-toi sur les documents de référence quand ils sont pertinents, sinon sur des connaissances médicales fiables. Ne recopie pas l'énoncé ni les options.",
-      // Numbered, not lettered: association questions carry their items as
-      // "1. … 5." in the stem, and the .docx writer turns each <li> into its
-      // own line, so the numbers line up with what the reader is looking at.
-      // The numbers are literal text inside a <ul> rather than an <ol>, or
-      // the browser's own list marker would render them twice ("1. 1. …").
-      "MISE EN FORME de explanation: si tu justifies plusieurs propositions, retourne une liste HTML <ul><li><strong>1.</strong> …</li><li><strong>2.</strong> …</li></ul> — une <li> par proposition, NUMÉROTÉE 1, 2, 3… dans l'ordre des propositions, jamais plusieurs justifications collées dans un même <p> ou une même <li>. Si l'explication est unique et globale, garde un simple <p>.",
+      // Labelled the way the reader sees the propositions labelled: an
+      // ordinary question justifies its options, which the paper letters A to
+      // E; an association question justifies the numbered items its énoncé
+      // carries, whose options are combinations ("1+2") and explain nothing on
+      // their own. This used to say "numbered 1, 2, 3" for every question —
+      // written for the association case and applied to all of them, so an
+      // A-to-E question came back with its five justifications numbered.
+      // relabelPropositions fixes the answer whatever the model writes; this
+      // is here so it usually has nothing to fix.
+      // The labels are literal text inside a <ul> rather than an <ol>, or the
+      // browser's own list marker would render them twice ("1. 1. …").
+      "MISE EN FORME de explanation: si tu justifies plusieurs propositions, retourne une liste HTML <ul><li><strong>A.</strong> …</li><li><strong>B.</strong> …</li></ul> — une <li> par proposition, dans l'ordre des propositions, jamais plusieurs justifications collées dans un même <p> ou une même <li>. ÉTIQUETTE chaque <li> comme la question elle-même étiquette ses propositions : les LETTRES A, B, C… des options quand tu justifies les options ; les NUMÉROS 1, 2, 3… quand l'énoncé liste lui-même des propositions numérotées et que les options n'en sont que des combinaisons (« 1+2 », « 2+3 »). Si l'explication est unique et globale, garde un simple <p>.",
       "N'écris JAMAIS que la réponse fournie est fausse dans le champ explanation : rédige toujours l'explication de la réponse indiquée. En revanche, si cette réponse te paraît médicalement erronée, remplis EN PLUS le champ answer_doubt avec une phrase courte disant ce qui te semble être la bonne réponse et pourquoi. Laisse answer_doubt à null quand la réponse fournie est correcte — c'est le cas le plus fréquent, ne le remplis pas par excès de prudence.",
-      "DÉTERMINE AUSSI la réponse par toi-même, sans supposer que la réponse fournie est juste : remplis proposed_indices avec les indices 0-based que TU juges corrects d'après le document de référence et tes connaissances médicales, et answer_confidence avec high, medium ou low. Pour une QROC, laisse proposed_indices à null. Le plus souvent proposed_indices sera identique à la réponse fournie — c'est normal, ne cherche pas à t'en écarter.",
+      "DÉTERMINE AUSSI la réponse par toi-même, sans supposer que la réponse fournie est juste : remplis proposed_indices avec les indices 0-based (A=0, B=1, C=2…) que TU juges corrects d'après le document de référence et tes connaissances médicales, et answer_confidence avec high, medium ou low. Pour une QROC, laisse proposed_indices à null. Le plus souvent proposed_indices sera identique à la réponse fournie — c'est normal, ne cherche pas à t'en écarter.",
       "Réponds pour toutes les questions listées ci-dessous, une entrée par index, dans n'importe quel ordre mais sans en omettre.",
       "",
       "Questions :",
@@ -178,7 +188,13 @@ export const generateGroundedExplanations = createServerFn({ method: "POST" })
       );
       const byIndex = new Map(output.explanations.map((e) => [e.index, e]));
       return {
-        explanations: data.items.map((_, i) => byIndex.get(i)?.explanation ?? null),
+        // Whatever the model labelled them, the justifications are in the
+        // order of the propositions — so they can be relabelled to the scheme
+        // this question actually uses, from the question itself.
+        explanations: data.items.map((q, i) => {
+          const html = byIndex.get(i)?.explanation ?? null;
+          return html ? relabelPropositions(html, propositionStyle(q)) : null;
+        }),
         doubts: data.items.map((_, i) => byIndex.get(i)?.answer_doubt ?? null),
         proposed: data.items.map((_, i) => byIndex.get(i)?.proposed_indices ?? null),
         confidence: data.items.map((_, i) => byIndex.get(i)?.answer_confidence ?? null),

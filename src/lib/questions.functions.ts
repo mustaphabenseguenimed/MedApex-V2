@@ -9,7 +9,11 @@ import {
   stripBold,
   isUnreadableOnDark,
 } from "./htmlColors";
-import { splitPerOptionExplanation } from "./explanationFormat";
+import {
+  propositionStyle,
+  relabelPropositions,
+  splitPerOptionExplanation,
+} from "./explanationFormat";
 import { getExtractModelCandidates, type ExtractEngine } from "./ai-extract-provider.server";
 import {
   generateWithFallback,
@@ -120,7 +124,9 @@ function normalizeQuestions(result: { questions: ExtractedQ[]; total_visible?: n
         ? q.choices.map((c) => stripBold(stripImportedColors(c ?? "")))
         : q.choices,
       explanation: q.explanation
-        ? normalizeInlineTextColors(splitPerOptionExplanation(q.explanation))
+        ? normalizeInlineTextColors(
+            relabelPropositions(splitPerOptionExplanation(q.explanation), propositionStyle(q)),
+          )
         : q.explanation,
       model_answer: q.model_answer ? normalizeInlineTextColors(q.model_answer) : q.model_answer,
     })),
