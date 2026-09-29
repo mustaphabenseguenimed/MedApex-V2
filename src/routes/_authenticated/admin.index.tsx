@@ -95,6 +95,8 @@ import {
   primaryRotation,
   resolveImportAssignments,
 } from "@/lib/importMatch";
+import { editableToStem, stemToEditable } from "@/lib/stemText";
+import { stripHtml } from "@/lib/questionsJson";
 import { caseKey, importQuestionsToModule } from "@/lib/importQuestions";
 import {
   Dialog,
@@ -466,6 +468,10 @@ type Question = {
   exam_years: number[] | null;
   rotation_ids: string[] | null;
 };
+
+/** A stem on one line of a list: its markup is not readable as text, and a
+ *  numbered énoncé used to print its "<br />" between every proposition. */
+const stemPreview = (html: string | null | undefined) => stripHtml(html ?? "");
 
 const QTYPE_LABEL: Record<QType, string> = {
   qcm: "QCM (multi)",
@@ -1014,32 +1020,46 @@ function QuestionsPanel({
                     key={g.key}
                     className={groupBy === "none" ? "space-y-2" : "rounded-lg border"}
                   >
+                    {/* Two buttons side by side, not one inside the other. A
+                        Radix Checkbox renders a <button>, so nesting it in the
+                        header's own button was invalid markup — and a nested
+                        button's clicks are delivered inconsistently, which is
+                        why tapping the box usually just expanded the group
+                        instead of selecting it. The box also owns a 40px
+                        target now rather than its own 16px: same size on
+                        screen, six times the area to hit. */}
                     {groupBy !== "none" && (
-                      <button
-                        onClick={() => setOpenGroups((p) => ({ ...p, [g.key]: !gOpen }))}
-                        className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium hover:bg-accent"
-                      >
-                        <span className="flex items-center gap-2">
+                      <div className="flex w-full items-center text-sm font-medium">
+                        <button
+                          onClick={() => setOpenGroups((p) => ({ ...p, [g.key]: !gOpen }))}
+                          className="flex min-w-0 flex-1 items-center gap-2 rounded-l-lg px-3 py-2 text-left hover:bg-accent"
+                        >
                           {gOpen ? (
-                            <ChevronDown className="h-4 w-4" />
+                            <ChevronDown className="h-4 w-4 shrink-0" />
                           ) : (
-                            <ChevronRight className="h-4 w-4" />
+                            <ChevronRight className="h-4 w-4 shrink-0" />
                           )}
-                          {g.label}
-                        </span>
-                        <span className="flex items-center gap-2">
+                          <span className="truncate">{g.label}</span>
+                        </button>
+                        <div className="flex shrink-0 items-center gap-1 pr-3">
                           {canManage && groupBy === "folder" && (
-                            <span onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              onClick={toggleGroup}
+                              aria-label={`${tr("Sélectionner tout")} ${g.label}`}
+                              className="-my-1 flex h-10 w-10 items-center justify-center rounded-md hover:bg-accent"
+                            >
                               <Checkbox
                                 checked={gSomeSelected ? "indeterminate" : gAllSelected}
-                                onCheckedChange={() => toggleGroup()}
-                                aria-label={`${tr("Sélectionner tout")} ${g.label}`}
+                                tabIndex={-1}
+                                aria-hidden
+                                className="pointer-events-none"
                               />
-                            </span>
+                            </button>
                           )}
                           <Badge variant="secondary">{g.items.length}</Badge>
-                        </span>
-                      </button>
+                        </div>
+                      </div>
                     )}
                     {(groupBy === "none" || gOpen) && (
                       <div className={groupBy === "none" ? "space-y-2" : "space-y-2 border-t p-2"}>
@@ -1075,7 +1095,7 @@ function QuestionsPanel({
                                         {tr("Cas clinique")} n°{gCaseNumbers.get(q.id)} —{" "}
                                       </span>
                                     )}
-                                    {q.stem}
+                                    {stemPreview(q.stem)}
                                   </div>
                                   <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
                                     <Badge variant="secondary" className="text-[10px]">
@@ -1249,7 +1269,8 @@ function QuestionsPanel({
                                           </span>
                                         )}
                                         <span className="flex-1 truncate">
-                                          {ci + 1}. [{tr(QTYPE_LABEL[c.type])}] {c.stem}
+                                          {ci + 1}. [{tr(QTYPE_LABEL[c.type])}]{" "}
+                                          {stemPreview(c.stem)}
                                         </span>
                                         {canManage && isMovable(c) && (
                                           <MoveMenu
@@ -2829,8 +2850,10 @@ function ImportFromFiles({
                           <>
                             <Textarea
                               rows={2}
-                              value={q.stem}
-                              onChange={(e) => updateItem(i, { stem: e.target.value })}
+                              value={stemToEditable(q.stem)}
+                              onChange={(e) =>
+                                updateItem(i, { stem: editableToStem(e.target.value) })
+                              }
                             />
                             {q.type !== "qroc" && q.choices && q.choices.length > 0 && (
                               <div className="space-y-1">
@@ -3414,7 +3437,11 @@ function EditQuestionDialog({
           </div>
           <div className="space-y-1">
             <Label>Énoncé</Label>
-            <Textarea rows={3} value={stem} onChange={(e) => setStem(e.target.value)} />
+            <Textarea
+              rows={3}
+              value={stemToEditable(stem)}
+              onChange={(e) => setStem(editableToStem(e.target.value))}
+            />
           </div>
           {(type === "qcm" || type === "qcs") && (
             <div className="space-y-2">
@@ -3718,7 +3745,11 @@ function NewQuestionForm({
       </div>
       <div className="space-y-1">
         <Label>Énoncé</Label>
-        <Textarea rows={3} value={stem} onChange={(e) => setStem(e.target.value)} />
+        <Textarea
+          rows={3}
+          value={stemToEditable(stem)}
+          onChange={(e) => setStem(editableToStem(e.target.value))}
+        />
       </div>
       {(type === "qcm" || type === "qcs") && (
         <div className="space-y-2">
