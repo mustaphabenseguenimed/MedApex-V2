@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  canAutoRetry,
   canEscalate,
   contentRenderScale,
   ESCALATION_STEPS,
+  MAX_AUTO_RETRY_ROUNDS,
   escalationStep,
   dropSliceDuplicates,
   jobsOfEmptyPages,
@@ -411,6 +413,37 @@ describe("escalation", () => {
     assert.deepEqual(escalationStep(-1), escalationStep(0));
     assert.deepEqual(escalationStep(Number.NaN), escalationStep(0));
     assert.equal(canEscalate(Number.NaN), false);
+  });
+
+  /**
+   * The run re-reads its own empty pages instead of stopping to ask. On a real
+   * file, one click of "Réessayer ces pages" recovered all four pages that had
+   * come back with nothing — so the click was doing work the run could have
+   * done itself. This is what stops it doing that work for ever.
+   */
+  describe("re-reading empty pages without being asked", () => {
+    test("a first and second round are worth running", () => {
+      assert.equal(canAutoRetry(0), true);
+      assert.equal(canAutoRetry(MAX_AUTO_RETRY_ROUNDS - 1), true);
+    });
+
+    test("it stops, so a page that never reads ends up with the admin", () => {
+      assert.equal(canAutoRetry(MAX_AUTO_RETRY_ROUNDS), false);
+      assert.equal(canAutoRetry(MAX_AUTO_RETRY_ROUNDS + 1), false);
+    });
+
+    // canEscalate bounds a page by how hard it has been rendered; a page whose
+    // request merely errored never escalates, so only this bound stops it.
+    test("there are as many rounds as the ladder has settings", () => {
+      assert.equal(MAX_AUTO_RETRY_ROUNDS, ESCALATION_STEPS - 1);
+      assert.ok(MAX_AUTO_RETRY_ROUNDS >= 1);
+    });
+
+    test("a nonsense round never loops", () => {
+      assert.equal(canAutoRetry(Number.NaN), false);
+      assert.equal(canAutoRetry(-1), false);
+      assert.equal(canAutoRetry(Number.POSITIVE_INFINITY), false);
+    });
   });
 
   // Escalating has to actually change what the page is cut into, or the
