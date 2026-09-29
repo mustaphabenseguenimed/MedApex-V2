@@ -26,9 +26,20 @@
 const CASE_LABEL_PREFIX = new RegExp(
   "^\\s*(?:" +
     // "Cas clinique n°12 :", "Observation clinique 3 -", "Vignette :"
-    "(?:cas\\s+clinique|cas\\s*n°|observation(?:\\s+clinique)?|vignette(?:\\s+clinique)?|" +
+    //
+    // `clin\w*` rather than the word spelled out: one real paper heads a case
+    // "Cas clinque 7 :". A keyword still proves nothing on its own — the
+    // number or separator below is what makes it a label — so tolerating the
+    // author's spelling costs nothing and a misspelt label that survives is
+    // not merely cosmetic: the énoncé then opens on "Cas…" instead of on its
+    // patient, fails `looksLikeVignette`, and the whole case is folded into
+    // the one before it.
+    "(?:cas\\s+clin\\w*|cas\\s*n°|observation(?:\\s+clinique)?|vignette(?:\\s+clinique)?|" +
     "énoncé\\s+commun|enonce\\s+commun)" +
-    "(?:\\s*(?:n°|no|num[ée]ro|#)?\\s*\\d{1,3}\\s*[.):\\-–—:]?|\\s*[.):\\-–—:])" +
+    // "n°7", "no 7", "N 07" — the same paper writes the last of those, an N
+    // with no degree sign at all. Safe to accept loosely because a digit has
+    // to follow whatever this matches.
+    "(?:\\s*(?:n\\s*[°o]?|num[ée]ro|#)?\\s*\\d{1,3}\\s*[.):\\-–—:]?|\\s*[.):\\-–—:])" +
     "|" +
     // "CC7 :", "CC 10 -" — the separator is required here, since two letters
     // and a digit are not on their own proof of a label.
@@ -93,7 +104,7 @@ export function withCleanCaseStem<T extends { case_stem?: string | null }>(quest
  * a case on a stray paragraph.
  */
 const VIGNETTE_OPENING =
-  /^\s*(?:Un|Une|Le|La|L'|M\.|Mme|Mr|Monsieur|Madame|Homme|Femme|Patient|Patiente|Malade|Enfant|Jeune|Adolescent|Adolescente|Nourrisson|Nouveau-né)\b[\s\S]{0,140}?\d+\s*ans?\b/i;
+  /^[\s"'«»“”‘’([]*(?:Un|Une|Le|La|L'|M\.|Mme|Mr|Monsieur|Madame|Homme|Femme|Patient|Patiente|Malade|Enfant|Jeune|Adolescent|Adolescente|Nourrisson|Nouveau-né)\b[\s\S]{0,140}?\d+\s*ans?\b/i;
 
 export function looksLikeVignette(stem: string | null | undefined): boolean {
   const text = textOf(stem ?? "");
