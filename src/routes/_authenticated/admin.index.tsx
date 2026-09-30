@@ -73,7 +73,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { canMoveInto, isMovable, planMove } from "@/lib/questionMove";
+import { canMoveHere, isMovable, lessonOf, moveTargets, planMove } from "@/lib/questionMove";
 import { useIsAdmin } from "@/hooks/use-admin";
 import { useAdminPermissions } from "@/hooks/use-permissions";
 import { useServerFn } from "@tanstack/react-start";
@@ -486,16 +486,23 @@ function MoveMenu({
   question,
   cases,
   caseNumbers,
+  folders,
   onMove,
 }: {
   question: Question;
   /** Every clinical case of the module, in list order. */
   cases: Question[];
   caseNumbers: Map<string, number>;
+  folders: Folder[];
   onMove: (dragged: Question, target: Question | null) => void;
 }) {
   const { tr } = useI18n();
-  const targets = cases.filter((c) => canMoveInto(question, c));
+  // This lesson's cases only. Listing the module's twenty-seven meant reading
+  // through the lot to find one that was almost always in the lesson already
+  // on screen.
+  const targets = moveTargets(question, cases);
+  const lesson = lessonOf(question, cases);
+  const lessonName = lesson ? (folders.find((f) => f.id === lesson)?.name ?? null) : null;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -509,7 +516,12 @@ function MoveMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-h-72 w-72 overflow-y-auto">
-        <DropdownMenuLabel className="text-xs">{tr("Déplacer vers")}</DropdownMenuLabel>
+        {/* Name the lesson, or a short list reads as cases having gone
+            missing rather than as the filter doing its job. */}
+        <DropdownMenuLabel className="text-xs">
+          {tr("Déplacer vers")}
+          {lessonName ? ` · ${lessonName}` : ` · ${tr("Sans cours")}`}
+        </DropdownMenuLabel>
         {question.parent_id && (
           <DropdownMenuItem onClick={() => onMove(question, null)}>
             {tr("Hors cas clinique")}
@@ -522,8 +534,8 @@ function MoveMenu({
             </span>
           </DropdownMenuItem>
         ))}
-        {!targets.length && !question.parent_id && (
-          <DropdownMenuItem disabled>{tr("Aucun cas clinique")}</DropdownMenuItem>
+        {!targets.length && (
+          <DropdownMenuItem disabled>{tr("Aucun cas clinique dans ce cours")}</DropdownMenuItem>
         )}
       </DropdownMenuContent>
     </DropdownMenu>
@@ -732,12 +744,13 @@ function QuestionsPanel({
   });
 
   /** Is the drag in flight allowed to land here? */
-  const canDropHere = (target: Question | null) => !!dragging && canMoveInto(dragging, target);
+  const canDropHere = (target: Question | null) =>
+    !!dragging && canMoveHere(dragging, target, caseParents);
 
   /** Drop props for a destination (a clinical case, or null to leave one). */
   const dropProps = (target: Question | null) => {
     const key = target ? target.id : "__out";
-    if (!dragging || !canMoveInto(dragging, target)) return {};
+    if (!dragging || !canMoveHere(dragging, target, caseParents)) return {};
     return {
       onDragOver: (e: React.DragEvent) => {
         e.preventDefault();
@@ -1192,6 +1205,7 @@ function QuestionsPanel({
                                       question={q}
                                       cases={caseParents}
                                       caseNumbers={allCaseNumbers}
+                                      folders={folders}
                                       onMove={moveToCase}
                                     />
                                   )}
@@ -1277,6 +1291,7 @@ function QuestionsPanel({
                                             question={c}
                                             cases={caseParents}
                                             caseNumbers={allCaseNumbers}
+                                            folders={folders}
                                             onMove={moveToCase}
                                           />
                                         )}
